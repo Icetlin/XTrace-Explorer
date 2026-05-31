@@ -36,18 +36,11 @@
       <!-- Right-side nav -->
       <button
         class="nav-btn"
-        :class="{ 'nav-btn--active': activeSection === 'favourites' }"
-        @click="activeSection = 'favourites'"
-      >
-        ★ Favourites
-        <span v-if="store.favourites.length" class="nav-badge">{{ store.favourites.length }}</span>
-      </button>
-      <button
-        class="nav-btn"
         :class="{ 'nav-btn--active': activeSection === 'settings' }"
         @click="activeSection = 'settings'"
       >
         ⚙ Settings
+        <span v-if="store.favourites.length" class="nav-badge">{{ store.favourites.length }}</span>
       </button>
     </div>
 
@@ -119,10 +112,7 @@
     <!-- ── Main content ── -->
     <div class="main">
 
-      <!-- Favourites -->
-      <FavouritesPage v-show="activeSection === 'favourites'" />
-
-      <!-- Settings -->
+      <!-- Settings (includes Favourites + Filters tabs) -->
       <SettingsPage v-show="activeSection === 'settings'" />
 
       <!-- Trace views -->
@@ -171,7 +161,6 @@ import { useTraceStore } from './stores/trace'
 import TocTree from './components/TocTree.vue'
 import DesertBackground from './components/DesertBackground.vue'
 import RequestInfo from './components/RequestInfo.vue'
-import FavouritesPage from './components/FavouritesPage.vue'
 import SettingsPage from './components/SettingsPage.vue'
 import Breadcrumbs from './components/Breadcrumbs.vue'
 import axios from 'axios'
@@ -189,6 +178,7 @@ const tocTreeRefs = {}
 
 store.loadFiles()
 store.loadFavourites()
+store.loadSettings()
 
 function toggleBrowser() {
   showBrowser.value = !showBrowser.value

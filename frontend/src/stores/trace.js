@@ -11,6 +11,7 @@ export const useTraceStore = defineStore('trace', () => {
   const activeTabFileId = ref(null)
 
   const favourites = ref([])
+  const listenerFilters = ref([])
 
   const currentTab = computed(() =>
     openTabs.value.find(t => t.fileId === activeTabFileId.value) ?? null
@@ -178,6 +179,25 @@ export const useTraceStore = defineStore('trace', () => {
     return data
   }
 
+  async function loadSettings() {
+    try {
+      const { data } = await axios.get('/api/settings')
+      listenerFilters.value = data.listener_filters || []
+      return data
+    } catch { return {} }
+  }
+
+  async function saveSettings(payload) {
+    const { data } = await axios.post('/api/settings', payload)
+    listenerFilters.value = payload.listener_filters || []
+    return data
+  }
+
+  function isListenerFiltered(sig) {
+    if (!listenerFilters.value.length || !sig) return false
+    return listenerFilters.value.some(f => sig.includes(f))
+  }
+
   async function addAnnotation(fileId, lineNo, text) {
     await axios.post(`/api/annotations/${fileId}`, { line_no: lineNo, text })
     await loadAnnotations(fileId)
@@ -192,9 +212,11 @@ export const useTraceStore = defineStore('trace', () => {
 
   return {
     files, openTabs, activeTabFileId, currentTab, currentFile, toc, totalLines, annotations, favourites,
+    listenerFilters,
     loadFiles, selectFile, switchToTab, closeTab, pollStatus,
     fetchChildren, fetchPath, fetchObject, search,
     addAnnotation, deleteAnnotation,
     loadFavourites, addFavourite, deleteFavourite, matchFavourites, favMatchesInRange, scanFavourites,
+    loadSettings, saveSettings, isListenerFiltered,
   }
 })
