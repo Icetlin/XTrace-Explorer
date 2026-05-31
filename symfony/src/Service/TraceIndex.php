@@ -537,7 +537,7 @@ class TraceIndex
 
         $fh = fopen($xtPath, 'rb');
         fseek($fh, $startOffset);
-        $currentLine = $startLine;
+        $currentLine = $startLine - 1;
         $rawLine = null;
 
         while (($line = fgets($fh)) !== false) {
