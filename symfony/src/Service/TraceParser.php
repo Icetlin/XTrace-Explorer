@@ -1,0 +1,216 @@
+<?php
+
+namespace App\Service;
+
+use App\Entity\TraceFile;
+use Doctrine\ORM\EntityManagerInterface;
+
+class TraceParser
+{
+    private const SPARSE_EVERY = 500;
+
+    // Format: "    0.0036     444040     -> call() file:line"
+    // Group 1: indent spaces before "->", group 2: call with args
+    private const CALL_RE = '/^\s+[\d.]+\s+\d+([ ]*)->\s+(.+?)\s+\//';
+
+    // Only TraceableEventDispatcher->dispatch — this is the outermost, has $eventName in args
+    private const DISPATCH_RE = '/TraceableEventDispatcher->dispatch$/';
+    private const EVENT_NAME_RE = '/\$eventName\s*=\s*\'([^\']+)\'/';
+    private const EVENT_CLASS_RE = '/\$event\s*=\s*class\s+([\w\\\\]+)/';
+
+    // Classes to skip when looking for real listener name after WrappedListener->__invoke
+    private const LISTENER_NOISE = [
+        'TraceableEventDispatcher', 'EventDispatcher', 'WrappedListener',
+        'Stopwatch', 'StopwatchEvent', 'isPropagationStopped', 'Section',
+    ];
+
+    public function __construct(
+        private readonly string $tracesDir,
+        private readonly EntityManagerInterface $em,
+    ) {}
+
+    public function parse(TraceFile $traceFile, string $xtFilePath): void
+    {
+        $traceFile->setStatus('parsing')->setProgress(0);
+        $this->em->flush();
+
+        $dir = $this->tracesDir . '/' . $traceFile->getId();
+        if (!is_dir($dir)) {
+            mkdir($dir, 0755, true);
+        }
+
+        $totalLines = $this->countLines($xtFilePath);
+        $sparseIndex = [];
+        $skeleton = [];
+        $seenSigs = [];
+
+        // TOC state
+        $toc = [];
+        $mainDepth = null;
+        // Stack of open dispatch blocks (nested dispatches inside listeners)
+        // Each entry: ['event' => string, 'line_no' => int, 'depth' => int, 'listeners' => [...]]
+        $dispatchStack = [];
+        $pendingInvoke = null; // ['depth' => int]
+
+        $fh = fopen($xtFilePath, 'rb');
+        $lineNo = 0;
+        $offset = 0;
+
+        $nodes = [];
+        $depthStack = [];
+
+        while (($line = fgets($fh)) !== false) {
+            $lineNo++;
+
+            if ($lineNo % self::SPARSE_EVERY === 0) {
+                $sparseIndex[(string)$lineNo] = $offset;
+            }
+
+            if (preg_match(self::CALL_RE, $line, $m)) {
+                $depth = (int)(strlen($m[1]) / 2);
+                $sig = $this->extractSignature($m[2]);
+
+                // --- TOC: track {main} depth ---
+                if ($sig === '{main}' && $mainDepth === null) {
+                    $mainDepth = $depth;
+                }
+
+                // --- TOC: pop closed dispatch blocks from stack ---
+                // When depth returns to <= a dispatch's own depth, that dispatch is done
+                while (!empty($dispatchStack) && $depth <= $dispatchStack[count($dispatchStack)-1]['depth']
+                    && !str_ends_with($sig, '->dispatch')) {
+                    $closed = array_pop($dispatchStack);
+                    $toc[] = $closed;
+                    $pendingInvoke = null;
+                }
+
+                // --- TOC: detect TraceableEventDispatcher->dispatch (outermost, has $eventName) ---
+                if (preg_match(self::DISPATCH_RE, $sig)) {
+                    $eventName = null;
+                    if (preg_match(self::EVENT_NAME_RE, $line, $em2)) {
+                        $eventName = $em2[1];
+                    } elseif (preg_match(self::EVENT_CLASS_RE, $line, $em2)) {
+                        $parts = explode('\\', $em2[1]);
+                        $eventName = end($parts);
+                    }
+                    if ($eventName !== null) {
+                        // Check if top of stack is same event (Traceable wraps EventDispatcher, same event)
+                        $top = !empty($dispatchStack) ? $dispatchStack[count($dispatchStack)-1] : null;
+                        $shortName = str_contains($eventName, '\\')
+                            ? substr($eventName, strrpos($eventName, '\\') + 1)
+                            : $eventName;
+                        $topShort = $top ? (str_contains($top['event'], '\\')
+                            ? substr($top['event'], strrpos($top['event'], '\\') + 1)
+                            : $top['event']) : null;
+
+                        if ($top && $topShort === $shortName) {
+                            // Same event at deeper depth — update depth, keep listeners
+                            $dispatchStack[count($dispatchStack)-1]['depth'] = $depth;
+                            if (!str_contains($eventName, '\\')) {
+                                $dispatchStack[count($dispatchStack)-1]['event'] = $eventName;
+                            }
+                        } else {
+                            // New event — push onto stack
+                            $dispatchStack[] = [
+                                'type'      => 'event',
+                                'event'     => $eventName,
+                                'line_no'   => $lineNo,
+                                'depth'     => $depth,
+                                'listeners' => [],
+                            ];
+                        }
+                        $pendingInvoke = null;
+                    }
+                }
+
+                // --- TOC: detect WrappedListener->__invoke inside current dispatch ---
+                if (!empty($dispatchStack) && str_ends_with($sig, 'WrappedListener->__invoke')) {
+                    $pendingInvoke = ['depth' => $depth];
+                }
+
+                // --- TOC: real listener = first non-noise call at invoke_depth+1 ---
+                if ($pendingInvoke !== null && $depth === $pendingInvoke['depth'] + 1) {
+                    $isNoise = false;
+                    foreach (self::LISTENER_NOISE as $noise) {
+                        if (str_contains($sig, $noise)) { $isNoise = true; break; }
+                    }
+                    if (!$isNoise && str_contains($sig, '\\') && !empty($dispatchStack)) {
+                        $dispatchStack[count($dispatchStack)-1]['listeners'][] = [
+                            'sig'     => $sig,
+                            'line_no' => $lineNo,
+                            'depth'   => $depth,
+                        ];
+                        $pendingInvoke = null;
+                    }
+                }
+
+                // --- skeleton building (unchanged) ---
+                if (!isset($seenSigs[$sig])) {
+                    $seenSigs[$sig] = true;
+                    $idx = count($nodes);
+                    $nodes[] = ['sig' => $sig, 'depth' => $depth, 'first_line' => $lineNo, 'children' => []];
+
+                    while (count($depthStack) > 0 && $depthStack[count($depthStack) - 1]['depth'] >= $depth) {
+                        array_pop($depthStack);
+                    }
+
+                    if (count($depthStack) > 0) {
+                        $parentIdx = $depthStack[count($depthStack) - 1]['idx'];
+                        $nodes[$parentIdx]['children'][] = $idx;
+                    } else {
+                        $skeleton[] = $idx;
+                    }
+
+                    $depthStack[] = ['depth' => $depth, 'idx' => $idx];
+                }
+            }
+
+            $offset = ftell($fh);
+
+            if ($lineNo % 50000 === 0 && $totalLines > 0) {
+                $progress = (int)(($lineNo / $totalLines) * 100);
+                $traceFile->setProgress(min($progress, 99));
+                $this->em->flush();
+            }
+        }
+
+        fclose($fh);
+
+        // Flush remaining open dispatch blocks (outermost last)
+        while (!empty($dispatchStack)) {
+            $toc[] = array_pop($dispatchStack);
+        }
+
+        $sparseIndex = ['0' => 0] + $sparseIndex;
+        ksort($sparseIndex, SORT_NUMERIC);
+
+        file_put_contents($dir . '/line_index.json', json_encode($sparseIndex));
+        file_put_contents($dir . '/skeleton.json', json_encode(
+            ['nodes' => $nodes, 'roots' => $skeleton],
+            JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE
+        ));
+        file_put_contents($dir . '/toc.json', json_encode($toc, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE));
+        file_put_contents($dir . '/meta.json', json_encode(['total_lines' => $lineNo]));
+
+        $traceFile->setStatus('ready')->setProgress(100);
+        $this->em->flush();
+    }
+
+    private function extractSignature(string $call): string
+    {
+        $paren = strpos($call, '(');
+        return $paren !== false ? trim(substr($call, 0, $paren)) : trim($call);
+    }
+
+    private function countLines(string $path): int
+    {
+        $count = 0;
+        $fh = fopen($path, 'rb');
+        while (!feof($fh)) {
+            $chunk = fread($fh, 65536);
+            $count += substr_count($chunk, "\n");
+        }
+        fclose($fh);
+        return $count;
+    }
+}

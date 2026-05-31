@@ -1,0 +1,23 @@
+# Dependencies
+frontend/node_modules/
+
+# Build output
+symfony/public/app/assets/
+symfony/public/app/index.html
+
+# Symfony cache/logs/var
+symfony/var/
+symfony/vendor/
+
+# Traces (user data, can be large)
+traces/
+
+# Docker runtime
+.env.local
+
+# IDE
+.idea/
+*.iml
+
+# OS
+.DS_Store
