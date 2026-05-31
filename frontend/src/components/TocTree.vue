@@ -292,6 +292,9 @@ defineExpose({ jumpToLine })
   padding: 16px 20px 16px 28px;
   overflow-y: auto;
   height: 100%;
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 
 .empty {
@@ -311,18 +314,12 @@ defineExpose({ jumpToLine })
   align-items: center;
   gap: 10px;
   padding: 10px 18px;
-  border-radius: 10px;
   cursor: pointer;
-  background: rgba(255, 255, 255, 0.04);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.06);
   border-left: 3px solid rgba(80, 80, 140, 0.4);
-  transition: background 0.15s, border-color 0.15s;
+  transition: background 0.15s;
 }
 .event-row:hover {
-  background: rgba(255, 255, 255, 0.065);
-  border-color: rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.04);
 }
 .event-row.has-listeners { border-left-color: rgba(90, 130, 210, 0.6); }
 .event-row--fav { border-left-width: 3px; }
@@ -377,13 +374,11 @@ defineExpose({ jumpToLine })
   align-items: center;
   gap: 7px;
   padding: 6px 14px;
-  border-radius: 7px;
   border-left: 2px solid transparent;
   cursor: pointer;
-  background: rgba(255, 255, 255, 0.02);
   transition: background 0.12s;
 }
-.listener-row:hover { background: rgba(255, 255, 255, 0.038); }
+.listener-row:hover { background: rgba(255, 255, 255, 0.03); }
 .listener-row--fav { border-left-width: 2px; }
 
 .fav-hit-line {

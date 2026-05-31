@@ -1,5 +1,6 @@
 <template>
   <div class="app">
+    <DesertBackground />
 
     <!-- ── Tab bar (always visible) ── -->
     <div class="tabs-bar">
@@ -162,6 +163,7 @@
 import { ref, watch } from 'vue'
 import { useTraceStore } from './stores/trace'
 import TocTree from './components/TocTree.vue'
+import DesertBackground from './components/DesertBackground.vue'
 import FavouritesPage from './components/FavouritesPage.vue'
 import SettingsPage from './components/SettingsPage.vue'
 import Breadcrumbs from './components/Breadcrumbs.vue'
@@ -248,7 +250,7 @@ html, body, #app {
   background: #0a0a14;
   color: #ccc;
 }
-.app { display: flex; flex-direction: column; height: 100vh; }
+.app { display: flex; flex-direction: column; height: 100vh; position: relative; }
 
 /* ── Tab bar ── */
 .tabs-bar {
