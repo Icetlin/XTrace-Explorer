@@ -110,6 +110,12 @@
       </div>
     </transition>
 
+    <!-- ── Request info bar ── -->
+    <RequestInfo
+      v-if="activeSection === 'trace' && store.currentTab?.request"
+      :req="store.currentTab.request"
+    />
+
     <!-- ── Main content ── -->
     <div class="main">
 
@@ -164,6 +170,7 @@ import { ref, watch } from 'vue'
 import { useTraceStore } from './stores/trace'
 import TocTree from './components/TocTree.vue'
 import DesertBackground from './components/DesertBackground.vue'
+import RequestInfo from './components/RequestInfo.vue'
 import FavouritesPage from './components/FavouritesPage.vue'
 import SettingsPage from './components/SettingsPage.vue'
 import Breadcrumbs from './components/Breadcrumbs.vue'
@@ -554,16 +561,16 @@ html, body, #app {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  color: #1e1e30;
+  color: rgba(160, 150, 130, 0.5);
   font-family: 'JetBrains Mono', monospace;
 }
 .empty-state__icon {
   font-size: 40px;
-  opacity: 0.3;
+  opacity: 0.6;
 }
 .empty-state__text { font-size: 13px; }
 .empty-state__plus {
-  color: #3a4a6a;
+  color: rgba(180, 160, 120, 0.75);
   font-weight: bold;
   font-size: 16px;
 }

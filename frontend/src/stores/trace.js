@@ -89,7 +89,10 @@ export const useTraceStore = defineStore('trace', () => {
   async function loadMeta(fileId) {
     const { data } = await axios.get(`/api/meta/${fileId}`)
     const tab = openTabs.value.find(t => t.fileId === fileId)
-    if (tab) tab.totalLines = data.total_lines || 0
+    if (tab) {
+      tab.totalLines = data.total_lines || 0
+      tab.request = data.request || null
+    }
   }
 
   async function loadAnnotations(fileId) {

@@ -13,6 +13,7 @@
         @contextmenu.prevent="onEventCtx($event, event)"
       >
         <span class="chevron">{{ expandedEvents.has(ei) ? '▾' : '▸' }}</span>
+        <span v-if="eventSource(event.event)" class="event-source" :data-src="eventSource(event.event)">{{ eventSource(event.event) }}</span>
         <span class="event-name">{{ event.event }}</span>
         <span
           v-for="m in eventScanMatches(ei)"
@@ -42,6 +43,7 @@
           >
             <span class="connector">└</span>
             <span class="chevron-sm">{{ expandedListeners.has(`${ei}-${li}`) ? '▾' : '▸' }}</span>
+            <span v-if="listenerSource(listener.sig)" class="listener-source" :data-src="listenerSource(listener.sig)">{{ listenerSource(listener.sig) }}</span>
             <span class="listener-class">{{ listenerClass(listener.sig) }}</span>
             <span class="listener-method">{{ listenerMethod(listener.sig) }}</span>
             <template v-for="m in listenerScanMatches(ei, li)" :key="m.pattern">
@@ -144,6 +146,26 @@ function eventScanMatches(ei) {
     }
   }
   return result
+}
+
+function listenerSource(sig) {
+  if (!sig) return null
+  if (sig.startsWith('Symfony\\')) return 'sf'
+  if (sig.startsWith('App\\')) return null
+  const parts = sig.split('\\')
+  // find first segment ending with "Bundle", strip the word "Bundle"
+  const bundle = parts.find(p => p.endsWith('Bundle'))
+  if (bundle) return bundle.replace(/Bundle$/, '')
+  return parts[0] || null
+}
+
+function eventSource(name) {
+  if (!name) return null
+  if (name.startsWith('kernel.') || name.startsWith('security.') || name.startsWith('console.')) return 'sf'
+  if (name.startsWith('lexik_jwt')) return 'jwt'
+  if (name.startsWith('scheb_')) return '2fa'
+  if (name.includes('.')) return 'sf'   // dotted = Symfony event name convention
+  return null                           // PascalCase class name = app event, no label
 }
 
 function toggleEvent(ei) {
@@ -287,7 +309,7 @@ defineExpose({ jumpToLine })
 <style scoped>
 .toc-tree {
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
-  font-size: 13px;
+  font-size: 14.5px;
   color: #ccc;
   padding: 16px 20px 16px 28px;
   overflow-y: auto;
@@ -333,10 +355,23 @@ defineExpose({ jumpToLine })
   letter-spacing: 0.02em;
 }
 
-.chevron { color: #555; font-size: 11px; width: 12px; flex-shrink: 0; }
+.chevron { color: #555; font-size: 12.5px; width: 12px; flex-shrink: 0; }
+
+.event-source, .listener-source {
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+  text-align: right;
+  white-space: nowrap;
+}
+.event-source    { opacity: 0.45; }
+.listener-source { opacity: 0.35; }
+.event-source[data-src="sf"],  .listener-source[data-src="sf"] { color: #6a9aaa; }
+.event-source:not([data-src="sf"]), .listener-source:not([data-src="sf"]) { color: #7a7a60; }
 
 .event-name {
-  font-size: 13.5px;
+  font-size: 15px;
   font-weight: 500;
   color: #7a9abb;
   flex: 1;
@@ -400,21 +435,21 @@ defineExpose({ jumpToLine })
   flex-shrink: 0;
 }
 
-.connector { color: #2a2a3a; font-size: 12px; flex-shrink: 0; }
+.connector { color: #2a2a3a; font-size: 13.5px; flex-shrink: 0; }
 .chevron-sm { color: #383850; font-size: 10px; width: 10px; flex-shrink: 0; }
 
 .listener-class {
-  font-size: 12.5px;
-  color: #9a8a50;
+  font-size: 14px;
+  color: #b0a070;
   font-weight: 500;
 }
 .listener-method {
-  font-size: 12px;
-  color: #555;
+  font-size: 13.5px;
+  color: #4a4a5a;
 }
 .line-badge-sm {
   font-size: 10px;
-  color: #2e2e44;
+  color: #3a3a55;
   margin-left: auto;
   cursor: pointer;
   padding: 2px 6px;
@@ -432,12 +467,12 @@ defineExpose({ jumpToLine })
   padding-bottom: 4px;
 }
 
-.loading { color: #3a3a55; font-size: 11px; padding: 6px 0; }
+.loading { color: #3a3a55; font-size: 12.5px; padding: 6px 0; }
 
 .no-listeners {
   margin-left: 24px;
   color: #2e2e44;
-  font-size: 11px;
+  font-size: 12.5px;
   padding: 4px 0 8px;
   font-style: italic;
 }

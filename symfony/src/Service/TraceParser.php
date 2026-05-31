@@ -52,6 +52,8 @@ class TraceParser
         $dispatchStack = [];
         $pendingInvoke = null; // ['depth' => int]
 
+        $requestInfo = $this->extractRequestInfo($xtFilePath);
+
         $fh = fopen($xtFilePath, 'rb');
         $lineNo = 0;
         $offset = 0;
@@ -190,7 +192,10 @@ class TraceParser
             JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE
         ));
         file_put_contents($dir . '/toc.json', json_encode($toc, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE));
-        file_put_contents($dir . '/meta.json', json_encode(['total_lines' => $lineNo]));
+        file_put_contents($dir . '/meta.json', json_encode(
+            ['total_lines' => $lineNo, 'request' => $requestInfo],
+            JSON_UNESCAPED_UNICODE
+        ));
 
         $traceFile->setStatus('ready')->setProgress(100);
         $this->em->flush();
@@ -200,6 +205,68 @@ class TraceParser
     {
         $paren = strpos($call, '(');
         return $paren !== false ? trim(substr($call, 0, $paren)) : trim($call);
+    }
+
+    private function extractRequestInfo(string $xtFilePath): array
+    {
+        $info = [];
+        $fh = fopen($xtFilePath, 'rb');
+
+        // TRACE START [2026-05-30 20:34:36.703988]
+        $firstLine = fgets($fh);
+        if ($firstLine && preg_match('/TRACE START \[([^\]]+)\]/', $firstLine, $m)) {
+            $info['started_at'] = $m[1];
+        }
+
+        // Scan first ~200 lines for the server array (appears in first closure call)
+        $scanned = 0;
+        while (($line = fgets($fh)) !== false && $scanned < 10000) {
+            $scanned++;
+
+            if (str_contains($line, 'REQUEST_METHOD') && str_contains($line, 'REQUEST_URI')) {
+                // Extract individual fields via regex
+                if (preg_match("/'REQUEST_METHOD'\s*=>\s*'([^']+)'/", $line, $m)) {
+                    $info['method'] = $m[1];
+                }
+                if (preg_match("/'REQUEST_URI'\s*=>\s*'([^']+)'/", $line, $m)) {
+                    $info['uri'] = $m[1];
+                }
+                if (preg_match("/'HTTP_HOST'\s*=>\s*'([^']+)'/", $line, $m)) {
+                    $info['host'] = $m[1];
+                }
+                if (preg_match("/'QUERY_STRING'\s*=>\s*'([^']*)'/", $line, $m)) {
+                    $info['query'] = $m[1];
+                }
+                if (preg_match("/'HTTP_COOKIE'\s*=>\s*'([^']+)'/", $line, $m)) {
+                    // Parse cookies into key=>value pairs
+                    $cookies = [];
+                    foreach (explode(';', $m[1]) as $pair) {
+                        [$k, $v] = array_map('trim', explode('=', trim($pair), 2)) + ['', ''];
+                        if ($k !== '') $cookies[$k] = $v;
+                    }
+                    $info['cookies'] = $cookies;
+                }
+                if (preg_match("/'HTTP_USER_AGENT'\s*=>\s*'([^']+)'/", $line, $m)) {
+                    $info['user_agent'] = $m[1];
+                }
+                if (preg_match("/'REMOTE_ADDR'\s*=>\s*'([^']+)'/", $line, $m)) {
+                    $info['remote_addr'] = $m[1];
+                }
+                if (preg_match("/'REQUEST_TIME_FLOAT'\s*=>\s*([\d.]+)/", $line, $m)) {
+                    $info['request_time'] = (float)$m[1];
+                }
+                if (preg_match("/'CONTENT_TYPE'\s*=>\s*'([^']+)'/", $line, $m)) {
+                    $info['content_type'] = $m[1];
+                }
+                if (preg_match("/'HTTP_REFERER'\s*=>\s*'([^']+)'/", $line, $m)) {
+                    $info['referer'] = $m[1];
+                }
+                break;
+            }
+        }
+
+        fclose($fh);
+        return $info;
     }
 
     private function countLines(string $path): int

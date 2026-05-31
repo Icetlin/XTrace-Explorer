@@ -442,7 +442,7 @@ function renderSig(sig) {
   padding: 5px 18px;
   border-left: 2px solid transparent;
   cursor: pointer;
-  font-size: 12.5px;
+  font-size: 14px;
   line-height: 1.6;
   transition: background 0.1s;
 }
@@ -451,8 +451,8 @@ function renderSig(sig) {
 .chevron-sm { color: #343448; font-size: 10px; width: 10px; flex-shrink: 0; }
 
 .call-sig { color: #8a8a9a; }
-.sig-op   { opacity: 0.55; }
-.sig-sep  { opacity: 0.4; }
+.sig-op   { opacity: 0.4; }
+.sig-sep  { opacity: 0.25; }
 .cc-sp    { font-size: 0.35em; }
 .sig-app      { color: #5ab0cc; }
 .sig-ctrl     { color: #b08050; }
@@ -463,7 +463,7 @@ function renderSig(sig) {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11.5px;
+  font-size: 13px;
   color: #5a7088;
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(80, 110, 140, 0.18);
@@ -499,7 +499,7 @@ function renderSig(sig) {
   width: 100%;
   flex-basis: 100%;
   margin: 4px 0 4px 24px;
-  font-size: 12px;
+  font-size: 13.5px;
   background: rgba(255, 255, 255, 0.02);
   border-left: 1px solid rgba(80, 110, 150, 0.15);
   border-radius: 0 4px 4px 0;
@@ -508,7 +508,7 @@ function renderSig(sig) {
 .arg-obj-header, .arg-obj-close {
   color: #3a5a6a;
   padding: 1px 12px;
-  font-size: 11px;
+  font-size: 12.5px;
 }
 .arg-obj-field {
   display: flex;
@@ -555,7 +555,7 @@ function renderSig(sig) {
 .call-return--fav { }
 
 .call-return {
-  font-size: 11.5px;
+  font-size: 13px;
   color: #7a5040;
   background: rgba(120, 60, 20, 0.08);
   border: 1px solid rgba(100, 50, 20, 0.2);
@@ -566,14 +566,14 @@ function renderSig(sig) {
 
 .call-file {
   font-size: 10px;
-  color: #44445a;
+  color: #2e2e40;
   margin-left: 2px;
   flex-shrink: 0;
 }
 
 .call-line {
   font-size: 10px;
-  color: #383850;
+  color: #4a4a62;
   margin-left: auto;
   flex-shrink: 0;
   padding: 2px 6px;
@@ -589,7 +589,7 @@ function renderSig(sig) {
   padding-top: 1px;
 }
 
-.loading, .leaf { color: #303048; font-size: 11px; padding: 4px 10px; font-style: italic; }
+.loading, .leaf { color: #303048; font-size: 12.5px; padding: 4px 10px; font-style: italic; }
 
 .raw-toggle {
   display: block;
