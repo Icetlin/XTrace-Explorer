@@ -199,13 +199,73 @@ class TraceParser
             JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE
         ));
         file_put_contents($dir . '/toc.json', json_encode($toc, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE));
+        $responseInfo = $this->extractResponseInfo($xtFilePath);
         file_put_contents($dir . '/meta.json', json_encode(
-            ['total_lines' => $lineNo, 'request' => $requestInfo],
+            ['total_lines' => $lineNo, 'request' => $requestInfo, 'response' => $responseInfo],
             JSON_UNESCAPED_UNICODE
         ));
 
         $traceFile->setStatus('ready')->setProgress(100);
         $this->em->flush();
+    }
+
+    private function extractResponseInfo(string $xtFilePath): array
+    {
+        $info = ['status' => null, 'location' => null, 'cookies' => []];
+
+        // Scan full file line by line for setCookie calls and RedirectResponse
+        // These are real xdebug call lines, not VarDumper dumps
+        $fh = fopen($xtFilePath, 'rb');
+        $cookiesSeen = [];
+
+        while (($line = fgets($fh)) !== false) {
+            // ResponseHeaderBag->setCookie($cookie = class ...Cookie { protected $name = 'sio_u'; protected $value = '...' })
+            if (str_contains($line, '->setCookie') && str_contains($line, 'Cookie')) {
+                if (preg_match('/\$name\s*=\s*\'([^\']+)\'/', $line, $m)) {
+                    $name = $m[1];
+                    if (!isset($cookiesSeen[$name])) {
+                        $cookiesSeen[$name] = true;
+                        $cookie = ['name' => $name];
+                        if (preg_match('/\$value\s*=\s*\'([^\']+)\'/', $line, $mv)) {
+                            $val = $mv[1];
+                            $cookie['value'] = strlen($val) > 40 ? substr($val, 0, 20) . '…' : $val;
+                        }
+                        $info['cookies'][] = $cookie;
+                    }
+                }
+            }
+            // RedirectResponse->__construct or targetUrl in object dump
+            if ($info['location'] === null && str_contains($line, 'RedirectResponse')) {
+                if (preg_match('/\$url\s*=\s*\'([^\']+)\'/', $line, $m)) {
+                    $info['location'] = $m[1];
+                } elseif (preg_match('/targetUrl\s*=\s*\'([^\']+)\'/', $line, $m)) {
+                    $info['location'] = $m[1];
+                }
+            }
+            // Response->setStatusCode or statusCode in dump
+            if ($info['status'] === null && str_contains($line, 'setStatusCode')) {
+                if (preg_match('/\$code\s*=\s*(\d{3})/', $line, $m)) {
+                    $info['status'] = (int)$m[1];
+                }
+            }
+        }
+
+        fclose($fh);
+
+        // Fallback: grab statusCode from VarDumper dump of final Response if setStatusCode not found
+        if ($info['status'] === null) {
+            $fh = fopen($xtFilePath, 'rb');
+            fseek($fh, 0, SEEK_END);
+            $size = ftell($fh);
+            fseek($fh, max(0, $size - 524288));
+            $tail = fread($fh, 524288);
+            fclose($fh);
+            if (preg_match_all('/statusCode\s*=\s*(\d{3})/', $tail, $matches)) {
+                $info['status'] = (int)end($matches[1]);
+            }
+        }
+
+        return $info;
     }
 
     private function extractSignature(string $call): string

@@ -10,6 +10,13 @@
       class="event-block"
       :class="{ 'event-block--sep': ei > 0 && eventSource(event.event, event.event_class) !== eventSource(toc[ei-1].event, toc[ei-1].event_class) }"
     >
+      <!-- Source group header — only on first event of a new source group -->
+      <div
+        v-if="eventSource(event.event, event.event_class) && (ei === 0 || eventSource(event.event, event.event_class) !== eventSource(toc[ei-1].event, toc[ei-1].event_class))"
+        class="source-group-header"
+        :data-src="eventSource(event.event, event.event_class)"
+      >{{ eventSource(event.event, event.event_class) }}</div>
+
       <!-- Event header -->
       <div
         class="event-row"
@@ -18,7 +25,6 @@
         @contextmenu.prevent="onEventCtx($event, event)"
       >
         <span class="chevron">{{ expandedEvents.has(ei) ? '▾' : '▸' }}</span>
-        <span v-if="eventSource(event.event, event.event_class)" class="event-source" :data-src="eventSource(event.event, event.event_class)">{{ eventSource(event.event, event.event_class) }}</span>
         <span class="event-name">{{ event.event }}</span>
         <span
           v-for="m in eventScanMatches(ei)"
@@ -40,6 +46,13 @@
           class="listener-block"
           :class="{ 'listener-block--sep': li > 0 && listenerSource(listener.sig) !== listenerSource(event.listeners[li-1].sig) }"
         >
+          <!-- Listener source group header -->
+          <div
+            v-if="listenerSource(listener.sig) && listenerSource(listener.sig) !== listenerSource(prevVisibleListener(event.listeners, li)?.sig)"
+            class="listener-source-header"
+            :data-src="listenerSource(listener.sig)"
+          >{{ listenerSource(listener.sig) }}</div>
+
           <!-- Listener row -->
           <div
             class="listener-row"
@@ -50,7 +63,6 @@
           >
             <span class="connector">└</span>
             <span class="chevron-sm">{{ expandedListeners.has(`${ei}-${li}`) ? '▾' : '▸' }}</span>
-            <span v-if="listenerSource(listener.sig)" class="listener-source" :data-src="listenerSource(listener.sig)">{{ listenerSource(listener.sig) }}</span>
             <span class="listener-class">{{ listenerClass(listener.sig) }}</span>
             <span class="listener-method">{{ listenerMethod(listener.sig) }}</span>
             <template v-for="m in listenerScanMatches(ei, li)" :key="m.pattern">
@@ -155,14 +167,21 @@ function eventScanMatches(ei) {
   return result
 }
 
+function prevVisibleListener(listeners, li) {
+  for (let i = li - 1; i >= 0; i--) {
+    if (!store.isListenerFiltered(listeners[i].sig)) return listeners[i]
+  }
+  return null
+}
+
 function listenerSource(sig) {
   if (!sig) return null
-  // Check user-defined app namespaces first
   for (const { namespace, label } of store.appNamespaces) {
     if (sig.startsWith(namespace)) return label || namespace.replace(/\\+$/, '').split('\\').pop()
   }
   if (sig.startsWith('Symfony\\')) return 'sf'
   const parts = sig.split('\\')
+  if (parts.length < 2) return null  // no namespace — don't label single-word sigs
   const bundle = parts.find(p => p.endsWith('Bundle'))
   if (bundle) return bundle.replace(/Bundle$/, '')
   return parts[0] || null
@@ -360,10 +379,29 @@ defineExpose({ jumpToLine })
   margin-bottom: 6px;
 }
 .event-block--sep {
-  margin-top: 14px;
-  border-top: 1px solid rgba(50, 55, 100, 0.25);
-  padding-top: 8px;
+  margin-top: 0;
 }
+
+/* ── Source group header ── */
+.source-group-header {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 3px 18px 4px;
+  color: #3a4a5a;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.source-group-header::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(50, 60, 90, 0.35);
+}
+.source-group-header[data-src="sf"] { color: #3a6070; }
+.source-group-header:not([data-src="sf"]) { color: #5a5a40; }
 
 .event-row {
   display: flex;
@@ -436,10 +474,29 @@ defineExpose({ jumpToLine })
   margin-bottom: 2px;
 }
 .listener-block--sep {
-  margin-top: 8px;
-  border-top: 1px solid rgba(40, 45, 80, 0.3);
-  padding-top: 4px;
+  margin-top: 0;
 }
+
+.listener-source-header {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  padding: 4px 14px 3px 36px;
+  color: #2e3a42;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+.listener-source-header::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(40, 55, 70, 0.4);
+}
+.listener-source-header[data-src="sf"] { color: #2a4a58; }
+.listener-source-header:not([data-src="sf"]) { color: #484830; }
 
 .listener-row {
   display: flex;

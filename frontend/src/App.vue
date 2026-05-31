@@ -109,6 +109,12 @@
       :req="store.currentTab.request"
     />
 
+    <!-- ── Response info bar ── -->
+    <ResponseInfo
+      v-if="activeSection === 'trace' && store.currentTab?.response"
+      :res="store.currentTab.response"
+    />
+
     <!-- ── Main content ── -->
     <div class="main">
 
@@ -161,6 +167,7 @@ import { useTraceStore } from './stores/trace'
 import TocTree from './components/TocTree.vue'
 import DesertBackground from './components/DesertBackground.vue'
 import RequestInfo from './components/RequestInfo.vue'
+import ResponseInfo from './components/ResponseInfo.vue'
 import SettingsPage from './components/SettingsPage.vue'
 import Breadcrumbs from './components/Breadcrumbs.vue'
 import axios from 'axios'

@@ -326,6 +326,11 @@ class TraceIndex
         'ReflectionExtractor->getMethodsFlags', 'ReflectionExtractor->getPropertyFlags',
         // Trivial no-arg getters that repeat without info
         '->isPropagationStopped', '->getWrappedListener',
+        // KernelEvent/RequestEvent/ResponseEvent boilerplate getters
+        'KernelEvent->getRequest', 'KernelEvent->isMainRequest', 'KernelEvent->isMasterRequest',
+        'KernelEvent->getKernel', 'RequestEvent->getRequest', 'ResponseEvent->getResponse',
+        'ViewEvent->getControllerResult', 'FinishRequestEvent->__construct',
+        'ExceptionEvent->getThrowable', 'ExceptionEvent->isAllowingCustomResponseCode',
         'Cookie->getName', 'Cookie->getValue', 'Cookie->getDomain', 'Cookie->getPath',
         'Cookie->withSecure', 'Cookie->withHttpOnly', 'Cookie->withSameSite',
         // Cache control noise

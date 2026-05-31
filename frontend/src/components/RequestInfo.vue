@@ -1,8 +1,7 @@
 <template>
-  <div v-if="req" class="req-bar">
-    <span class="req-method" :class="`req-method--${(req.method || 'GET').toLowerCase()}`">
-      {{ req.method || '?' }}
-    </span>
+  <div v-if="req" class="req-bar" :class="{ 'req-bar--expanded': expanded }" @click="expanded = !expanded">
+    <span class="bar-label">REQ</span>
+    <span class="req-method" :class="`req-method--${(req.method || 'GET').toLowerCase()}`">{{ req.method || '?' }}</span>
     <span class="req-uri">{{ req.host ? req.host : '' }}{{ req.uri }}</span>
     <span v-if="req.query" class="req-query">?{{ req.query }}</span>
     <span class="req-sep">·</span>
@@ -11,33 +10,41 @@
     <span v-if="req.content_type" class="req-ct">{{ shortContentType(req.content_type) }}</span>
     <span v-if="req.remote_addr" class="req-sep">·</span>
     <span v-if="req.remote_addr" class="req-ip">{{ req.remote_addr }}</span>
+    <span v-if="req.referer" class="req-sep">·</span>
+    <span v-if="req.referer" class="req-ref" :title="req.referer">↩ {{ shortReferer(req.referer) }}</span>
 
-    <!-- Cookies -->
-    <template v-if="cookieEntries.length">
+    <!-- Cookies collapsed summary -->
+    <template v-if="cookieEntries.length && !expanded">
       <span class="req-sep">·</span>
       <span class="req-cookies-label">cookies</span>
-      <span
-        v-for="[k, v] in cookieEntries"
-        :key="k"
-        class="req-cookie"
-        :title="`${k}=${v}`"
-      >{{ k }}<span class="req-cookie-val">={{ truncate(v, 18) }}</span></span>
+      <span class="req-cookies-count">{{ cookieEntries.length }}</span>
     </template>
 
-    <!-- Referer -->
-    <template v-if="req.referer">
-      <span class="req-sep">·</span>
-      <span class="req-ref" :title="req.referer">↩ {{ shortReferer(req.referer) }}</span>
-    </template>
+    <span class="bar-toggle">{{ expanded ? '▾' : '▸' }}</span>
+
+    <!-- Expanded cookies -->
+    <div v-if="expanded" class="bar-detail">
+      <template v-if="cookieEntries.length">
+        <span class="bar-detail-section">cookies</span>
+        <span
+          v-for="[k, v] in cookieEntries"
+          :key="k"
+          class="req-cookie"
+          :title="`${k}=${v}`"
+        >{{ k }}<span class="req-cookie-val">={{ truncate(v, 28) }}</span></span>
+      </template>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { ref, computed } from 'vue'
 
 const props = defineProps({
   req: { type: Object, default: null },
 })
+
+const expanded = ref(false)
 
 const cookieEntries = computed(() =>
   props.req?.cookies ? Object.entries(props.req.cookies) : []
@@ -83,9 +90,10 @@ function truncate(s, n) {
 .req-bar {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  cursor: pointer;
   gap: 6px;
-  padding: 5px 20px;
+  padding: 4px 20px;
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   background: rgba(255, 255, 255, 0.02);
@@ -94,6 +102,54 @@ function truncate(s, n) {
   flex-shrink: 0;
   position: relative;
   z-index: 1;
+  overflow: hidden;
+  min-height: 28px;
+}
+.req-bar.req-bar--expanded {
+  flex-wrap: wrap;
+  overflow: visible;
+}
+
+.bar-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #2a3a4a;
+  background: rgba(40, 60, 90, 0.3);
+  border-radius: 3px;
+  padding: 1px 5px;
+  flex-shrink: 0;
+}
+
+.bar-toggle {
+  color: #2a2a3a;
+  font-size: 10px;
+  cursor: pointer;
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 3px;
+  transition: color 0.1s, background 0.1s;
+}
+.bar-toggle:hover { color: #7a9acc; background: rgba(255,255,255,0.04); }
+
+.bar-detail {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(255,255,255,0.03);
+  margin-top: 3px;
+  align-items: center;
+}
+
+.bar-detail-section {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: #2a3a2a;
+  flex-shrink: 0;
 }
 
 .req-method {
@@ -117,7 +173,16 @@ function truncate(s, n) {
 .req-ct { color: #4a5a6a; }
 .req-ip { color: #3a4a5a; }
 
-.req-cookies-label { color: #383848; font-size: 10px; }
+.req-cookies-label { color: #383848; font-size: 10px; flex-shrink: 0; }
+.req-cookies-count {
+  font-size: 10px;
+  color: #3a4a3a;
+  background: rgba(60, 80, 50, 0.15);
+  border: 1px solid rgba(60, 80, 50, 0.2);
+  border-radius: 3px;
+  padding: 0 5px;
+  flex-shrink: 0;
+}
 .req-cookie {
   color: #5a6a5a;
   font-size: 10px;

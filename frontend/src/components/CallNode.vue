@@ -68,19 +68,24 @@
     <div v-if="expanded" class="call-children">
       <div v-if="loading" class="loading">loading…</div>
       <template v-else>
-        <CallNode
-          v-for="(child, i) in children"
-          :key="i"
-          :node="child"
-          :file-id="fileId"
-          :indent="indent + 1"
-          :expand-path="expandPath"
-          :ancestor-crumbs="myCrumbs"
-          @jump="$emit('jump', $event)"
-          @fav-match="onChildFavMatch"
-          @ctx-menu="$emit('ctx-menu', $event)"
-          @breadcrumb="$emit('breadcrumb', $event)"
-        />
+        <template v-for="(child, i) in children" :key="i">
+          <div
+            v-if="childSource(child.sig) && (i === 0 || childSource(child.sig) !== childSource(children[i-1].sig))"
+            class="child-source-header"
+            :data-src="childSource(child.sig)"
+          >{{ childSource(child.sig) }}</div>
+          <CallNode
+            :node="child"
+            :file-id="fileId"
+            :indent="indent + 1"
+            :expand-path="expandPath"
+            :ancestor-crumbs="myCrumbs"
+            @jump="$emit('jump', $event)"
+            @fav-match="onChildFavMatch"
+            @ctx-menu="$emit('ctx-menu', $event)"
+            @breadcrumb="$emit('breadcrumb', $event)"
+          />
+        </template>
         <div v-if="!children.length && raw" class="leaf">no calls</div>
       </template>
     </div>
@@ -387,6 +392,20 @@ function camelSpaced(s) {
   return s.replace(/([a-z])([A-Z])/g, '$1<span class="cc-sp"> </span>$2')
 }
 
+function childSource(sig) {
+  if (!sig) return null
+  const store_ = store
+  for (const { namespace, label } of store_.appNamespaces) {
+    if (sig.startsWith(namespace)) return label || namespace.replace(/\\+$/, '').split('\\').pop()
+  }
+  if (sig.startsWith('Symfony\\')) return 'sf'
+  const parts = sig.split('\\')
+  if (parts.length < 2) return null  // no namespace — don't group builtins
+  const bundle = parts.find(p => p.endsWith('Bundle'))
+  if (bundle) return bundle.replace(/Bundle$/, '')
+  return parts[0] || null
+}
+
 function renderSig(sig) {
   if (!sig) return '?'
   const arrow = sig.lastIndexOf('->')
@@ -588,6 +607,27 @@ function renderSig(sig) {
   margin-left: 20px;
   padding-top: 1px;
 }
+
+.child-source-header {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  padding: 4px 14px 3px;
+  color: #2e3a42;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+.child-source-header::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(40, 55, 70, 0.5);
+}
+.child-source-header[data-src="sf"] { color: #2a4a58; }
+.child-source-header:not([data-src="sf"]) { color: #484830; }
 
 .loading, .leaf { color: #303048; font-size: 12.5px; padding: 4px 10px; font-style: italic; }
 
