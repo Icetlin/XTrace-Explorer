@@ -2,7 +2,11 @@
   <div class="call-node">
     <div
       class="call-row"
-      :class="{ 'call-row--fav': directMatches.length, 'call-row--fav-bubble': !directMatches.length && bubbleMatches.length }"
+      :class="{
+        'call-row--fav': directMatches.length,
+        'call-row--fav-bubble': !directMatches.length && bubbleMatches.length,
+        'call-row--selected': store.isSelected(node.line_no),
+      }"
       :style="{
         paddingLeft: (indent * 16 + 14) + 'px',
         ...(directMatches.length ? {
@@ -11,7 +15,7 @@
         } : {})
       }"
       :data-line-no="node.line_no"
-      @click="toggle"
+      @click="onRowClick"
       @contextmenu.prevent="onContextMenu"
     >
       <span class="chevron-sm">{{ expanded ? '▾' : '▸' }}</span>
@@ -257,6 +261,20 @@ const myCrumbs = computed(() => [
   ...props.ancestorCrumbs,
   { sig: props.node.sig, line_no: props.node.line_no },
 ])
+
+function onRowClick(e) {
+  if (e.ctrlKey || e.metaKey) {
+    store.toggleSelection({
+      type: 'call',
+      sig: props.node.sig,
+      line_no: props.node.line_no,
+      args: props.node.args,
+      breadcrumb: props.ancestorCrumbs,
+    })
+    return
+  }
+  toggle()
+}
 
 async function toggle() {
   expanded.value = !expanded.value
@@ -541,6 +559,7 @@ function renderSig(sig) {
 /* ── Favourites ── */
 .call-row--fav { border-left-width: 2px; }
 .call-row--fav-bubble { border-left: 2px solid rgba(80, 60, 100, 0.3); }
+.call-row--selected { background: rgba(80, 120, 180, 0.07) !important; border-left: 2px solid rgba(80, 130, 200, 0.45) !important; }
 
 .fav-badge {
   font-size: 10px;
