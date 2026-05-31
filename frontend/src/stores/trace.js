@@ -94,6 +94,7 @@ export const useTraceStore = defineStore('trace', () => {
     if (tab) {
       tab.totalLines = data.total_lines || 0
       tab.request = data.request || null
+      tab.response = data.response || null
     }
   }
 
