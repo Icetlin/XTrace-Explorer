@@ -49,6 +49,7 @@
         </div>
       </template>
       <span v-if="node.return != null" class="call-return" :class="{ 'call-return--fav': returnMatches }">⇒ {{ node.return }}</span>
+      <span v-if="expanded && parentReturn != null" class="call-return call-return--parent">⇒ {{ parentReturn }}</span>
       <span v-if="node.file" class="call-file">{{ node.file }}</span>
       <!-- Fav match badges -->
       <span
@@ -91,6 +92,7 @@
           />
         </template>
         <div v-if="!children.length && raw" class="leaf">no calls</div>
+        <SourceView v-if="children.length" :children="children" :file-id="fileId" />
       </template>
     </div>
   </div>
@@ -100,6 +102,7 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { useTraceStore } from '../stores/trace'
 import { favColor } from '../favColor.js'
+import SourceView from './SourceView.vue'
 
 const props = defineProps({
   node: Object,
@@ -114,6 +117,7 @@ const emit = defineEmits(['jump', 'fav-match', 'ctx-menu', 'breadcrumb'])
 const store = useTraceStore()
 const expanded = ref(false)
 const children = ref([])
+const parentReturn = ref(null)
 const loading = ref(false)
 const raw = ref(false)
 
@@ -287,7 +291,9 @@ async function toggle() {
 async function load(isRaw) {
   loading.value = true
   raw.value = isRaw
-  children.value = await store.fetchChildren(props.fileId, props.node.line_no, props.node.depth, isRaw)
+  const result = await store.fetchChildren(props.fileId, props.node.line_no, props.node.depth, isRaw)
+  children.value = result.children ?? result
+  parentReturn.value = result.parent_return ?? null
   loading.value = false
   // Bubble fav matches from entire subtree using favScan — covers any depth
   if (children.value.length) {
@@ -304,14 +310,18 @@ async function load(isRaw) {
 
 async function loadRaw() {
   loading.value = true
-  children.value = await store.fetchChildren(props.fileId, props.node.line_no, props.node.depth, true)
+  const result = await store.fetchChildren(props.fileId, props.node.line_no, props.node.depth, true)
+  children.value = result.children ?? result
+  parentReturn.value = result.parent_return ?? null
   raw.value = true
   loading.value = false
 }
 
 async function loadFiltered() {
   loading.value = true
-  children.value = await store.fetchChildren(props.fileId, props.node.line_no, props.node.depth, false)
+  const result = await store.fetchChildren(props.fileId, props.node.line_no, props.node.depth, false)
+  children.value = result.children ?? result
+  parentReturn.value = result.parent_return ?? null
   raw.value = false
   loading.value = false
 }
@@ -600,6 +610,11 @@ function renderSig(sig) {
   border-radius: 4px;
   padding: 1px 7px;
   flex-shrink: 0;
+}
+.call-return--parent {
+  color: #c87040;
+  background: rgba(160, 80, 20, 0.12);
+  border-color: rgba(140, 70, 20, 0.35);
 }
 
 .call-file {

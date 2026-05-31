@@ -39,6 +39,10 @@ XTrace Explorer parses the file in the background, builds a line index for fast 
 
 ![Call tree](docs/screenshots/05-calltree.png)
 
+**Inline source view — shows the PHP function body with called lines highlighted and unrecorded branches (instanceof, etc.) inferred from position:**
+
+![Source view](docs/screenshots/07-source-view.png)
+
 **`Ctrl+Click` events or listeners to select them, then export as Markdown — copy to clipboard or download as `.md`:**
 
 ![Export](docs/screenshots/06-export.png)
@@ -51,6 +55,7 @@ XTrace Explorer parses the file in the background, builds a line index for fast 
 - **Event TOC** — shows every `TraceableEventDispatcher->dispatch` call, grouped by source framework (SF / APP / JWT / 2FA / etc.)
 - **Lazy call tree** — children are fetched on demand; only the nodes you expand are loaded
 - **Arguments & return values** — parsed from xdebug format: objects simplified to `ClassName {…}`, strings truncated, JWTs replaced with `<JWT>`
+- **Inline source view** — when you expand a call, shows the PHP function body with called lines highlighted; lines with `instanceof`, `return`, etc. that produced no calls are inferred and annotated automatically — so you can see which branch was taken even without `collect_return`
 - **Noise filter** — hides Symfony/Doctrine plumbing (Container, ServiceLocator, Stopwatch, etc.) by default; toggle with "show all calls"
 - **Full-text search** — search by class/method name across the entire trace
 - **Ctrl+Click export** — select any events/listeners with `Ctrl+Click`, then copy as Markdown or download `.md` — useful for sharing findings or writing postmortems
@@ -72,16 +77,25 @@ XTrace Explorer parses the file in the background, builds a line index for fast 
 ```bash
 git clone https://github.com/Icetlin/XTrace-Explorer.git
 cd XTrace-Explorer
+cp .env.example .env
 ```
 
-Edit `docker-compose.yml` — point the traces volume at your `.xt` files:
+Edit `.env`:
 
-```yaml
-volumes:
-  - /path/to/your/xdebug/traces:/traces:ro
+```env
+# Where your .xt trace files live on disk
+TRACES_DIR=/path/to/your/xdebug/traces
+
+# Inline source view — shows PHP code next to the call tree.
+# Use the same path mapping you have in PHPStorm for Xdebug:
+#   Settings → PHP → Servers → path mappings
+#   Left column  (local)  → SOURCE_HOST_DIR
+#   Right column (remote) → SOURCE_CONTAINER_DIR
+SOURCE_HOST_DIR=/home/user/myapp
+SOURCE_CONTAINER_DIR=/var/www/myapp
 ```
 
-Then start:
+Start:
 
 ```bash
 docker compose up -d
@@ -89,7 +103,7 @@ docker compose up -d
 
 Open **http://localhost:8765**, click **`+`**, pick a `.xt` file.
 
-First open triggers background parsing (can take 10–60 s for large files). Status is shown in the tab. Parsed index is cached — subsequent opens are instant.
+First open triggers background parsing (10–60 s for large files). Status is shown in the tab. Parsed index is cached — subsequent opens are instant.
 
 ---
 

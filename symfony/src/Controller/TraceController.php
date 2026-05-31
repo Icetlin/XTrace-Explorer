@@ -231,7 +231,9 @@ class TraceController extends AbstractController
         if ($lineNo <= 0) return $this->json(['error' => 'line_no required'], 400);
 
         $xtPath = $this->tracesDir . '/' . $id . '/trace.xt';
-        $children = $this->traceIndex->getChildren($id, $xtPath, $lineNo, $callDepth, $filter);
+        $result = $this->traceIndex->getChildren($id, $xtPath, $lineNo, $callDepth, $filter);
+        $children = $result['children'];
+        $parentReturn = $result['parent_return'];
 
         $patterns = array_map(
             fn($f) => ['pattern' => $f->getPattern(), 'label' => $f->getLabel()],
@@ -251,7 +253,7 @@ class TraceController extends AbstractController
             unset($child);
         }
 
-        return $this->json($children);
+        return $this->json(['children' => $children, 'parent_return' => $parentReturn]);
     }
 
     #[Route('/favourites-scan/{id}', methods: ['GET'])]
@@ -515,6 +517,52 @@ class TraceController extends AbstractController
         }
 
         return $this->json(['ok' => true, 'compose_patched' => $composePatched]);
+    }
+
+    #[Route('/source', methods: ['GET'])]
+    public function source(Request $request): JsonResponse
+    {
+        $file = $request->query->get('file', '');
+        $hint = (int)$request->query->get('hint', 0); // any line inside the function
+
+        if (!$file || !str_starts_with($file, '/') || !file_exists($file) || !is_file($file)) {
+            return $this->json(['error' => 'not found'], 404);
+        }
+
+        // Load the whole file into lines array (PHP source files are small)
+        $allLines = file($file, FILE_IGNORE_NEW_LINES);
+        if ($allLines === false) return $this->json(['error' => 'unreadable'], 500);
+
+        $total = count($allLines); // 0-indexed internally, 1-indexed externally
+
+        // Find function boundaries around $hint line
+        $from = max(1, $hint - 1);
+        $to   = min($total, $hint + 1);
+
+        if ($hint > 0) {
+            // Walk backward from hint to find "function" keyword line
+            for ($i = $hint - 1; $i >= max(0, $hint - 60); $i--) {
+                if (preg_match('/^\s*(public|protected|private|static)?\s*function\s+\w+/', $allLines[$i])) {
+                    $from = $i + 1; // convert to 1-indexed
+                    break;
+                }
+            }
+            // Walk forward to find matching closing brace
+            $depth = 0;
+            $started = false;
+            for ($i = $from - 1; $i < min($total, $from + 120); $i++) {
+                $depth += substr_count($allLines[$i], '{') - substr_count($allLines[$i], '}');
+                if (!$started && $depth > 0) $started = true;
+                if ($started && $depth <= 0) { $to = $i + 1; break; }
+            }
+        }
+
+        $lines = [];
+        for ($i = $from - 1; $i < $to; $i++) {
+            $lines[$i + 1] = $allLines[$i];
+        }
+
+        return $this->json(['file' => $file, 'lines' => $lines, 'fn_from' => $from, 'fn_to' => $to]);
     }
 
     #[Route('/settings/restart', methods: ['POST'])]

@@ -10,8 +10,8 @@ class TraceParser
     private const SPARSE_EVERY = 500;
 
     // Format: "    0.0036     444040     -> call() file:line"
-    // Group 1: indent spaces before "->", group 2: call with args
-    private const CALL_RE = '/^\s+[\d.]+\s+\d+([ ]*)->\s+(.+?)\s+\//';
+    // Group 1: indent spaces before "->", group 2: everything after "-> " (no $ anchor to avoid backtracking on 20KB+ lines)
+    private const CALL_RE = '/^\s+[\d.]+\s+\d+([ ]*)->\s+(.+)/';
 
     // Only TraceableEventDispatcher->dispatch — this is the outermost, has $eventName in args
     private const DISPATCH_RE = '/TraceableEventDispatcher->dispatch$/';
@@ -61,7 +61,7 @@ class TraceParser
         $nodes = [];
         $depthStack = [];
 
-        while (($line = fgets($fh)) !== false) {
+        while (($line = fgets($fh, 1048576)) !== false) {
             $lineNo++;
 
             if ($lineNo % self::SPARSE_EVERY === 0) {
@@ -218,7 +218,7 @@ class TraceParser
         $fh = fopen($xtFilePath, 'rb');
         $cookiesSeen = [];
 
-        while (($line = fgets($fh)) !== false) {
+        while (($line = fgets($fh, 1048576)) !== false) {
             // ResponseHeaderBag->setCookie($cookie = class ...Cookie { protected $name = 'sio_u'; protected $value = '...' })
             if (str_contains($line, '->setCookie') && str_contains($line, 'Cookie')) {
                 if (preg_match('/\$name\s*=\s*\'([^\']+)\'/', $line, $m)) {
@@ -280,14 +280,14 @@ class TraceParser
         $fh = fopen($xtFilePath, 'rb');
 
         // TRACE START [2026-05-30 20:34:36.703988]
-        $firstLine = fgets($fh);
+        $firstLine = fgets($fh, 1048576);
         if ($firstLine && preg_match('/TRACE START \[([^\]]+)\]/', $firstLine, $m)) {
             $info['started_at'] = $m[1];
         }
 
         // Scan first ~200 lines for the server array (appears in first closure call)
         $scanned = 0;
-        while (($line = fgets($fh)) !== false && $scanned < 10000) {
+        while (($line = fgets($fh, 1048576)) !== false && $scanned < 10000) {
             $scanned++;
 
             if (str_contains($line, 'REQUEST_METHOD') && str_contains($line, 'REQUEST_URI')) {

@@ -5,7 +5,8 @@ services:
       - "8765:80"
     volumes:
       - traces:/app/var/traces
-      - /home/ilia/dev/work/systemeio/backend/xdebug_trace:/traces:ro
+      - ${TRACES_DIR}:/traces:ro
+      - ${SOURCE_HOST_DIR}:${SOURCE_CONTAINER_DIR}:ro
       - ./symfony/src:/app/src
       - ./symfony/migrations:/app/migrations
       - ./symfony/public/app:/app/public/app
