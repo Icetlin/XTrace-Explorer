@@ -123,6 +123,15 @@ export const useTraceStore = defineStore('trace', () => {
     return data
   }
 
+  async function fetchSource(file, hint) {
+    try {
+      const { data } = await axios.get('/api/source', { params: { file, hint } })
+      return data
+    } catch {
+      return null
+    }
+  }
+
   async function scanFavourites(fileId) {
     const tab = openTabs.value.find(t => t.fileId === fileId)
     if (tab) tab.scanning = true
@@ -291,7 +300,7 @@ export const useTraceStore = defineStore('trace', () => {
     files, openTabs, activeTabFileId, currentTab, currentFile, toc, totalLines, annotations, favourites,
     listenerFilters, appNamespaces,
     loadFiles, selectFile, switchToTab, closeTab, pollStatus,
-    fetchChildren, fetchPath, fetchObject, search,
+    fetchChildren, fetchPath, fetchObject, fetchSource, search,
     addAnnotation, deleteAnnotation,
     loadFavourites, addFavourite, deleteFavourite, matchFavourites, favMatchesInRange, scanFavourites,
     loadSettings, saveSettings, addListenerFilter, isListenerFiltered,

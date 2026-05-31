@@ -241,6 +241,7 @@ function onListenerClick(e, ei, li, listener, event) {
 
 async function toggleListener(ei, li, listener) {
   const event = props.toc[ei]
+  console.log('[toggleListener]', { ei, li, sig: listener.sig, line_no: listener.line_no, depth: listener.depth })
   emit('breadcrumb', {
     crumbs: [
       { sig: event?.event, line_no: event?.line_no },
@@ -261,13 +262,18 @@ async function toggleListener(ei, li, listener) {
 
   if (!childrenCache[key]) {
     loadingKey.value = key
-    childrenCache[key] = await store.fetchChildren(props.fileId, listener.line_no, listener.depth ?? 0)
+    console.log('[toggleListener] fetching children for line_no', listener.line_no, 'depth', listener.depth ?? 0)
+    const result = await store.fetchChildren(props.fileId, listener.line_no, listener.depth ?? 0)
+    console.log('[toggleListener] result', result)
+    childrenCache[key] = result
     loadingKey.value = null
   }
 }
 
 function getChildren(ei, li) {
-  return childrenCache[`${ei}-${li}`] || []
+  const cached = childrenCache[`${ei}-${li}`]
+  if (!cached) return []
+  return cached.children ?? cached
 }
 
 function listenerClass(sig) {

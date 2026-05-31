@@ -66,7 +66,7 @@ class TraceIndex
             $active = [];
             $fi = 0; $fCount = count($flat);
 
-            while (($l2 = fgets($fh2, 1048576)) !== false) {
+            while (($l2 = fgets($fh2)) !== false) {
                 $ln2++;
                 if (!preg_match(self::CALL_RE, $l2, $cm2)) continue;
                 $d2 = (int)(strlen($cm2[1]) / 2);
@@ -108,7 +108,7 @@ class TraceIndex
         $fh = fopen($xtPath, 'rb');
         $lineNo = 0;
 
-        while (($line = fgets($fh, 1048576)) !== false) {
+        while (($line = fgets($fh)) !== false) {
             $lineNo++;
 
             // Quick pre-filter: skip if no pattern appears anywhere in the line
@@ -193,7 +193,7 @@ class TraceIndex
         $rootDepth = null;
         $stack = []; // monotonically increasing depth path
 
-        while (($line = fgets($fh, 1048576)) !== false) {
+        while (($line = fgets($fh)) !== false) {
             $lineNo++;
             if ($lineNo < $fromLine) continue;
             if ($lineNo > $targetLine) break;
@@ -251,7 +251,7 @@ class TraceIndex
         $lines = [];
         $lineNo = $startLine;
 
-        while (($line = fgets($fh, 1048576)) !== false) {
+        while (($line = fgets($fh)) !== false) {
             $lineNo++;
             if ($lineNo < $from) continue;
             if ($lineNo > $to) break;
@@ -281,7 +281,7 @@ class TraceIndex
         $lineNo = 0;
         $results = [];
 
-        while (($line = fgets($fh, 1048576)) !== false) {
+        while (($line = fgets($fh)) !== false) {
             $lineNo++;
 
             if (stripos($line, $query) === false) continue;
@@ -366,7 +366,7 @@ class TraceIndex
         $lastChildIdx = null; // index into $children for attaching return value
         $parentReturn = null;
 
-        while (($line = fgets($fh, 1048576)) !== false) {
+        while (($line = fgets($fh)) !== false) {
             $currentLine++;
             if ($currentLine < $lineNo) continue;
 
@@ -413,14 +413,12 @@ class TraceIndex
 
                 if ($filter && $this->isNoisySig($sig)) continue;
 
-                $rawFile = $this->extractFile($m[2]);
                 $children[] = [
                     'line_no'     => $currentLine,
                     'depth'       => $depth,
                     'sig'         => $sig,
                     'args'        => $this->extractArgs($m[2]),
-                    'file'        => $rawFile ? $this->shortFile($rawFile) : null,
-                    'file_abs'    => $rawFile,
+                    'file'        => ($f = $this->extractFile($m[2])) ? $this->shortFile($f) : null,
                     'return'      => null,
                     'subtree_end' => null,
                 ];
@@ -555,7 +553,7 @@ class TraceIndex
         $currentLine = $startLine - 1;
         $rawLine = null;
 
-        while (($line = fgets($fh, 1048576)) !== false) {
+        while (($line = fgets($fh)) !== false) {
             $currentLine++;
             if ($currentLine === $lineNo) { $rawLine = $line; break; }
         }
