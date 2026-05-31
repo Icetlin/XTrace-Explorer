@@ -12,6 +12,7 @@ export const useTraceStore = defineStore('trace', () => {
 
   const favourites = ref([])
   const listenerFilters = ref([])
+  const appNamespaces = ref([]) // [{namespace, label}]
 
   const currentTab = computed(() =>
     openTabs.value.find(t => t.fileId === activeTabFileId.value) ?? null
@@ -185,6 +186,7 @@ export const useTraceStore = defineStore('trace', () => {
     try {
       const { data } = await axios.get('/api/settings')
       listenerFilters.value = data.listener_filters || []
+      appNamespaces.value = data.app_namespaces || []
       _settingsCache.value = data
       return data
     } catch { return {} }
@@ -193,6 +195,7 @@ export const useTraceStore = defineStore('trace', () => {
   async function saveSettings(payload) {
     const { data } = await axios.post('/api/settings', payload)
     listenerFilters.value = payload.listener_filters || []
+    appNamespaces.value = payload.app_namespaces || []
     _settingsCache.value = { ..._settingsCache.value, ...payload }
     return data
   }
@@ -227,7 +230,7 @@ export const useTraceStore = defineStore('trace', () => {
 
   return {
     files, openTabs, activeTabFileId, currentTab, currentFile, toc, totalLines, annotations, favourites,
-    listenerFilters,
+    listenerFilters, appNamespaces,
     loadFiles, selectFile, switchToTab, closeTab, pollStatus,
     fetchChildren, fetchPath, fetchObject, search,
     addAnnotation, deleteAnnotation,

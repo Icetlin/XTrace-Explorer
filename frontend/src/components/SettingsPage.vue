@@ -44,6 +44,20 @@
           <input v-model="form.project_path" class="field-input" placeholder="/home/me/projects/my-app" spellcheck="false" />
         </div>
 
+        <div class="field-group">
+          <label class="field-label">App namespaces</label>
+          <div class="field-desc">
+            PHP namespaces that belong to your project. Listeners and events from these namespaces
+            get a custom badge in the TOC instead of being treated as unknown vendor code.
+          </div>
+          <div v-for="(ns, idx) in form.app_namespaces" :key="idx" class="ns-row">
+            <input v-model="ns.namespace" class="field-input" placeholder="App\" spellcheck="false" />
+            <input v-model="ns.label" class="field-input field-input--label" placeholder="app" spellcheck="false" />
+            <button class="fav-del ns-del" @click="removeNamespace(idx)">✕</button>
+          </div>
+          <button class="btn btn--add ns-add" @click="addNamespace">+ Add namespace</button>
+        </div>
+
         <div class="btn-row">
           <button class="btn btn--save" :disabled="saving" @click="save">
             <span v-if="saving" class="spinner" />
@@ -174,7 +188,7 @@ const sections = [
 ]
 const activeSection = ref('general')
 
-const form = ref({ traces_host_path: '', project_path: '', project_name: '' })
+const form = ref({ traces_host_path: '', project_path: '', project_name: '', app_namespaces: [] })
 const saving = ref(false)
 const restarting = ref(false)
 const savedOnce = ref(false)
@@ -207,6 +221,7 @@ onMounted(async () => {
       traces_host_path: data.traces_host_path || '',
       project_path: data.project_path || '',
       project_name: data.project_name || '',
+      app_namespaces: data.app_namespaces ? JSON.parse(JSON.stringify(data.app_namespaces)) : [],
     }
     savedOnce.value = !!(data.traces_host_path || data.project_path)
   } catch {}
@@ -221,7 +236,7 @@ function showToast(msg, type = 'ok') {
 async function save() {
   saving.value = true
   try {
-    const data = await store.saveSettings(form.value)
+    const data = await store.saveSettings(formPayload())
     savedOnce.value = true
     showToast(data.compose_patched ? 'Saved — docker-compose.yml updated' : 'Saved')
   } catch {
@@ -244,6 +259,14 @@ async function restart() {
   }
 }
 
+function addNamespace() {
+  form.value.app_namespaces = [...form.value.app_namespaces, { namespace: '', label: '' }]
+}
+
+function removeNamespace(idx) {
+  form.value.app_namespaces = form.value.app_namespaces.filter((_, i) => i !== idx)
+}
+
 async function addFav() {
   const p = newPattern.value.trim()
   if (!p) return
@@ -263,14 +286,19 @@ async function addFilterValue(v) {
   await store.addListenerFilter(v)
 }
 
-async function removeFilter(pattern) {
-  const filters = store.listenerFilters.filter(f => f !== pattern)
-  await store.saveSettings({
+function formPayload(overrides = {}) {
+  return {
     traces_host_path: form.value.traces_host_path,
     project_path: form.value.project_path,
     project_name: form.value.project_name,
-    listener_filters: filters,
-  })
+    app_namespaces: form.value.app_namespaces,
+    listener_filters: store.listenerFilters,
+    ...overrides,
+  }
+}
+
+async function removeFilter(pattern) {
+  await store.saveSettings(formPayload({ listener_filters: store.listenerFilters.filter(f => f !== pattern) }))
 }
 </script>
 
@@ -399,7 +427,17 @@ async function removeFilter(pattern) {
   box-shadow: 0 0 0 2px rgba(80, 130, 200, 0.1), inset 0 1px 0 rgba(255,255,255,0.04);
 }
 .field-input--short { width: 200px; }
-.field-input--label { width: 180px; }
+.field-input--label { width: 130px; flex-shrink: 0; }
+
+.ns-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.ns-row .field-input { flex: 1; width: auto; }
+.ns-del { flex-shrink: 0; }
+.ns-add { margin-top: 4px; }
 
 /* ── Buttons ── */
 .btn-row {
