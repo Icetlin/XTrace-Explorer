@@ -8,16 +8,18 @@
       <!-- Event header -->
       <div
         class="event-row"
-        :class="{
-          'has-listeners': event.listeners?.length,
-          'event-row--fav': eventScanMatches(ei).length
-        }"
+        :class="{ 'has-listeners': event.listeners?.length }"
         @click="toggleEvent(ei)"
         @contextmenu.prevent="onEventCtx($event, event)"
       >
         <span class="chevron">{{ expandedEvents.has(ei) ? '▾' : '▸' }}</span>
         <span class="event-name">{{ event.event }}</span>
-        <span v-for="m in eventScanMatches(ei)" :key="m.pattern" class="fav-badge-ev">{{ m.label || m.pattern }}</span>
+        <span
+          v-for="m in eventScanMatches(ei)"
+          :key="m.pattern"
+          class="fav-badge-ev"
+          :style="{ color: favColor(m.pattern).text, background: favColor(m.pattern).bg, borderColor: favColor(m.pattern).border }"
+        >{{ m.label || m.pattern }}</span>
         <span class="line-badge" @click.stop="$emit('jump', event.line_no)">
           line {{ event.line_no.toLocaleString() }}
         </span>
@@ -43,11 +45,15 @@
             <span class="listener-class">{{ listenerClass(listener.sig) }}</span>
             <span class="listener-method">{{ listenerMethod(listener.sig) }}</span>
             <template v-for="m in listenerScanMatches(ei, li)" :key="m.pattern">
-              <span class="fav-badge-li">{{ m.label || m.pattern }}</span>
+              <span
+                class="fav-badge-li"
+                :style="{ color: favColor(m.pattern).text, background: favColor(m.pattern).bg, borderColor: favColor(m.pattern).border }"
+              >{{ m.label || m.pattern }}</span>
               <span
                 v-for="hit in listenerHits(ei, li, m.pattern)"
                 :key="hit.line_no"
                 class="fav-hit-line"
+                :style="{ color: favColor(m.pattern).bubble }"
                 @click.stop="$emit('jump', hit.line_no)"
               >↱{{ hit.line_no.toLocaleString() }}</span>
             </template>
@@ -67,8 +73,10 @@
                 :file-id="fileId"
                 :indent="0"
                 :expand-path="expandPaths[`${ei}-${li}`]"
+                :ancestor-crumbs="[{ sig: event.event, line_no: event.line_no }, { sig: listener.sig, line_no: listener.line_no }]"
                 @jump="$emit('jump', $event)"
                 @ctx-menu="onCallNodeCtx"
+                @breadcrumb="$emit('breadcrumb', $event)"
               />
             </template>
           </div>
@@ -88,12 +96,13 @@ import { ref, reactive, computed, nextTick } from 'vue'
 import { useTraceStore } from '../stores/trace'
 import CallNode from './CallNode.vue'
 import ContextMenu from './ContextMenu.vue'
+import { favColor } from '../favColor.js'
 
 const props = defineProps({
   toc: { type: Array, default: () => [] },
   fileId: { type: Number, default: null },
 })
-defineEmits(['jump'])
+const emit = defineEmits(['jump', 'breadcrumb'])
 
 const store = useTraceStore()
 const ctxMenu = ref(null)
@@ -144,6 +153,15 @@ function toggleEvent(ei) {
 }
 
 async function toggleListener(ei, li, listener) {
+  const event = props.toc[ei]
+  emit('breadcrumb', {
+    crumbs: [
+      { sig: event?.event, line_no: event?.line_no },
+      { sig: listener.sig, line_no: listener.line_no },
+    ],
+    line: listener.line_no,
+  })
+
   const key = `${ei}-${li}`
   const s = new Set(expandedListeners.value)
   if (s.has(key)) {
@@ -271,153 +289,161 @@ defineExpose({ jumpToLine })
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
   font-size: 13px;
   color: #ccc;
-  padding: 12px 8px;
+  padding: 16px 20px 16px 28px;
   overflow-y: auto;
   height: 100%;
 }
 
 .empty {
   color: #444;
-  padding: 24px;
+  padding: 40px 24px;
   text-align: center;
   font-size: 14px;
 }
 
 /* ── Event block ── */
 .event-block {
-  margin-bottom: 2px;
+  margin-bottom: 6px;
 }
 
 .event-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border-radius: 6px;
+  gap: 10px;
+  padding: 10px 18px;
+  border-radius: 10px;
   cursor: pointer;
-  background: #1a1a2e;
-  border-left: 3px solid #3a3a6a;
-  transition: background 0.1s;
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-left: 3px solid rgba(80, 80, 140, 0.4);
+  transition: background 0.15s, border-color 0.15s;
 }
-.event-row:hover { background: #22223a; }
-.event-row.has-listeners { border-left-color: #5a7adf; }
-.event-row--fav { background: #1e0e18 !important; border-left-color: #ff6eb4 !important; }
-.event-row--fav:hover { background: #281020 !important; }
+.event-row:hover {
+  background: rgba(255, 255, 255, 0.065);
+  border-color: rgba(255, 255, 255, 0.09);
+}
+.event-row.has-listeners { border-left-color: rgba(90, 130, 210, 0.6); }
+.event-row--fav { border-left-width: 3px; }
 
 .fav-badge-ev {
   font-size: 10px;
-  color: #ff6eb4;
-  background: #2a0e1e;
-  border: 1px solid #5a2a3a;
-  border-radius: 3px;
-  padding: 0 5px;
+  border: 1px solid;
+  border-radius: 4px;
+  padding: 1px 7px;
   flex-shrink: 0;
+  letter-spacing: 0.02em;
 }
 
-.chevron { color: #555; font-size: 11px; width: 12px; }
+.chevron { color: #555; font-size: 11px; width: 12px; flex-shrink: 0; }
 
 .event-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: #7aadff;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: #7a9abb;
   flex: 1;
+  letter-spacing: 0.01em;
 }
 
 .line-badge {
   font-size: 10px;
-  color: #444;
-  background: #111;
-  border: 1px solid #333;
+  color: #3a3a55;
+  background: #0e0e1a;
+  border: 1px solid #252535;
   border-radius: 4px;
-  padding: 1px 6px;
+  padding: 2px 8px;
   cursor: pointer;
   flex-shrink: 0;
+  transition: color 0.1s, border-color 0.1s;
 }
-.line-badge:hover { color: #7aadff; border-color: #5a7adf; }
+.line-badge:hover { color: #7aadff; border-color: #4a6acf; }
 
 /* ── Listeners ── */
 .listeners {
-  margin-left: 20px;
-  border-left: 1px solid #222;
-  padding-left: 8px;
-  margin-bottom: 4px;
+  margin-left: 24px;
+  border-left: 1px solid #1e1e32;
+  padding-left: 10px;
+  margin-top: 2px;
+  margin-bottom: 6px;
 }
 
 .listener-block {
-  margin-bottom: 1px;
+  margin-bottom: 2px;
 }
 
 .listener-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 6px;
-  border-radius: 4px;
+  gap: 7px;
+  padding: 6px 14px;
+  border-radius: 7px;
+  border-left: 2px solid transparent;
   cursor: pointer;
-  transition: background 0.1s;
+  background: rgba(255, 255, 255, 0.02);
+  transition: background 0.12s;
 }
-.listener-row:hover { background: #1e1e2e; }
-.listener-row--fav { background: #1a0e14 !important; }
-.listener-row--fav:hover { background: #22101a !important; }
+.listener-row:hover { background: rgba(255, 255, 255, 0.038); }
+.listener-row--fav { border-left-width: 2px; }
 
 .fav-hit-line {
   font-size: 10px;
-  color: #7a3a50;
-  cursor: pointer;
-  padding: 1px 4px;
-  border-radius: 3px;
-  flex-shrink: 0;
-}
-.fav-hit-line:hover { color: #ff6eb4; background: #1e0e18; }
-
-.fav-badge-li {
-  font-size: 10px;
-  color: #ff6eb4;
-  background: #2a0e1e;
-  border: 1px solid #5a2a3a;
-  border-radius: 3px;
-  padding: 0 5px;
-  flex-shrink: 0;
-}
-
-.connector { color: #333; font-size: 12px; }
-.chevron-sm { color: #444; font-size: 10px; width: 10px; }
-
-.listener-class {
-  font-size: 13px;
-  color: #e8c46a;
-  font-weight: 500;
-}
-.listener-method {
-  font-size: 12px;
-  color: #888;
-}
-.line-badge-sm {
-  font-size: 10px;
-  color: #333;
-  margin-left: auto;
   cursor: pointer;
   padding: 1px 5px;
   border-radius: 3px;
   flex-shrink: 0;
+  opacity: 0.7;
+  transition: opacity 0.1s;
 }
-.line-badge-sm:hover { color: #7aadff; background: #111; }
+.fav-hit-line:hover { opacity: 1; }
+
+.fav-badge-li {
+  font-size: 10px;
+  border: 1px solid;
+  border-radius: 4px;
+  padding: 1px 6px;
+  flex-shrink: 0;
+}
+
+.connector { color: #2a2a3a; font-size: 12px; flex-shrink: 0; }
+.chevron-sm { color: #383850; font-size: 10px; width: 10px; flex-shrink: 0; }
+
+.listener-class {
+  font-size: 12.5px;
+  color: #9a8a50;
+  font-weight: 500;
+}
+.listener-method {
+  font-size: 12px;
+  color: #555;
+}
+.line-badge-sm {
+  font-size: 10px;
+  color: #2e2e44;
+  margin-left: auto;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  transition: color 0.1s, background 0.1s;
+}
+.line-badge-sm:hover { color: #7aadff; background: #0e0e1a; }
 
 /* ── Children ── */
 .children {
-  margin-left: 22px;
-  border-left: 1px dashed #1e1e2e;
+  margin-left: 26px;
+  border-left: 1px dashed #181828;
   padding-left: 8px;
-  padding-bottom: 2px;
+  padding-bottom: 4px;
 }
 
-.loading { color: #444; font-size: 11px; padding: 4px 0; }
+.loading { color: #3a3a55; font-size: 11px; padding: 6px 0; }
 
 .no-listeners {
-  margin-left: 20px;
-  color: #333;
+  margin-left: 24px;
+  color: #2e2e44;
   font-size: 11px;
-  padding: 2px 0 6px;
+  padding: 4px 0 8px;
   font-style: italic;
 }
 </style>

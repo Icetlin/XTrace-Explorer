@@ -233,6 +233,24 @@ class TraceController extends AbstractController
         $xtPath = $this->tracesDir . '/' . $id . '/trace.xt';
         $children = $this->traceIndex->getChildren($id, $xtPath, $lineNo, $callDepth, $filter);
 
+        $patterns = array_map(
+            fn($f) => ['pattern' => $f->getPattern(), 'label' => $f->getLabel()],
+            $this->favRepo->findAll()
+        );
+        if ($patterns) {
+            foreach ($children as &$child) {
+                $text = $child['sig'] . ' ' . implode(' ', $child['args'] ?? []);
+                $matches = [];
+                foreach ($patterns as $p) {
+                    if ($p['pattern'] !== '' && str_contains($text, $p['pattern'])) {
+                        $matches[] = $p;
+                    }
+                }
+                $child['fav_matches'] = $matches;
+            }
+            unset($child);
+        }
+
         return $this->json($children);
     }
 
@@ -417,5 +435,96 @@ class TraceController extends AbstractController
             'Content-Type'        => 'text/markdown',
             'Content-Disposition' => 'attachment; filename="annotations.md"',
         ]);
+    }
+
+    // ── Settings ──────────────────────────────────────────────────────────────
+
+    private function getComposeFile(): string
+    {
+        // compose.yaml lives next to the symfony/ dir, i.e. one level up from /app inside container
+        // On the host it is at the project root. We store a pointer in an env var or use a well-known path.
+        $path = $_ENV['COMPOSE_FILE_PATH'] ?? '/compose/compose.yaml';
+        return $path;
+    }
+
+    private function getSettingsPath(): string
+    {
+        return '/app/var/settings.json';
+    }
+
+    #[Route('/settings', methods: ['GET'])]
+    public function getSettings(): JsonResponse
+    {
+        $path = $this->getSettingsPath();
+        $settings = file_exists($path) ? json_decode(file_get_contents($path), true) : [];
+
+        // Read current traces path from compose.yaml if available
+        $composePath = $this->getComposeFile();
+        if (file_exists($composePath)) {
+            $content = file_get_contents($composePath);
+            // Extract host path from volume line like "  - /host/path:/traces:ro"
+            if (preg_match('/^\s*-\s+([^:]+):(\/traces):ro/m', $content, $m)) {
+                $settings['traces_host_path'] = $settings['traces_host_path'] ?? trim($m[1]);
+            }
+        }
+
+        $settings['traces_host_path'] = $settings['traces_host_path'] ?? '';
+        $settings['project_path'] = $settings['project_path'] ?? '';
+        $settings['project_name'] = $settings['project_name'] ?? '';
+
+        return $this->json($settings);
+    }
+
+    #[Route('/settings', methods: ['POST'])]
+    public function saveSettings(Request $request): JsonResponse
+    {
+        $body = json_decode($request->getContent(), true);
+        $tracesPath = trim($body['traces_host_path'] ?? '');
+        $projectPath = trim($body['project_path'] ?? '');
+        $projectName = trim($body['project_name'] ?? '');
+
+        $settings = [
+            'traces_host_path' => $tracesPath,
+            'project_path'     => $projectPath,
+            'project_name'     => $projectName,
+        ];
+
+        // Persist settings
+        @mkdir(dirname($this->getSettingsPath()), 0755, true);
+        file_put_contents($this->getSettingsPath(), json_encode($settings, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+        // Patch compose.yaml if we have access to it and a traces path was given
+        $composePath = $this->getComposeFile();
+        $composePatched = false;
+        if ($tracesPath && file_exists($composePath)) {
+            $content = file_get_contents($composePath);
+            // Replace existing traces volume line
+            $newLine = "      - {$tracesPath}:/traces:ro";
+            $content = preg_replace('/^\s*-\s+[^:]+:(\/traces):ro.*$/m', $newLine, $content, -1, $count);
+            if ($count > 0) {
+                file_put_contents($composePath, $content);
+                $composePatched = true;
+            }
+        }
+
+        return $this->json(['ok' => true, 'compose_patched' => $composePatched]);
+    }
+
+    #[Route('/settings/restart', methods: ['POST'])]
+    public function restartContainer(): JsonResponse
+    {
+        // Signal the host to restart via a sentinel file that an external watcher can pick up,
+        // or attempt docker restart via shell (works if docker socket is mounted).
+        $sentinelPath = '/app/var/restart_requested';
+        file_put_contents($sentinelPath, time());
+
+        // Try docker restart if socket is available
+        $output = [];
+        $code = 0;
+        if (file_exists('/var/run/docker.sock')) {
+            exec('docker compose -f ' . escapeshellarg($this->getComposeFile()) . ' restart app 2>&1', $output, $code);
+        }
+
+        return $this->json(['ok' => true, 'docker_available' => file_exists('/var/run/docker.sock'), 'output' => implode("\n", $output)]);
     }
 }
