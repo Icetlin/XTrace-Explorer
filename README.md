@@ -39,6 +39,10 @@ XTrace Explorer parses the file in the background, builds a line index for fast 
 
 ![Call tree](docs/screenshots/05-calltree.png)
 
+**`Ctrl+Click` events or listeners to select them, then export as Markdown — copy to clipboard or download as `.md`:**
+
+![Export](docs/screenshots/06-export.png)
+
 ---
 
 ## Features
@@ -49,7 +53,7 @@ XTrace Explorer parses the file in the background, builds a line index for fast 
 - **Arguments & return values** — parsed from xdebug format: objects simplified to `ClassName {…}`, strings truncated, JWTs replaced with `<JWT>`
 - **Noise filter** — hides Symfony/Doctrine plumbing (Container, ServiceLocator, Stopwatch, etc.) by default; toggle with "show all calls"
 - **Full-text search** — search by class/method name across the entire trace
-- **Annotations** — attach notes to any line; export the annotated tree as Markdown
+- **Ctrl+Click export** — select any events/listeners with `Ctrl+Click`, then copy as Markdown or download `.md` — useful for sharing findings or writing postmortems
 - **Favourites** — bookmark traces for quick access
 - **Request info bar** — shows method, URI, host, IP, content-type, cookies count at a glance
 - **Session persistence** — open tabs and scroll positions are restored on reload
