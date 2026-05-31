@@ -432,7 +432,6 @@ function renderSig(sig) {
 <style scoped>
 .call-node {
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
-  margin-bottom: 1px;
 }
 
 .call-row {
@@ -441,15 +440,13 @@ function renderSig(sig) {
   flex-wrap: wrap;
   gap: 6px;
   padding: 5px 18px;
-  border-radius: 6px;
   border-left: 2px solid transparent;
   cursor: pointer;
   font-size: 12.5px;
   line-height: 1.6;
-  background: rgba(255, 255, 255, 0.025);
   transition: background 0.1s;
 }
-.call-row:hover { background: rgba(255, 255, 255, 0.045); }
+.call-row:hover { background: rgba(255, 255, 255, 0.035); }
 
 .chevron-sm { color: #343448; font-size: 10px; width: 10px; flex-shrink: 0; }
 
