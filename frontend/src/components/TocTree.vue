@@ -30,6 +30,7 @@
       <div v-if="expandedEvents.has(ei) && event.listeners?.length" class="listeners">
         <div
           v-for="(listener, li) in event.listeners"
+          v-show="!store.isListenerFiltered(listener.sig)"
           :key="li"
           class="listener-block"
         >
