@@ -9,6 +9,7 @@ services:
       - ./symfony/src:/app/src
       - ./symfony/migrations:/app/migrations
       - ./symfony/public/app:/app/public/app
+      - ./docker-compose.yml:/compose/compose.yaml:rw
     depends_on:
       - db
     environment:
@@ -19,6 +20,7 @@ services:
       CORS_ALLOW_ORIGIN: '^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$$'
       DEFAULT_URI: http://localhost:8765
       TRACES_SOURCE_DIR: /traces
+      COMPOSE_FILE_PATH: /compose/compose.yaml
 
   db:
     image: postgres:16-alpine

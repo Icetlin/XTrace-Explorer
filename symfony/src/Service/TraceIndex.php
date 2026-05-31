@@ -93,8 +93,8 @@ class TraceIndex
                     $fi++;
                 }
 
-                // Once all listeners are past last in flat, stop
-                if ($fi >= $fCount && !$active) break;
+                // Once all listeners are activated and none are active, stop
+                if ($fi >= $fCount && !$active && $ln2 > $flat[$fCount - 1]['start']) break;
             }
             fclose($fh2);
         }
@@ -140,14 +140,15 @@ class TraceIndex
             }
             if (!$matched) continue;
 
-            // Binary search: find last flat entry with start <= lineNo
+            // Binary search: find last flat entry with start <= lineNo, then walk back to find one whose end >= lineNo
             $lo = 0; $hi = count($flat) - 1; $found = -1;
             while ($lo <= $hi) {
                 $mid = (int)(($lo + $hi) / 2);
                 if ($startLines[$mid] <= $lineNo) { $found = $mid; $lo = $mid + 1; }
                 else $hi = $mid - 1;
             }
-            if ($found === -1 || $lineNo > $flat[$found]['end']) continue;
+            while ($found >= 0 && $lineNo > $flat[$found]['end']) $found--;
+            if ($found === -1) continue;
 
             $eiKey = (string)$flat[$found]['ei'];
             $liKey = (string)$flat[$found]['li'];
@@ -392,18 +393,29 @@ class TraceIndex
             if ($depth === $childDepth) {
                 $sig = $this->extractSig($m[2]);
 
+                // Close previous child's subtree_end
+                if ($children) {
+                    $children[count($children) - 1]['subtree_end'] = $currentLine - 1;
+                }
+
                 if ($filter && $this->isNoisySig($sig)) continue;
 
                 $children[] = [
-                    'line_no' => $currentLine,
-                    'depth'   => $depth,
-                    'sig'     => $sig,
-                    'args'    => $this->extractArgs($m[2]),
-                    'file'    => isset($m[3]) ? $this->shortFile($m[3]) : null,
-                    'return'  => null,
+                    'line_no'     => $currentLine,
+                    'depth'       => $depth,
+                    'sig'         => $sig,
+                    'args'        => $this->extractArgs($m[2]),
+                    'file'        => isset($m[3]) ? $this->shortFile($m[3]) : null,
+                    'return'      => null,
+                    'subtree_end' => null,
                 ];
                 $lastChildIdx = count($children) - 1;
             }
+        }
+
+        // Close last child's subtree_end at end of parent scope
+        if ($children) {
+            $children[count($children) - 1]['subtree_end'] = $currentLine;
         }
 
         fclose($fh);

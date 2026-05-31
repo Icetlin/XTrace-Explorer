@@ -146,6 +146,24 @@ export const useTraceStore = defineStore('trace', () => {
     return favourites.value.filter(f => f.pattern && text.includes(f.pattern))
   }
 
+  function favMatchesInRange(fileId, fromLine, toLine) {
+    const tab = openTabs.value.find(t => t.fileId === fileId)
+    if (!tab?.favScan) return []
+    const seen = new Set()
+    const result = []
+    for (const listeners of Object.values(tab.favScan)) {
+      for (const hits of Object.values(listeners)) {
+        for (const h of hits) {
+          if (h.line_no >= fromLine && h.line_no <= toLine && !seen.has(h.pattern)) {
+            seen.add(h.pattern)
+            result.push({ pattern: h.pattern, label: h.label })
+          }
+        }
+      }
+    }
+    return result
+  }
+
   async function fetchObject(fileId, lineNo, argIdx) {
     const { data } = await axios.get(`/api/object/${fileId}`, { params: { line_no: lineNo, arg_idx: argIdx } })
     return data
@@ -174,6 +192,6 @@ export const useTraceStore = defineStore('trace', () => {
     loadFiles, selectFile, switchToTab, closeTab, pollStatus,
     fetchChildren, fetchPath, fetchObject, search,
     addAnnotation, deleteAnnotation,
-    loadFavourites, addFavourite, deleteFavourite, matchFavourites, scanFavourites,
+    loadFavourites, addFavourite, deleteFavourite, matchFavourites, favMatchesInRange, scanFavourites,
   }
 })

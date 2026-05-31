@@ -3,22 +3,36 @@
     <div
       class="call-row"
       :class="{ 'call-row--fav': directMatches.length, 'call-row--fav-bubble': !directMatches.length && bubbleMatches.length }"
-      :style="{ paddingLeft: (indent * 16 + 4) + 'px' }"
+      :style="{
+        paddingLeft: (indent * 16 + 14) + 'px',
+        ...(directMatches.length ? {
+          background: favColor(directMatches[0].pattern).bg,
+          borderLeftColor: favColor(directMatches[0].pattern).borderLeft,
+        } : {})
+      }"
       :data-line-no="node.line_no"
       @click="toggle"
       @contextmenu.prevent="onContextMenu"
     >
       <span class="chevron-sm">{{ expanded ? '▾' : '▸' }}</span>
-      <span class="call-sig" :class="sigClass" :title="node.sig">{{ shortSig(node.sig) }}</span>
+      <span class="call-sig" :class="sigClass" :title="node.sig" v-html="renderSig(node.sig)"></span>
       <template v-if="node.args?.length">
         <span
           v-for="(a, i) in node.args"
           :key="i"
           class="call-arg"
           :class="{ 'call-arg--obj': isObjectArg(a), 'call-arg--expanded': expandedArgs[i], 'call-arg--fav': argMatches(a) }"
-          @click.stop="isObjectArg(a) ? toggleArg(i) : null"
-        >{{ a }}</span>
-        <div v-if="Object.keys(expandedArgs).length" class="arg-fields">
+          :style="argMatches(a) ? { borderColor: argFavColor(a).borderLeft, color: argFavColor(a).text } : {}"
+          @click.stop="isObjectArg(a) && toggleArg(i)"
+        >
+          <span v-if="argName(a)" class="arg-name">{{ argName(a) }}</span>
+          <span v-if="argName(a)" class="arg-sep">=</span>
+          <span
+            class="arg-val"
+            :style="argMatches(a) ? { color: argFavColor(a).text } : {}"
+          >{{ argVal(a) }}</span>
+        </span>
+        <div v-if="Object.keys(expandedArgs).length > 0" class="arg-fields">
           <template v-for="(obj, idx) in expandedArgData" :key="idx">
             <div v-if="obj" class="arg-obj-header">{{ obj.class }} {</div>
             <div v-if="obj" v-for="f in obj.fields" :key="f.name" class="arg-obj-field">
@@ -33,11 +47,19 @@
       <span v-if="node.return != null" class="call-return" :class="{ 'call-return--fav': returnMatches }">⇒ {{ node.return }}</span>
       <span v-if="node.file" class="call-file">{{ node.file }}</span>
       <!-- Fav match badges -->
-      <span v-for="m in directMatches" :key="m.pattern" class="fav-badge">{{ m.label || m.pattern }}</span>
+      <span
+        v-for="m in directMatches"
+        :key="m.pattern"
+        class="fav-badge"
+        :style="{ color: favColor(m.pattern).text, background: favColor(m.pattern).bg, borderColor: favColor(m.pattern).border }"
+      >{{ m.label || m.pattern }}</span>
       <!-- Bubble hint: descendant has a match -->
-      <span v-if="!directMatches.length && bubbleMatches.length" class="fav-bubble">
-        ↓ {{ bubbleMatches.map(m => m.label || m.pattern).join(', ') }}
-      </span>
+      <span
+        v-for="m in bubbleMatches.filter(m => !directMatches.some(d => d.pattern === m.pattern))"
+        :key="'b-' + m.pattern"
+        class="fav-badge fav-badge--bubble"
+        :style="{ color: favColor(m.pattern).text, background: favColor(m.pattern).bg, borderColor: favColor(m.pattern).border }"
+      >{{ m.label || m.pattern }}</span>
       <span class="call-line" @click.stop="$emit('jump', node.line_no)">
         {{ node.line_no.toLocaleString() }}
       </span>
@@ -53,33 +75,32 @@
           :file-id="fileId"
           :indent="indent + 1"
           :expand-path="expandPath"
+          :ancestor-crumbs="myCrumbs"
           @jump="$emit('jump', $event)"
           @fav-match="onChildFavMatch"
           @ctx-menu="$emit('ctx-menu', $event)"
+          @breadcrumb="$emit('breadcrumb', $event)"
         />
         <div v-if="!children.length && raw" class="leaf">no calls</div>
-        <button v-if="!raw" class="raw-toggle" @click.stop="loadRaw">
-          show all calls
-        </button>
-        <button v-else class="raw-toggle raw-toggle--active" @click.stop="loadFiltered">
-          hide noise
-        </button>
       </template>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useTraceStore } from '../stores/trace'
+import { favColor } from '../favColor.js'
 
 const props = defineProps({
   node: Object,
   fileId: Number,
   indent: { type: Number, default: 0 },
-  expandPath: { type: Array, default: null }, // line_nos to auto-expand toward
+  expandPath: { type: Array, default: null },
+  // Ancestor crumbs passed down so each node can prepend its own sig
+  ancestorCrumbs: { type: Array, default: () => [] },
 })
-const emit = defineEmits(['jump', 'fav-match', 'ctx-menu'])
+const emit = defineEmits(['jump', 'fav-match', 'ctx-menu', 'breadcrumb'])
 
 const store = useTraceStore()
 const expanded = ref(false)
@@ -109,7 +130,24 @@ const nodeText = computed(() => {
   return parts.join(' ')
 })
 
-const directMatches = computed(() => store.matchFavourites(nodeText.value))
+const allMatches = computed(() => {
+  const runtime = store.matchFavourites(nodeText.value)
+  const fromServer = props.node.fav_matches || []
+  const seen = new Set(runtime.map(m => m.pattern))
+  const extra = fromServer.filter(m => !seen.has(m.pattern))
+  return [...runtime, ...extra]
+})
+
+const directMatches = computed(() => {
+  // Show badge only if match is in sig — not already visible in an arg or return
+  const argText = (props.node.args || []).join(' ')
+  const retText = props.node.return != null ? String(props.node.return) : ''
+  return allMatches.value.filter(m => {
+    const inArg = store.matchFavourites(argText).some(x => x.pattern === m.pattern)
+    const inRet = retText && store.matchFavourites(retText).some(x => x.pattern === m.pattern)
+    return !inArg && !inRet
+  })
+})
 
 const returnMatches = computed(() =>
   props.node.return != null && store.matchFavourites(String(props.node.return)).length > 0
@@ -119,10 +157,50 @@ function argMatches(arg) {
   return store.matchFavourites(arg).length > 0
 }
 
-// When this node has direct matches, bubble up to parent
-watch(directMatches, (matches) => {
+function argFavColor(arg) {
+  const matches = store.matchFavourites(arg)
+  return matches.length ? favColor(matches[0].pattern) : favColor('')
+}
+
+// Bubble all matches (including arg matches) up to parent for propagation
+watch(allMatches, (matches) => {
   if (matches.length) emit('fav-match', matches)
 }, { immediate: true })
+
+// On mount: bubble favScan hits from subtree immediately (works even before children are expanded)
+onMounted(() => {
+  if (!props.node.subtree_end || props.node.subtree_end <= props.node.line_no) return
+  const fromLine = props.node.line_no + 1
+  const toLine = props.node.subtree_end
+  const sig = props.node.sig
+  const tab = store.openTabs.find(t => t.fileId === props.fileId)
+  if (tab?.favScan && Object.keys(tab.favScan).length) {
+    const subtreeMatches = store.favMatchesInRange(props.fileId, fromLine, toLine)
+    if (subtreeMatches.length) {
+      const seen = new Set(bubbleMatches.value.map(m => m.pattern))
+      for (const m of subtreeMatches) {
+        if (!seen.has(m.pattern)) { bubbleMatches.value = [...bubbleMatches.value, m]; seen.add(m.pattern) }
+      }
+      emit('fav-match', subtreeMatches)
+    }
+  } else {
+    const stop = watch(() => {
+      const t = store.openTabs.find(t => t.fileId === props.fileId)
+      return t?.favScan
+    }, (scan) => {
+      if (!scan || !Object.keys(scan).length) return
+      const subtreeMatches = store.favMatchesInRange(props.fileId, fromLine, toLine)
+      if (subtreeMatches.length) {
+        const seen = new Set(bubbleMatches.value.map(m => m.pattern))
+        for (const m of subtreeMatches) {
+          if (!seen.has(m.pattern)) { bubbleMatches.value = [...bubbleMatches.value, m]; seen.add(m.pattern) }
+        }
+        emit('fav-match', subtreeMatches)
+      }
+      stop()
+    })
+  }
+})
 
 function onChildFavMatch(matches) {
   // Merge unique patterns from children
@@ -170,8 +248,14 @@ function onContextMenu(event) {
   emit('ctx-menu', { event, items: buildContextItems() })
 }
 
+const myCrumbs = computed(() => [
+  ...props.ancestorCrumbs,
+  { sig: props.node.sig, line_no: props.node.line_no },
+])
+
 async function toggle() {
   expanded.value = !expanded.value
+  emit('breadcrumb', { crumbs: myCrumbs.value, line: props.node.line_no })
   if (expanded.value && !children.value.length) {
     await load(false)
   }
@@ -182,6 +266,17 @@ async function load(isRaw) {
   raw.value = isRaw
   children.value = await store.fetchChildren(props.fileId, props.node.line_no, props.node.depth, isRaw)
   loading.value = false
+  // Bubble fav matches from entire subtree using favScan — covers any depth
+  if (children.value.length) {
+    const fromLine = props.node.line_no + 1
+    const toLine = props.node.subtree_end ?? (children.value[children.value.length - 1].subtree_end ?? children.value[children.value.length - 1].line_no)
+    const subtreeMatches = store.favMatchesInRange(props.fileId, fromLine, toLine)
+    const seen = new Set(bubbleMatches.value.map(m => m.pattern))
+    for (const m of subtreeMatches) {
+      if (!seen.has(m.pattern)) { bubbleMatches.value = [...bubbleMatches.value, m]; seen.add(m.pattern) }
+    }
+    if (bubbleMatches.value.length) emit('fav-match', bubbleMatches.value)
+  }
 }
 
 async function loadRaw() {
@@ -200,6 +295,41 @@ async function loadFiltered() {
 
 function isObjectArg(arg) {
   return /\{…\}$/.test(arg)
+}
+
+// Parse "$name = value" → name or null
+function argName(arg) {
+  const m = arg.match(/^\$(\w+)\s*=/)
+  return m ? '$' + m[1] : null
+}
+
+// Parse "$name = value" → value only (or the whole arg if no name)
+function argVal(arg) {
+  const m = arg.match(/^\$\w+\s*=\s*(.+)$/)
+  return m ? m[1] : arg
+}
+
+// Determine operation type from method name in sig
+function callOp(sig) {
+  if (!sig) return null
+  const arrow = sig.lastIndexOf('->')
+  const dcolon = sig.lastIndexOf('::')
+  const sep = Math.max(arrow, dcolon)
+  const method = sep !== -1 ? sig.slice(sep + 2) : sig
+  const m = method.toLowerCase()
+  if (m === '__construct' || m === 'create') return 'create'
+  if (/^(set|add|push|append|put|assign|write|save|store|insert|update|register|attach|bind|inject|configure)/.test(m)) return 'write'
+  if (/^(remove|delete|unset|detach|deregister|clear|flush|drop|discard|reset)/.test(m)) return 'delete'
+  if (/^(get|fetch|find|load|read|retrieve|lookup|query|resolve|extract|parse|build|make|generate|produce|compute)/.test(m)) return 'read'
+  if (/^(is|has|can|check|validate|assert|verify|test|match|compare|equal|contains|exists)/.test(m)) return 'check'
+  return null
+}
+
+const OP_WORDS = { write: 'edit', delete: 'del', read: 'get', check: 'check', create: 'new' }
+
+function callOpWord(sig) {
+  const op = callOp(sig)
+  return op ? OP_WORDS[op] : ''
 }
 
 async function toggleArg(idx) {
@@ -243,148 +373,241 @@ function shortSig(sig) {
   const shortCls = cls.split('\\').pop()
   return shortCls + method
 }
+
+const OP_PREFIXES = [
+  'set','add','push','append','put','assign','write','save','store','insert','update','register','attach','bind','inject','configure',
+  'remove','delete','unset','detach','deregister','clear','flush','drop','discard','reset',
+  'get','fetch','find','load','read','retrieve','lookup','query','resolve','extract','parse','build','make','generate','produce','compute',
+  'is','has','can','check','validate','assert','verify','test','match','compare','equal','contains','exists',
+  'create',
+]
+
+function camelSpaced(s) {
+  // Insert thin space before each uppercase letter that follows a lowercase letter
+  return s.replace(/([a-z])([A-Z])/g, '$1<span class="cc-sp"> </span>$2')
+}
+
+function renderSig(sig) {
+  if (!sig) return '?'
+  const arrow = sig.lastIndexOf('->')
+  const dcolon = sig.lastIndexOf('::')
+  const sep = Math.max(arrow, dcolon)
+  if (sep === -1) return sig
+  const cls = sig.slice(0, sep)
+  const sepStr = sig.slice(sep, sep + 2)
+  const method = sig.slice(sep + 2)
+  const shortCls = cls.split('\\').pop()
+
+  // Find matching op prefix in method name
+  const methodLower = method.toLowerCase()
+  let opPrefix = null
+  let rest = method
+  if (methodLower === '__construct') {
+    opPrefix = '__construct'
+    rest = ''
+  } else {
+    for (const prefix of OP_PREFIXES) {
+      if (methodLower.startsWith(prefix) && (method.length === prefix.length || /[A-Z_]/.test(method[prefix.length]))) {
+        opPrefix = method.slice(0, prefix.length)
+        rest = method.slice(prefix.length)
+        break
+      }
+    }
+  }
+
+  const clsHtml = shortCls
+  const sepHtml = sepStr
+
+  let methodHtml
+  if (opPrefix) {
+    methodHtml = `<span class="sig-op">${opPrefix}</span>${rest}`
+  } else {
+    methodHtml = method
+  }
+
+  return `${clsHtml}<span class="sig-sep">${sepHtml}</span>${methodHtml}`
+}
 </script>
 
 <style scoped>
-.call-node { font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+.call-node {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  margin-bottom: 1px;
+}
 
 .call-row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 5px;
-  padding: 3px 4px;
-  border-radius: 3px;
+  gap: 6px;
+  padding: 5px 18px;
+  border-radius: 6px;
+  border-left: 2px solid transparent;
   cursor: pointer;
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: 12.5px;
+  line-height: 1.6;
+  background: rgba(255, 255, 255, 0.025);
+  transition: background 0.1s;
 }
-.call-row:hover { background: #1a1a2a; }
+.call-row:hover { background: rgba(255, 255, 255, 0.045); }
 
-.chevron-sm { color: #333; font-size: 10px; width: 10px; flex-shrink: 0; }
+.chevron-sm { color: #343448; font-size: 10px; width: 10px; flex-shrink: 0; }
 
-.call-sig { color: #999; }
-.sig-app      { color: #58c8ff; }
-.sig-ctrl     { color: #ff9e64; }
-.sig-listener { color: #e8c46a; }
-.sig-vendor   { color: #555; }
+.call-sig { color: #8a8a9a; }
+.sig-op   { opacity: 0.55; }
+.sig-sep  { opacity: 0.4; }
+.cc-sp    { font-size: 0.35em; }
+.sig-app      { color: #5ab0cc; }
+.sig-ctrl     { color: #b08050; }
+.sig-listener { color: #a09048; }
+.sig-vendor   { color: #686878; }
 
 .call-arg {
-  font-size: 11px;
-  color: #9ecbff;
-  background: #0d1117;
-  border: 1px solid #1e2a3a;
-  border-radius: 3px;
-  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  color: #5a7088;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(80, 110, 140, 0.18);
+  border-radius: 4px;
+  padding: 1px 7px;
   flex-shrink: 0;
 }
 
-.call-arg--obj { cursor: pointer; border-color: #2a3a4a; }
-.call-arg--obj:hover { border-color: #58c8ff; color: #b8e8ff; }
-.call-arg--expanded { border-color: #3a5a7a; color: #b8e8ff; }
+.call-arg--obj { cursor: pointer; border-color: rgba(80, 120, 150, 0.25); }
+.call-arg--obj:hover { border-color: rgba(80, 150, 180, 0.4); color: #6a8899; }
+.call-arg--expanded { border-color: rgba(60, 130, 160, 0.45); color: #6a8899; }
+
+.arg-name { color: #506878; font-size: 10.5px; }
+.arg-sep  { color: #384450; font-size: 10px; }
+.arg-val  { color: #7090a8; }
+
+.arg-op {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border-radius: 3px;
+  padding: 0 4px;
+  flex-shrink: 0;
+  background: rgba(255,255,255,0.04);
+}
+.arg-op--write  { color: #b09050; }
+.arg-op--delete { color: #b06848; }
+.arg-op--read   { color: #4a90a0; }
+.arg-op--check  { color: #5a9060; }
+.arg-op--create { color: #8068a8; }
 
 .arg-fields {
   width: 100%;
   flex-basis: 100%;
-  margin: 2px 0 2px 24px;
-  font-size: 11px;
-  font-family: 'JetBrains Mono', monospace;
+  margin: 4px 0 4px 24px;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  border-left: 1px solid rgba(80, 110, 150, 0.15);
+  border-radius: 0 4px 4px 0;
+  padding: 4px 0;
 }
-.arg-obj-header, .arg-obj-close { color: #4a6a8a; }
+.arg-obj-header, .arg-obj-close {
+  color: #3a5a6a;
+  padding: 1px 12px;
+  font-size: 11px;
+}
 .arg-obj-field {
   display: flex;
-  gap: 5px;
-  padding: 1px 8px;
+  gap: 6px;
+  padding: 2px 12px;
 }
-.arg-field-name { color: #7daacc; }
-.arg-field-eq   { color: #555; }
-.arg-field-val  { color: #9ecbff; }
+.arg-field-name { color: #5a88a0; }
+.arg-field-eq   { color: #2a3840; }
+.arg-field-val  { color: #6a8898; }
 
-/* ── Favourites highlighting ── */
-.call-row--fav {
-  background: #1e0e18 !important;
-  border-left: 2px solid #ff6eb4;
-  padding-left: calc(var(--pl, 4px) - 2px);
-}
-.call-row--fav:hover { background: #281020 !important; }
-.call-row--fav-bubble { border-left: 2px solid #3a1e2e; }
+/* ── Favourites ── */
+.call-row--fav { border-left-width: 2px; }
+.call-row--fav-bubble { border-left: 2px solid rgba(80, 60, 100, 0.3); }
 
 .fav-badge {
   font-size: 10px;
-  color: #ff6eb4;
-  background: #2a0e1e;
-  border: 1px solid #5a2a3a;
-  border-radius: 3px;
-  padding: 0 5px;
+  border: 1px solid;
+  border-radius: 4px;
+  padding: 1px 6px;
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.fav-badge--bubble { opacity: 0.45; }
+
+.fav-badge-op {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  opacity: 0.7;
 }
 
 .fav-bubble {
   font-size: 10px;
-  color: #5a2a3a;
+  color: #383048;
   flex-shrink: 0;
   margin-left: 4px;
   font-style: italic;
 }
 
-.call-arg--fav {
-  border-color: #ff6eb4 !important;
-  color: #ffb8d8 !important;
-}
-
-.call-return--fav {
-  border-color: #ff6eb4 !important;
-  color: #ffb8d8 !important;
-}
+.call-arg--fav { }
+.call-return--fav { }
 
 .call-return {
-  font-size: 11px;
-  color: #f78c6c;
-  background: #1a120a;
-  border: 1px solid #3a2010;
-  border-radius: 3px;
-  padding: 0 5px;
+  font-size: 11.5px;
+  color: #7a5040;
+  background: rgba(120, 60, 20, 0.08);
+  border: 1px solid rgba(100, 50, 20, 0.2);
+  border-radius: 4px;
+  padding: 1px 7px;
   flex-shrink: 0;
 }
 
 .call-file {
   font-size: 10px;
-  color: #2a2a3a;
+  color: #44445a;
   margin-left: 2px;
   flex-shrink: 0;
 }
 
 .call-line {
   font-size: 10px;
-  color: #2a2a3a;
+  color: #383850;
   margin-left: auto;
   flex-shrink: 0;
-  padding: 1px 4px;
+  padding: 2px 6px;
   border-radius: 3px;
   cursor: pointer;
+  transition: color 0.1s, background 0.1s;
 }
-.call-line:hover { color: #7aadff; background: #111; }
+.call-line:hover { color: #5a8aaa; background: rgba(255,255,255,0.04); }
 
 .call-children {
-  border-left: 1px dashed #1a1a2a;
-  margin-left: 14px;
+  border-left: 1px solid rgba(255,255,255,0.04);
+  margin-left: 20px;
+  padding-top: 1px;
 }
 
-.loading, .leaf { color: #333; font-size: 11px; padding: 2px 8px; font-style: italic; }
+.loading, .leaf { color: #303048; font-size: 11px; padding: 4px 10px; font-style: italic; }
 
 .raw-toggle {
   display: block;
-  margin: 2px 8px 4px;
+  margin: 3px 8px 4px;
   background: none;
-  border: 1px dashed #2a2a3a;
-  color: #3a3a5a;
+  border: 1px dashed rgba(255,255,255,0.06);
+  color: #333348;
   font-size: 10px;
   font-family: monospace;
   cursor: pointer;
   border-radius: 3px;
-  padding: 1px 8px;
+  padding: 2px 10px;
+  transition: color 0.1s, border-color 0.1s;
 }
-.raw-toggle:hover { color: #7aadff; border-color: #5a7adf; }
-.raw-toggle--active { color: #444; border-color: #2a2a2a; }
-.raw-toggle--active:hover { color: #f78c6c; border-color: #5a2010; }
+.raw-toggle:hover { color: #5a8aaa; border-color: rgba(90,138,170,0.3); }
+.raw-toggle--active { color: #363636; border-color: rgba(255,255,255,0.04); }
+.raw-toggle--active:hover { color: #8a5040; border-color: rgba(140,80,60,0.3); }
 </style>

@@ -5,7 +5,7 @@
     <div class="fav-add">
       <input
         v-model="newPattern"
-        placeholder="pattern text (e.g. sio_u, setCookie, kernel.response)"
+        placeholder="pattern (e.g. sio_u, setCookie, kernel.response)"
         class="fav-input"
         @keydown.enter="addManual"
       />
@@ -23,8 +23,9 @@
     </div>
 
     <div v-for="fav in store.favourites" :key="fav.id" class="fav-row">
-      <span class="fav-pattern">{{ fav.pattern }}</span>
-      <span v-if="fav.label" class="fav-label">{{ fav.label }}</span>
+      <span class="fav-dot" :style="{ background: color(fav.pattern).borderLeft }"></span>
+      <span class="fav-pattern" :style="{ color: color(fav.pattern).text }">{{ fav.pattern }}</span>
+      <span v-if="fav.label" class="fav-label" :style="{ color: color(fav.pattern).textDim, background: color(fav.pattern).bg, borderColor: color(fav.pattern).border }">{{ fav.label }}</span>
       <button class="fav-del" @click="store.deleteFavourite(fav.id)">✕</button>
     </div>
   </div>
@@ -33,12 +34,15 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useTraceStore } from '../stores/trace'
+import { favColor } from '../favColor.js'
 
 const store = useTraceStore()
 const newPattern = ref('')
 const newLabel = ref('')
 
 onMounted(() => store.loadFavourites())
+
+const color = favColor
 
 async function addManual() {
   const p = newPattern.value.trim()
@@ -51,94 +55,107 @@ async function addManual() {
 
 <style scoped>
 .fav-page {
-  padding: 16px;
+  padding: 24px 20px;
   font-family: 'JetBrains Mono', monospace;
-  max-width: 700px;
+  max-width: 720px;
 }
 
 .fav-header {
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 600;
-  color: #7aadff;
-  margin-bottom: 14px;
+  color: #444;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 20px;
 }
 
 .fav-add {
   display: flex;
   gap: 8px;
-  margin-bottom: 16px;
+  margin-bottom: 24px;
   align-items: center;
 }
 
 .fav-input {
-  background: #111;
-  border: 1px solid #2a2a3a;
-  border-radius: 4px;
-  color: #ccc;
+  background: #0e0e18;
+  border: 1px solid #1e1e32;
+  border-radius: 6px;
+  color: #bbb;
   font-family: monospace;
   font-size: 12px;
-  padding: 5px 10px;
+  padding: 8px 12px;
   flex: 1;
   outline: none;
+  transition: border-color 0.15s;
 }
-.fav-input:focus { border-color: #5a5a8a; }
+.fav-input:focus { border-color: #3a3a60; }
 .fav-input--label { flex: 0 0 160px; }
 
 .fav-btn {
-  background: #1e1e3a;
-  color: #ff9e9e;
-  border: 1px solid #5a3a3a;
-  border-radius: 4px;
-  padding: 5px 14px;
+  background: #141428;
+  color: #666;
+  border: 1px solid #2a2a42;
+  border-radius: 6px;
+  padding: 8px 16px;
   font-family: monospace;
-  font-size: 12px;
+  font-size: 11px;
   cursor: pointer;
   white-space: nowrap;
+  transition: color 0.1s, border-color 0.1s;
 }
-.fav-btn:hover { background: #2a1e2e; }
+.fav-btn:hover { color: #9ecbff; border-color: #3a5a8a; }
 
 .fav-empty {
-  color: #444;
+  color: #333;
   font-size: 12px;
   font-style: italic;
-  padding: 8px 0;
+  padding: 12px 0;
 }
 
 .fav-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 6px 10px;
-  border-radius: 4px;
-  border: 1px solid #1e1e2e;
-  margin-bottom: 4px;
-  background: #111118;
+  gap: 12px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  border: 1px solid #141422;
+  margin-bottom: 6px;
+  background: #0c0c18;
+  transition: background 0.1s, border-color 0.1s;
 }
-.fav-row:hover { background: #16161e; }
+.fav-row:hover { background: #111120; border-color: #1e1e30; }
+
+.fav-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
 
 .fav-pattern {
   flex: 1;
-  font-size: 12px;
-  color: #ff9e9e;
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .fav-label {
-  font-size: 11px;
-  color: #666;
-  background: #1e1e2e;
-  border-radius: 3px;
-  padding: 1px 6px;
+  font-size: 10px;
+  border: 1px solid;
+  border-radius: 4px;
+  padding: 2px 8px;
+  flex-shrink: 0;
 }
 
 .fav-del {
   background: none;
   border: none;
-  color: #444;
-  font-size: 12px;
+  color: #2a2a3a;
+  font-size: 11px;
   cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 3px;
+  padding: 3px 7px;
+  border-radius: 4px;
   line-height: 1;
+  transition: color 0.1s, background 0.1s;
 }
-.fav-del:hover { color: #f88; background: #2a1a1a; }
+.fav-del:hover { color: #cc6060; background: #1e1018; }
 </style>

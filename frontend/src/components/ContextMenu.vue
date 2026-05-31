@@ -58,7 +58,7 @@ function close() {
 
 async function pick(item) {
   close()
-  await store.addFavourite(item.value, item.kind)
+  await store.addFavourite(item.value, item.label ?? null)
 }
 
 defineExpose({ open, close })
