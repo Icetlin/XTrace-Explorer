@@ -56,8 +56,13 @@ export const useTraceStore = defineStore('trace', () => {
   }
 
   function switchToTab(fileId) {
-    if (openTabs.value.find(t => t.fileId === fileId)) {
+    const tab = openTabs.value.find(t => t.fileId === fileId)
+    if (tab) {
       activeTabFileId.value = fileId
+      // Re-scan if favScan is empty but tab is ready (e.g. opened before favourites were added)
+      if (tab.status === 'ready' && (!tab.favScan || !Object.keys(tab.favScan).length)) {
+        scanFavourites(fileId)
+      }
     }
   }
 
@@ -76,7 +81,7 @@ export const useTraceStore = defineStore('trace', () => {
       tab.progress = data.progress || 0
     }
     if (data.status === 'ready') {
-      await Promise.all([loadToc(fileId), loadMeta(fileId), loadAnnotations(fileId)])
+      await Promise.all([loadToc(fileId), loadMeta(fileId), loadAnnotations(fileId), scanFavourites(fileId)])
       return true
     }
     return false
@@ -119,10 +124,14 @@ export const useTraceStore = defineStore('trace', () => {
   }
 
   async function scanFavourites(fileId) {
-    const { data } = await axios.get(`/api/favourites-scan/${fileId}`)
-    // Store in the tab
     const tab = openTabs.value.find(t => t.fileId === fileId)
-    if (tab) tab.favScan = data
+    if (tab) tab.scanning = true
+    try {
+      const { data } = await axios.get(`/api/favourites-scan/${fileId}`)
+      if (tab) tab.favScan = data
+    } finally {
+      if (tab) tab.scanning = false
+    }
   }
 
   async function loadFavourites() {
@@ -253,6 +262,31 @@ export const useTraceStore = defineStore('trace', () => {
     return currentTab.value?.selection?.some(s => s.line_no === lineNo) ?? false
   }
 
+  // ── Session persistence ──
+  const STORAGE_KEY = 'xtrace-session'
+
+  function persistSession() {
+    const data = {
+      tabs: openTabs.value.map(t => ({ fileId: t.fileId, name: t.name })),
+      activeTabFileId: activeTabFileId.value,
+    }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
+  }
+
+  async function restoreSession() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY)
+      if (!raw) return
+      const { tabs, activeTabFileId: savedActive } = JSON.parse(raw)
+      if (!tabs?.length) return
+      // Load all tabs in parallel, then set the active one
+      await Promise.all(tabs.map(t => selectFile(t.fileId, t.name)))
+      if (savedActive && openTabs.value.find(t => t.fileId === savedActive)) {
+        activeTabFileId.value = savedActive
+      }
+    } catch { /* ignore corrupt storage */ }
+  }
+
   return {
     files, openTabs, activeTabFileId, currentTab, currentFile, toc, totalLines, annotations, favourites,
     listenerFilters, appNamespaces,
@@ -262,5 +296,6 @@ export const useTraceStore = defineStore('trace', () => {
     loadFavourites, addFavourite, deleteFavourite, matchFavourites, favMatchesInRange, scanFavourites,
     loadSettings, saveSettings, addListenerFilter, isListenerFiltered,
     selection, toggleSelection, clearSelection, isSelected,
+    persistSession, restoreSession,
   }
 })
