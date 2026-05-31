@@ -229,6 +229,30 @@ export const useTraceStore = defineStore('trace', () => {
     }
   }
 
+  // ── Selection for export ──
+  // Each item: { type: 'event'|'listener'|'call', sig, line_no, args?, breadcrumb: [{sig,line_no}] }
+  const selection = computed(() => currentTab.value?.selection ?? [])
+
+  function toggleSelection(item) {
+    const tab = currentTab.value
+    if (!tab) return
+    if (!tab.selection) tab.selection = []
+    const idx = tab.selection.findIndex(s => s.line_no === item.line_no)
+    if (idx !== -1) {
+      tab.selection = tab.selection.filter((_, i) => i !== idx)
+    } else {
+      tab.selection = [...tab.selection, item]
+    }
+  }
+
+  function clearSelection() {
+    if (currentTab.value) currentTab.value.selection = []
+  }
+
+  function isSelected(lineNo) {
+    return currentTab.value?.selection?.some(s => s.line_no === lineNo) ?? false
+  }
+
   return {
     files, openTabs, activeTabFileId, currentTab, currentFile, toc, totalLines, annotations, favourites,
     listenerFilters, appNamespaces,
@@ -237,5 +261,6 @@ export const useTraceStore = defineStore('trace', () => {
     addAnnotation, deleteAnnotation,
     loadFavourites, addFavourite, deleteFavourite, matchFavourites, favMatchesInRange, scanFavourites,
     loadSettings, saveSettings, addListenerFilter, isListenerFiltered,
+    selection, toggleSelection, clearSelection, isSelected,
   }
 })

@@ -151,6 +151,9 @@
     <!-- ── Breadcrumbs (bottom) ── -->
     <Breadcrumbs :path="breadcrumbPath" :last-line="breadcrumbLine" />
 
+    <!-- ── Export panel (floating) ── -->
+    <ExportPanel />
+
     <!-- ── Jump toast ── -->
     <transition name="toast">
       <div v-if="jumpToast" class="jump-toast">
@@ -168,6 +171,7 @@ import TocTree from './components/TocTree.vue'
 import DesertBackground from './components/DesertBackground.vue'
 import RequestInfo from './components/RequestInfo.vue'
 import ResponseInfo from './components/ResponseInfo.vue'
+import ExportPanel from './components/ExportPanel.vue'
 import SettingsPage from './components/SettingsPage.vue'
 import Breadcrumbs from './components/Breadcrumbs.vue'
 import axios from 'axios'

@@ -20,8 +20,8 @@
       <!-- Event header -->
       <div
         class="event-row"
-        :class="{ 'has-listeners': event.listeners?.length }"
-        @click="toggleEvent(ei)"
+        :class="{ 'has-listeners': event.listeners?.length, 'event-row--selected': store.isSelected(event.line_no) }"
+        @click="onEventClick($event, ei, event)"
         @contextmenu.prevent="onEventCtx($event, event)"
       >
         <span class="chevron">{{ expandedEvents.has(ei) ? '▾' : '▸' }}</span>
@@ -56,9 +56,9 @@
           <!-- Listener row -->
           <div
             class="listener-row"
-            :class="{ 'listener-row--fav': listenerScanMatches(ei, li).length }"
+            :class="{ 'listener-row--fav': listenerScanMatches(ei, li).length, 'listener-row--selected': store.isSelected(listener.line_no) }"
             :data-listener-line="listener.line_no"
-            @click="toggleListener(ei, li, listener)"
+            @click="onListenerClick($event, ei, li, listener, event)"
             @contextmenu.prevent="onListenerCtx($event, listener)"
           >
             <span class="connector">└</span>
@@ -216,6 +216,27 @@ function toggleEvent(ei) {
   const s = new Set(expandedEvents.value)
   s.has(ei) ? s.delete(ei) : s.add(ei)
   expandedEvents.value = s
+}
+
+function onEventClick(e, ei, event) {
+  if (e.ctrlKey || e.metaKey) {
+    store.toggleSelection({ type: 'event', sig: event.event, line_no: event.line_no, breadcrumb: [] })
+    return
+  }
+  toggleEvent(ei)
+}
+
+function onListenerClick(e, ei, li, listener, event) {
+  if (e.ctrlKey || e.metaKey) {
+    store.toggleSelection({
+      type: 'listener',
+      sig: listener.sig,
+      line_no: listener.line_no,
+      breadcrumb: [{ sig: event.event, line_no: event.line_no }],
+    })
+    return
+  }
+  toggleListener(ei, li, listener)
 }
 
 async function toggleListener(ei, li, listener) {
@@ -417,6 +438,7 @@ defineExpose({ jumpToLine })
 }
 .event-row.has-listeners { }
 .event-row--fav { border-left-width: 3px; }
+.event-row--selected { background: rgba(80, 120, 180, 0.08); border-left: 2px solid rgba(80, 130, 200, 0.5); }
 
 .fav-badge-ev {
   font-size: 10px;
@@ -509,6 +531,7 @@ defineExpose({ jumpToLine })
 }
 .listener-row:hover { background: rgba(255, 255, 255, 0.03); }
 .listener-row--fav { border-left-width: 2px; }
+.listener-row--selected { background: rgba(80, 120, 180, 0.07); border-left: 2px solid rgba(80, 130, 200, 0.4); }
 
 .fav-hit-line {
   font-size: 10px;
