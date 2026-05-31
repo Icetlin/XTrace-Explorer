@@ -160,13 +160,33 @@ function listenerSource(sig) {
   return parts[0] || null
 }
 
+// Known Symfony/vendor PascalCase event class name substrings
+const SF_EVENT_CLASSES = [
+  'CheckPassportEvent', 'AuthenticationTokenCreatedEvent', 'AuthenticationSuccessEvent',
+  'AuthenticationFailureEvent', 'LoginSuccessEvent', 'LoginFailureEvent',
+  'LogoutEvent', 'SwitchUserEvent', 'InteractiveLoginEvent',
+  'RequestEvent', 'ResponseEvent', 'FinishRequestEvent', 'TerminateEvent',
+  'ExceptionEvent', 'ControllerEvent', 'ControllerArgumentsEvent', 'ViewEvent',
+  'SendMessageToTransportsEvent', 'WorkerMessageHandledEvent', 'WorkerMessageFailedEvent',
+  'WorkerRunningEvent', 'WorkerStartedEvent', 'WorkerStoppedEvent',
+  'ConsoleCommandEvent', 'ConsoleErrorEvent', 'ConsoleTerminateEvent',
+]
+
 function eventSource(name) {
   if (!name) return null
-  if (name.startsWith('kernel.') || name.startsWith('security.') || name.startsWith('console.')) return 'sf'
+  // dotted symfony convention: kernel.*, security.*, console.*, messenger.*, workflow.*
+  if (name.startsWith('kernel.') || name.startsWith('security.') ||
+      name.startsWith('console.') || name.startsWith('messenger.') ||
+      name.startsWith('workflow.')) return 'sf'
+  // prefixed vendor events
+  if (name.startsWith('sf') && name.includes('.')) return 'sf'
   if (name.startsWith('lexik_jwt')) return 'jwt'
   if (name.startsWith('scheb_')) return '2fa'
-  if (name.includes('.')) return 'sf'   // dotted = Symfony event name convention
-  return null                           // PascalCase class name = app event, no label
+  // any other dotted name = symfony convention
+  if (name.includes('.')) return 'sf'
+  // known Symfony PascalCase event class names
+  if (SF_EVENT_CLASSES.some(c => name.endsWith(c))) return 'sf'
+  return null  // PascalCase unknown = assume app event, no label
 }
 
 function toggleEvent(ei) {
