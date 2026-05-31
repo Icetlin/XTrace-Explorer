@@ -179,10 +179,13 @@ export const useTraceStore = defineStore('trace', () => {
     return data
   }
 
+  const _settingsCache = ref({})
+
   async function loadSettings() {
     try {
       const { data } = await axios.get('/api/settings')
       listenerFilters.value = data.listener_filters || []
+      _settingsCache.value = data
       return data
     } catch { return {} }
   }
@@ -190,7 +193,19 @@ export const useTraceStore = defineStore('trace', () => {
   async function saveSettings(payload) {
     const { data } = await axios.post('/api/settings', payload)
     listenerFilters.value = payload.listener_filters || []
+    _settingsCache.value = { ..._settingsCache.value, ...payload }
     return data
+  }
+
+  async function addListenerFilter(pattern) {
+    if (listenerFilters.value.includes(pattern)) return
+    const current = _settingsCache.value
+    await saveSettings({
+      traces_host_path: current.traces_host_path || '',
+      project_path: current.project_path || '',
+      project_name: current.project_name || '',
+      listener_filters: [...listenerFilters.value, pattern],
+    })
   }
 
   function isListenerFiltered(sig) {
@@ -217,6 +232,6 @@ export const useTraceStore = defineStore('trace', () => {
     fetchChildren, fetchPath, fetchObject, search,
     addAnnotation, deleteAnnotation,
     loadFavourites, addFavourite, deleteFavourite, matchFavourites, favMatchesInRange, scanFavourites,
-    loadSettings, saveSettings, isListenerFiltered,
+    loadSettings, saveSettings, addListenerFilter, isListenerFiltered,
   }
 })

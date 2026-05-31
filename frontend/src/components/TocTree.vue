@@ -228,9 +228,13 @@ function onEventCtx(event, tocEvent) {
 
 function onListenerCtx(event, listener) {
   const short = listenerClass(listener.sig) + listenerMethod(listener.sig)
+  // For filter: use the class part (before ->) so it matches all methods of the class
+  const sep = listener.sig.lastIndexOf('->')
+  const classPart = sep !== -1 ? listener.sig.slice(0, sep) : listener.sig
   ctxMenu.value.open(event, [
     { kind: 'sig', value: short },
     { kind: 'full sig', value: listener.sig },
+    { action: 'filter', value: classPart },
   ])
 }
 

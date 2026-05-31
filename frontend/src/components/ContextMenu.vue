@@ -11,23 +11,38 @@
       class="ctx-menu"
       :style="{ left: x + 'px', top: y + 'px' }"
     >
+      <!-- Favourites section -->
       <div class="ctx-title">Add to favourites</div>
       <div
-        v-for="(item, i) in items"
-        :key="i"
+        v-for="(item, i) in favItems"
+        :key="'f' + i"
         class="ctx-item"
-        @click="pick(item)"
+        @click="pickFav(item)"
       >
         <span class="ctx-kind">{{ item.kind }}</span>
         <span class="ctx-val">{{ item.value }}</span>
       </div>
-      <div v-if="!items.length" class="ctx-empty">nothing to track here</div>
+      <div v-if="!favItems.length" class="ctx-empty">nothing to track here</div>
+
+      <!-- Filter section (only shown when there are filter items) -->
+      <template v-if="filterItems.length">
+        <div class="ctx-title ctx-title--filter">Hide listener (add to filters)</div>
+        <div
+          v-for="(item, i) in filterItems"
+          :key="'r' + i"
+          class="ctx-item ctx-item--filter"
+          @click="pickFilter(item)"
+        >
+          <span class="ctx-kind ctx-kind--filter">⊘ filter</span>
+          <span class="ctx-val">{{ item.value }}</span>
+        </div>
+      </template>
     </div>
   </teleport>
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useTraceStore } from '../stores/trace'
 
 const store = useTraceStore()
@@ -37,16 +52,19 @@ const x = ref(0)
 const y = ref(0)
 const items = ref([])
 
+const favItems = computed(() => items.value.filter(i => i.action !== 'filter'))
+const filterItems = computed(() => items.value.filter(i => i.action === 'filter'))
+
 function open(event, nodeItems) {
   event.preventDefault()
   items.value = nodeItems
-  // Position — clamp to viewport
   const vw = window.innerWidth
   const vh = window.innerHeight
   let nx = event.clientX + 4
   let ny = event.clientY + 4
+  const estimatedH = 32 + nodeItems.length * 32 + (filterItems.value.length ? 28 : 0)
   if (nx + 260 > vw) nx = vw - 264
-  if (ny + 40 + nodeItems.length * 32 > vh) ny = vh - (40 + nodeItems.length * 32 + 8)
+  if (ny + estimatedH > vh) ny = vh - estimatedH - 8
   x.value = nx
   y.value = ny
   visible.value = true
@@ -56,9 +74,15 @@ function close() {
   visible.value = false
 }
 
-async function pick(item) {
+async function pickFav(item) {
   close()
   await store.addFavourite(item.value, item.label ?? null)
+}
+
+async function pickFilter(item) {
+  close()
+  if (store.listenerFilters.includes(item.value)) return
+  await store.addListenerFilter(item.value)
 }
 
 defineExpose({ open, close })
@@ -92,6 +116,11 @@ defineExpose({ open, close })
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
+.ctx-title--filter {
+  color: #5a4a6a;
+  border-top: 1px solid #2a2a3a;
+  margin-top: 2px;
+}
 
 .ctx-item {
   display: flex;
@@ -111,6 +140,8 @@ defineExpose({ open, close })
   min-width: 52px;
   flex-shrink: 0;
 }
+.ctx-item--filter:hover { background: #1e1828; }
+.ctx-kind--filter { color: #9a7acc; min-width: 56px; }
 
 .ctx-val {
   color: #ccc;
