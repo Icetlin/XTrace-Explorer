@@ -75,7 +75,9 @@ class TraceController extends AbstractController
         $this->em->flush();
 
         $dir = $this->tracesDir . '/' . $traceFile->getId();
-        mkdir($dir, 0755, true);
+        if (!is_dir($dir) && !mkdir($dir, 0755, true) && !is_dir($dir)) {
+            return $this->json(['error' => 'Cannot create directory'], 500);
+        }
         // Symlink instead of copy — no disk duplication
         symlink($realSource, $dir . '/trace.xt');
 
@@ -100,7 +102,9 @@ class TraceController extends AbstractController
         $this->em->flush();
 
         $dir = $this->tracesDir . '/' . $traceFile->getId();
-        mkdir($dir, 0755, true);
+        if (!is_dir($dir) && !mkdir($dir, 0755, true) && !is_dir($dir)) {
+            return $this->json(['error' => 'Cannot create directory'], 500);
+        }
         $file->move($dir, 'trace.xt');
 
         $this->bus->dispatch(new ParseTraceMessage($traceFile->getId()));
@@ -392,6 +396,7 @@ class TraceController extends AbstractController
     {
         $traceFile = $this->traceRepo->find($id);
         if (!$traceFile) return $this->json(['error' => 'Not found'], 404);
+        assert($traceFile instanceof TraceFile);
 
         $data = json_decode($request->getContent(), true);
         if (empty($data['line_no']) || empty($data['text'])) {
@@ -445,8 +450,7 @@ class TraceController extends AbstractController
     {
         // compose.yaml lives next to the symfony/ dir, i.e. one level up from /app inside container
         // On the host it is at the project root. We store a pointer in an env var or use a well-known path.
-        $path = $_ENV['COMPOSE_FILE_PATH'] ?? '/compose/compose.yaml';
-        return $path;
+        return $_ENV['COMPOSE_FILE_PATH'] ?? '/compose/compose.yaml';
     }
 
     private function getSettingsPath(): string
@@ -499,7 +503,10 @@ class TraceController extends AbstractController
         ];
 
         // Persist settings
-        @mkdir(dirname($this->getSettingsPath()), 0755, true);
+        $settingsDir = dirname($this->getSettingsPath());
+        if (!is_dir($settingsDir) && !mkdir($settingsDir, 0755, true) && !is_dir($settingsDir)) {
+            return $this->json(['error' => 'Cannot create settings directory'], 500);
+        }
         file_put_contents($this->getSettingsPath(), json_encode($settings, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
         // Patch compose.yaml if we have access to it and a traces path was given

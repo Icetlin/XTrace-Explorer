@@ -443,7 +443,6 @@ defineExpose({ jumpToLine })
   background: rgba(255, 255, 255, 0.04);
 }
 .event-row.has-listeners { }
-.event-row--fav { border-left-width: 3px; }
 .event-row--selected { background: rgba(80, 120, 180, 0.08); border-left: 2px solid rgba(80, 130, 200, 0.5); }
 
 .fav-badge-ev {
@@ -457,18 +456,6 @@ defineExpose({ jumpToLine })
 
 .chevron { color: #555; font-size: 12.5px; width: 12px; flex-shrink: 0; }
 
-.event-source, .listener-source {
-  font-size: 9px;
-  font-weight: 500;
-  letter-spacing: 0.03em;
-  flex-shrink: 0;
-  text-align: right;
-  white-space: nowrap;
-}
-.event-source    { opacity: 0.45; }
-.listener-source { opacity: 0.35; }
-.event-source[data-src="sf"],  .listener-source[data-src="sf"] { color: #6a9aaa; }
-.event-source:not([data-src="sf"]), .listener-source:not([data-src="sf"]) { color: #7a7a60; }
 
 .event-name {
   font-size: 15px;
