@@ -133,28 +133,22 @@ xdebug.trace_output_name = trace.%t.%p</pre>
           <button class="btn btn--add" @click="addFilter">+ Add</button>
         </div>
 
-        <div v-if="!form.listener_filters.length" class="empty-msg">
+        <div v-if="!store.listenerFilters.length" class="empty-msg">
           No filters yet — all listeners are shown.
         </div>
 
-        <div v-for="(f, idx) in form.listener_filters" :key="idx" class="filter-row">
+        <div v-for="f in store.listenerFilters" :key="f" class="filter-row">
           <span class="filter-icon">⊘</span>
           <span class="filter-text">{{ f }}</span>
-          <button class="fav-del" @click="removeFilter(idx)">✕</button>
+          <button class="fav-del" @click="removeFilter(f)">✕</button>
         </div>
 
-        <div v-if="form.listener_filters.length" class="btn-row btn-row--top">
-          <button class="btn btn--save" :disabled="saving" @click="save">
-            <span v-if="saving" class="spinner" />
-            {{ saving ? 'Saving…' : 'Save filters' }}
-          </button>
-        </div>
         <transition name="toast"><div v-if="toast" class="toast" :class="'toast--' + toast.type">{{ toast.msg }}</div></transition>
 
         <div class="howto">
           <div class="howto-title">Examples</div>
           <div class="filter-example" v-for="ex in filterExamples" :key="ex.pattern">
-            <button class="ex-add" @click="addFilterValue(ex.pattern)" :disabled="form.listener_filters.includes(ex.pattern)">+</button>
+            <button class="ex-add" @click="addFilterValue(ex.pattern)" :disabled="store.listenerFilters.includes(ex.pattern)">+</button>
             <code class="ex-pattern">{{ ex.pattern }}</code>
             <span class="ex-desc">{{ ex.desc }}</span>
           </div>
@@ -180,7 +174,7 @@ const sections = [
 ]
 const activeSection = ref('general')
 
-const form = ref({ traces_host_path: '', project_path: '', project_name: '', listener_filters: [] })
+const form = ref({ traces_host_path: '', project_path: '', project_name: '' })
 const saving = ref(false)
 const restarting = ref(false)
 const savedOnce = ref(false)
@@ -213,7 +207,6 @@ onMounted(async () => {
       traces_host_path: data.traces_host_path || '',
       project_path: data.project_path || '',
       project_name: data.project_name || '',
-      listener_filters: [...(data.listener_filters || [])],
     }
     savedOnce.value = !!(data.traces_host_path || data.project_path)
   } catch {}
@@ -259,23 +252,25 @@ async function addFav() {
   newLabel.value = ''
 }
 
-function addFilter() {
+async function addFilter() {
   const v = newFilter.value.trim()
-  if (!v || form.value.listener_filters.includes(v)) return
-  form.value.listener_filters = [...form.value.listener_filters, v]
+  if (!v) return
   newFilter.value = ''
-  save()
+  await store.addListenerFilter(v)
 }
 
-function addFilterValue(v) {
-  if (form.value.listener_filters.includes(v)) return
-  form.value.listener_filters = [...form.value.listener_filters, v]
-  save()
+async function addFilterValue(v) {
+  await store.addListenerFilter(v)
 }
 
-function removeFilter(idx) {
-  form.value.listener_filters = form.value.listener_filters.filter((_, i) => i !== idx)
-  save()
+async function removeFilter(pattern) {
+  const filters = store.listenerFilters.filter(f => f !== pattern)
+  await store.saveSettings({
+    traces_host_path: form.value.traces_host_path,
+    project_path: form.value.project_path,
+    project_name: form.value.project_name,
+    listener_filters: filters,
+  })
 }
 </script>
 
@@ -289,14 +284,16 @@ function removeFilter(idx) {
 
 /* ── Sidebar ── */
 .settings-nav {
-  width: 160px;
+  width: 164px;
   flex-shrink: 0;
-  border-right: 1px solid #111120;
+  border-right: 1px solid rgba(40, 40, 80, 0.35);
   padding: 24px 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  background: rgba(0,0,0,0.12);
+  background: rgba(255, 255, 255, 0.018);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 
 .nav-item {
@@ -309,84 +306,98 @@ function removeFilter(idx) {
   cursor: pointer;
   font-family: 'JetBrains Mono', monospace;
   font-size: 12px;
-  color: #3a3a58;
+  color: #5a5a80;
   text-align: left;
   border-left: 2px solid transparent;
   transition: color 0.15s, border-color 0.15s, background 0.15s;
 }
-.nav-item:hover { color: #6a7a9a; background: rgba(255,255,255,0.02); }
+.nav-item:hover {
+  color: #8a9ec0;
+  background: rgba(255, 255, 255, 0.028);
+}
 .nav-item--active {
-  color: #8aafdd;
-  border-left-color: #4a6a9a;
-  background: rgba(255,255,255,0.03);
+  color: #aad0f0;
+  border-left-color: rgba(90, 145, 210, 0.75);
+  background: rgba(255, 255, 255, 0.045);
 }
 
-.nav-icon { font-size: 13px; width: 16px; text-align: center; flex-shrink: 0; }
+.nav-icon { font-size: 13px; width: 16px; text-align: center; flex-shrink: 0; opacity: 0.7; }
 .nav-label { white-space: nowrap; }
 
 /* ── Content area ── */
 .settings-content {
   flex: 1;
   overflow-y: auto;
-  padding: 28px 36px;
-  max-width: 660px;
+  padding: 30px 40px;
+  max-width: 680px;
+  background: rgba(255, 255, 255, 0.022);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 
 .section-title {
-  font-size: 11px;
-  font-weight: 600;
-  color: #3a3a58;
+  font-size: 10px;
+  font-weight: 700;
+  color: rgba(140, 165, 210, 0.65);
   text-transform: uppercase;
-  letter-spacing: 0.12em;
-  margin-bottom: 24px;
+  letter-spacing: 0.14em;
+  margin-bottom: 26px;
 }
 
 .section-desc {
   font-size: 12px;
-  color: #383856;
-  line-height: 1.7;
-  margin-bottom: 20px;
+  color: rgba(160, 165, 205, 0.55);
+  line-height: 1.75;
+  margin-bottom: 22px;
 }
 
 /* ── Fields ── */
-.field-group { margin-bottom: 22px; }
+.field-group { margin-bottom: 24px; }
 
 .field-label {
   display: block;
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 600;
-  color: #7a99bb;
+  color: rgba(160, 190, 230, 0.85);
   margin-bottom: 5px;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.03em;
 }
 
 .field-desc {
   font-size: 11px;
-  color: #32324a;
+  color: rgba(145, 150, 195, 0.6);
   line-height: 1.65;
   margin-bottom: 9px;
 }
 .field-desc code {
-  color: #5a7aaa;
-  background: #0e0e1a;
+  color: rgba(100, 150, 210, 0.65);
+  background: rgba(255, 255, 255, 0.04);
   padding: 1px 5px;
   border-radius: 3px;
+  border: 1px solid rgba(80, 110, 160, 0.18);
 }
 
 .field-input {
-  background: #0c0c18;
-  border: 1px solid #1a1a2e;
-  border-radius: 7px;
-  color: #9ab;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(60, 70, 110, 0.35);
+  border-radius: 8px;
+  color: rgba(160, 185, 215, 0.85);
   font-family: monospace;
-  font-size: 12px;
+  font-size: 12.5px;
   padding: 9px 14px;
   width: 100%;
   box-sizing: border-box;
   outline: none;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
 }
-.field-input:focus { border-color: #3a4a6a; box-shadow: 0 0 0 2px rgba(90,120,180,0.1); }
+.field-input::placeholder { color: rgba(80, 90, 130, 0.5); }
+.field-input:focus {
+  border-color: rgba(80, 130, 200, 0.55);
+  background: rgba(255, 255, 255, 0.055);
+  box-shadow: 0 0 0 2px rgba(80, 130, 200, 0.1), inset 0 1px 0 rgba(255,255,255,0.04);
+}
 .field-input--short { width: 200px; }
 .field-input--label { width: 180px; }
 
@@ -394,7 +405,7 @@ function removeFilter(idx) {
 .btn-row {
   display: flex;
   gap: 10px;
-  margin-top: 6px;
+  margin-top: 8px;
   flex-wrap: wrap;
 }
 .btn-row--top { margin-top: 16px; margin-bottom: 0; }
@@ -404,23 +415,50 @@ function removeFilter(idx) {
   align-items: center;
   gap: 7px;
   padding: 9px 18px;
-  border-radius: 7px;
+  border-radius: 8px;
   font-family: monospace;
   font-size: 12px;
   cursor: pointer;
   border: 1px solid;
-  transition: opacity 0.15s, background 0.15s;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transition: opacity 0.15s, background 0.15s, box-shadow 0.15s;
 }
-.btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.btn:disabled { opacity: 0.3; cursor: not-allowed; }
 
-.btn--save { background: #0e1e2e; color: #7aadff; border-color: #2a4a6a; }
-.btn--save:not(:disabled):hover { background: #122030; }
+.btn--save {
+  background: rgba(20, 50, 90, 0.55);
+  color: rgba(130, 185, 255, 0.9);
+  border-color: rgba(60, 110, 180, 0.4);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+}
+.btn--save:not(:disabled):hover {
+  background: rgba(25, 60, 105, 0.65);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 2px 8px rgba(60,110,180,0.2);
+}
 
-.btn--restart { background: #1a0e28; color: #b07aff; border-color: #3a2a5a; }
-.btn--restart:not(:disabled):hover { background: #1e1030; }
+.btn--restart {
+  background: rgba(40, 15, 70, 0.55);
+  color: rgba(185, 140, 255, 0.9);
+  border-color: rgba(90, 50, 150, 0.4);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
+}
+.btn--restart:not(:disabled):hover {
+  background: rgba(48, 20, 85, 0.65);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.07), 0 2px 8px rgba(90,50,150,0.2);
+}
 
-.btn--add { background: #141428; color: #666; border-color: #2a2a42; white-space: nowrap; }
-.btn--add:hover { color: #9ecbff; border-color: #3a5a8a; }
+.btn--add {
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(100, 115, 155, 0.7);
+  border-color: rgba(60, 65, 100, 0.35);
+  white-space: nowrap;
+}
+.btn--add:hover {
+  color: rgba(160, 200, 255, 0.85);
+  border-color: rgba(70, 120, 190, 0.5);
+  background: rgba(255, 255, 255, 0.06);
+}
 
 .spinner {
   width: 10px; height: 10px;
@@ -436,12 +474,22 @@ function removeFilter(idx) {
 .toast {
   margin-top: 14px;
   padding: 9px 14px;
-  border-radius: 7px;
+  border-radius: 8px;
   font-size: 12px;
   border: 1px solid;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
-.toast--ok  { color: #7dcc7d; background: #0a180a; border-color: #1a3a1a; }
-.toast--err { color: #cc7070; background: #180a0a; border-color: #3a1a1a; }
+.toast--ok  {
+  color: rgba(120, 210, 120, 0.9);
+  background: rgba(20, 60, 20, 0.5);
+  border-color: rgba(40, 100, 40, 0.4);
+}
+.toast--err {
+  color: rgba(210, 100, 100, 0.9);
+  background: rgba(60, 15, 15, 0.5);
+  border-color: rgba(100, 35, 35, 0.4);
+}
 .toast-enter-active, .toast-leave-active { transition: opacity 0.25s, transform 0.25s; }
 .toast-enter-from, .toast-leave-to { opacity: 0; transform: translateY(-4px); }
 
@@ -449,15 +497,15 @@ function removeFilter(idx) {
 .howto {
   margin-top: 36px;
   padding-top: 24px;
-  border-top: 1px solid #111120;
+  border-top: 1px solid rgba(40, 40, 80, 0.3);
 }
 
 .howto-title {
-  font-size: 10px;
-  font-weight: 600;
-  color: #2e2e48;
+  font-size: 9.5px;
+  font-weight: 700;
+  color: rgba(110, 125, 170, 0.6);
   text-transform: uppercase;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.12em;
   margin-bottom: 16px;
 }
 
@@ -466,19 +514,25 @@ function removeFilter(idx) {
   gap: 14px;
   align-items: flex-start;
   font-size: 11.5px;
-  color: #32324a;
+  color: rgba(145, 150, 195, 0.65);
   line-height: 1.7;
   margin-bottom: 12px;
 }
-.howto-step strong { color: #555577; }
-.howto-step code { color: #4a6a8a; background: #0e0e1a; padding: 1px 5px; border-radius: 3px; }
+.howto-step strong { color: rgba(165, 185, 220, 0.8); }
+.howto-step code {
+  color: rgba(120, 170, 230, 0.75);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid rgba(70, 100, 150, 0.2);
+}
 
 .step-num {
   width: 20px; height: 20px;
   border-radius: 50%;
-  background: #0e0e1e;
-  border: 1px solid #1a1a32;
-  color: #3a3a5a;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(50, 55, 90, 0.5);
+  color: rgba(80, 90, 135, 0.6);
   font-size: 10px;
   display: flex;
   align-items: center;
@@ -488,17 +542,19 @@ function removeFilter(idx) {
 }
 
 .code-block {
-  background: #090914;
-  border: 1px solid #151525;
-  border-radius: 6px;
-  color: #5a7a9a;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(50, 60, 100, 0.3);
+  border-radius: 7px;
+  color: rgba(100, 145, 185, 0.7);
   font-size: 11px;
-  padding: 10px 14px;
+  padding: 11px 15px;
   margin: 8px 0 14px;
   font-family: monospace;
-  line-height: 1.6;
+  line-height: 1.65;
   white-space: pre;
   overflow-x: auto;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 
 /* ── Favourites ── */
@@ -511,7 +567,7 @@ function removeFilter(idx) {
 }
 
 .empty-msg {
-  color: #282840;
+  color: rgba(70, 75, 115, 0.5);
   font-size: 12px;
   font-style: italic;
   padding: 10px 0;
@@ -522,19 +578,20 @@ function removeFilter(idx) {
   align-items: center;
   gap: 12px;
   padding: 9px 14px;
-  border-radius: 7px;
-  border: 1px solid #111120;
+  border-radius: 8px;
+  border: 1px solid rgba(35, 38, 65, 0.6);
   margin-bottom: 5px;
-  background: #0c0c18;
-  transition: background 0.1s, border-color 0.1s;
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transition: background 0.12s, border-color 0.12s;
 }
-.fav-row:hover { background: #0f0f1e; border-color: #1a1a2e; }
+.fav-row:hover {
+  background: rgba(255, 255, 255, 0.045);
+  border-color: rgba(55, 65, 110, 0.7);
+}
 
-.fav-dot {
-  width: 8px; height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
+.fav-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .fav-pattern { flex: 1; font-size: 13px; font-weight: 500; }
 .fav-label {
   font-size: 10px;
@@ -546,14 +603,14 @@ function removeFilter(idx) {
 
 .fav-del {
   background: none; border: none;
-  color: #222234; font-size: 11px;
+  color: rgba(50, 50, 85, 0.6); font-size: 11px;
   cursor: pointer;
   padding: 3px 7px;
   border-radius: 4px;
   line-height: 1;
   transition: color 0.1s, background 0.1s;
 }
-.fav-del:hover { color: #cc6060; background: #1e1018; }
+.fav-del:hover { color: rgba(210, 90, 90, 0.85); background: rgba(120, 20, 20, 0.2); }
 
 /* ── Listener filters ── */
 .filter-add {
@@ -568,35 +625,50 @@ function removeFilter(idx) {
   align-items: center;
   gap: 12px;
   padding: 9px 14px;
-  border-radius: 7px;
-  border: 1px solid #111120;
+  border-radius: 8px;
+  border: 1px solid rgba(35, 38, 65, 0.6);
   margin-bottom: 5px;
-  background: #0c0c16;
-  transition: background 0.1s;
+  background: rgba(255, 255, 255, 0.028);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transition: background 0.12s;
 }
-.filter-row:hover { background: #0f0f1c; }
+.filter-row:hover { background: rgba(255, 255, 255, 0.042); }
 
-.filter-icon { color: #3a3a5a; font-size: 13px; flex-shrink: 0; }
-.filter-text { flex: 1; font-size: 13px; color: #6a6a9a; font-weight: 500; }
+.filter-icon { color: rgba(80, 85, 140, 0.55); font-size: 13px; flex-shrink: 0; }
+.filter-text { flex: 1; font-size: 13px; color: rgba(140, 155, 210, 0.85); font-weight: 500; }
 
 .filter-example {
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 6px 0;
-  border-bottom: 1px solid #0d0d1a;
+  border-bottom: 1px solid rgba(30, 30, 55, 0.4);
   font-size: 11.5px;
 }
 .ex-add {
-  background: #111122; border: 1px solid #202038;
-  color: #4a4a6a; border-radius: 4px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(50, 55, 90, 0.45);
+  color: rgba(80, 90, 140, 0.65);
+  border-radius: 4px;
   width: 22px; height: 22px;
   cursor: pointer; font-size: 14px; line-height: 1;
   flex-shrink: 0;
-  transition: color 0.1s, border-color 0.1s;
+  transition: color 0.1s, border-color 0.1s, background 0.1s;
 }
-.ex-add:not(:disabled):hover { color: #9ecbff; border-color: #3a5a8a; }
-.ex-add:disabled { opacity: 0.3; cursor: default; }
-.ex-pattern { color: #6a8aaa; background: #0e0e1a; padding: 2px 7px; border-radius: 4px; flex-shrink: 0; }
-.ex-desc { color: #2e2e46; }
+.ex-add:not(:disabled):hover {
+  color: rgba(160, 200, 255, 0.85);
+  border-color: rgba(70, 120, 190, 0.55);
+  background: rgba(255, 255, 255, 0.06);
+}
+.ex-add:disabled { opacity: 0.25; cursor: default; }
+.ex-pattern {
+  color: rgba(130, 170, 220, 0.85);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(70, 105, 160, 0.3);
+  padding: 2px 7px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.ex-desc { color: rgba(120, 125, 170, 0.6); }
 </style>

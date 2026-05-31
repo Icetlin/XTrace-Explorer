@@ -270,10 +270,10 @@ html, body, #app {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   font-weight: 700;
-  color: #2e3a5a;
+  color: #4a5e82;
   letter-spacing: 0.08em;
   padding: 0 12px 0 4px;
-  border-right: 1px solid #131326;
+  border-right: 1px solid #1e1e38;
   margin-right: 8px;
   flex-shrink: 0;
 }
@@ -287,7 +287,7 @@ html, body, #app {
   gap: 7px;
   padding: 0 12px;
   border-bottom: 2px solid transparent;
-  color: #333;
+  color: #505070;
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   cursor: pointer;
@@ -296,10 +296,10 @@ html, body, #app {
   transition: color 0.12s, border-color 0.12s;
   position: relative;
 }
-.trace-tab:hover { color: #555; }
-.trace-tab--active { color: #7a8899; border-bottom-color: #2e4a6a; }
-.trace-tab--parsing { color: #2e4a62; }
-.trace-tab--error { color: #5a2a2a; }
+.trace-tab:hover { color: #7a8aa8; }
+.trace-tab--active { color: #96aac0; border-bottom-color: #3a5a80; }
+.trace-tab--parsing { color: #4a6a88; }
+.trace-tab--error { color: #7a3a3a; }
 
 .trace-tab__dot {
   width: 6px;
@@ -329,7 +329,7 @@ html, body, #app {
 }
 .trace-tab__close {
   font-size: 10px;
-  color: #222;
+  color: #3a3a58;
   padding: 2px 3px;
   border-radius: 3px;
   line-height: 1;
@@ -345,15 +345,15 @@ html, body, #app {
   width: 32px;
   background: none;
   border: none;
-  color: #2a2a44;
+  color: #484868;
   font-size: 18px;
   cursor: pointer;
   flex-shrink: 0;
   transition: color 0.12s;
   padding-bottom: 2px;
 }
-.tab-add:hover { color: #4a6a8a; }
-.tab-add--open { color: #2e4a6a; }
+.tab-add:hover { color: #6a90b8; }
+.tab-add--open { color: #4a6a90; }
 
 /* Nav buttons */
 .nav-btn {
@@ -364,7 +364,7 @@ html, body, #app {
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
-  color: #2a2a44;
+  color: #505070;
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   cursor: pointer;
@@ -372,12 +372,12 @@ html, body, #app {
   flex-shrink: 0;
   transition: color 0.12s, border-color 0.12s;
 }
-.nav-btn:hover { color: #555; }
-.nav-btn--active { color: #5a6a7a; border-bottom-color: #2a3848; }
+.nav-btn:hover { color: #8090aa; }
+.nav-btn--active { color: #8aaccc; border-bottom-color: #3a5878; }
 
 .nav-badge {
-  background: #1e2438;
-  color: #5a7aaa;
+  background: rgba(40, 55, 90, 0.7);
+  color: #7a9acc;
   border-radius: 8px;
   font-size: 10px;
   padding: 0 5px;
