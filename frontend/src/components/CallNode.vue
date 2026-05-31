@@ -60,7 +60,7 @@
       >{{ m.label || m.pattern }}</span>
       <!-- Bubble hint: descendant has a match -->
       <span
-        v-for="m in bubbleMatches.filter(m => !directMatches.some(d => d.pattern === m.pattern))"
+        v-for="m in bubbleMatches.filter(bm => !directMatches.some(d => d.pattern === bm.pattern))"
         :key="'b-' + m.pattern"
         class="fav-badge fav-badge--bubble"
         :style="{ color: favColor(m.pattern).text, background: favColor(m.pattern).bg, borderColor: favColor(m.pattern).border }"
@@ -185,7 +185,6 @@ onMounted(() => {
   if (!props.node.subtree_end || props.node.subtree_end <= props.node.line_no) return
   const fromLine = props.node.line_no + 1
   const toLine = props.node.subtree_end
-  const sig = props.node.sig
   const tab = store.openTabs.find(t => t.fileId === props.fileId)
   if (tab?.favScan && Object.keys(tab.favScan).length) {
     const subtreeMatches = store.favMatchesInRange(props.fileId, fromLine, toLine)
@@ -327,7 +326,7 @@ async function loadFiltered() {
 }
 
 function isObjectArg(arg) {
-  return /\{…\}$/.test(arg)
+  return /[{]…[}]$/.test(arg)
 }
 
 // Parse "$name = value" → name or null
@@ -422,8 +421,7 @@ function camelSpaced(s) {
 
 function childSource(sig) {
   if (!sig) return null
-  const store_ = store
-  for (const { namespace, label } of store_.appNamespaces) {
+  for (const { namespace, label } of store.appNamespaces) {
     if (sig.startsWith(namespace)) return label || namespace.replace(/\\+$/, '').split('\\').pop()
   }
   if (sig.startsWith('Symfony\\')) return 'sf'
@@ -527,20 +525,6 @@ function renderSig(sig) {
 .arg-sep  { color: #384450; font-size: 10px; }
 .arg-val  { color: #7090a8; }
 
-.arg-op {
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  border-radius: 3px;
-  padding: 0 4px;
-  flex-shrink: 0;
-  background: rgba(255,255,255,0.04);
-}
-.arg-op--write  { color: #b09050; }
-.arg-op--delete { color: #b06848; }
-.arg-op--read   { color: #4a90a0; }
-.arg-op--check  { color: #5a9060; }
-.arg-op--create { color: #8068a8; }
 
 .arg-fields {
   width: 100%;
@@ -584,20 +568,6 @@ function renderSig(sig) {
 
 .fav-badge--bubble { opacity: 0.45; }
 
-.fav-badge-op {
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  opacity: 0.7;
-}
-
-.fav-bubble {
-  font-size: 10px;
-  color: #383048;
-  flex-shrink: 0;
-  margin-left: 4px;
-  font-style: italic;
-}
 
 .call-arg--fav { }
 .call-return--fav { }
@@ -665,20 +635,4 @@ function renderSig(sig) {
 
 .loading, .leaf { color: #303048; font-size: 12.5px; padding: 4px 10px; font-style: italic; }
 
-.raw-toggle {
-  display: block;
-  margin: 3px 8px 4px;
-  background: none;
-  border: 1px dashed rgba(255,255,255,0.06);
-  color: #333348;
-  font-size: 10px;
-  font-family: monospace;
-  cursor: pointer;
-  border-radius: 3px;
-  padding: 2px 10px;
-  transition: color 0.1s, border-color 0.1s;
-}
-.raw-toggle:hover { color: #5a8aaa; border-color: rgba(90,138,170,0.3); }
-.raw-toggle--active { color: #363636; border-color: rgba(255,255,255,0.04); }
-.raw-toggle--active:hover { color: #8a5040; border-color: rgba(140,80,60,0.3); }
 </style>

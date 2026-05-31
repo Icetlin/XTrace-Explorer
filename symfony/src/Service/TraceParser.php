@@ -35,8 +35,8 @@ class TraceParser
         $this->em->flush();
 
         $dir = $this->tracesDir . '/' . $traceFile->getId();
-        if (!is_dir($dir)) {
-            mkdir($dir, 0755, true);
+        if (!is_dir($dir) && !mkdir($dir, 0755, true) && !is_dir($dir)) {
+            throw new \RuntimeException("Cannot create directory: $dir");
         }
 
         $totalLines = $this->countLines($xtFilePath);
@@ -103,9 +103,13 @@ class TraceParser
                         $shortName = str_contains($eventName, '\\')
                             ? substr($eventName, strrpos($eventName, '\\') + 1)
                             : $eventName;
-                        $topShort = $top ? (str_contains($top['event'], '\\')
-                            ? substr($top['event'], strrpos($top['event'], '\\') + 1)
-                            : $top['event']) : null;
+                        if ($top) {
+                            $topShort = str_contains($top['event'], '\\')
+                                ? substr($top['event'], strrpos($top['event'], '\\') + 1)
+                                : $top['event'];
+                        } else {
+                            $topShort = null;
+                        }
 
                         if ($top && $topShort === $shortName) {
                             // Same event at deeper depth — update depth, keep listeners
@@ -281,7 +285,7 @@ class TraceParser
 
         // TRACE START [2026-05-30 20:34:36.703988]
         $firstLine = fgets($fh, 1048576);
-        if ($firstLine && preg_match('/TRACE START \[([^\]]+)\]/', $firstLine, $m)) {
+        if ($firstLine && preg_match('/TRACE START \[([^]]+)]/', $firstLine, $m)) {
             $info['started_at'] = $m[1];
         }
 
