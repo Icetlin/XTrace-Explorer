@@ -103,6 +103,19 @@
       </div>
     </transition>
 
+    <!-- ── Fav scan indicator ── -->
+    <transition name="fade">
+      <div
+        v-if="activeSection === 'trace' && store.currentTab?.scanning"
+        class="status-bar status-bar--scanning"
+      >
+        <div class="status-bar__content">
+          <span class="status-bar__pulse" />
+          <span>Scanning favourites…</span>
+        </div>
+      </div>
+    </transition>
+
     <!-- ── Request info bar ── -->
     <RequestInfo
       v-if="activeSection === 'trace' && store.currentTab?.request"
@@ -165,7 +178,7 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import { useTraceStore } from './stores/trace'
 import TocTree from './components/TocTree.vue'
 import DesertBackground from './components/DesertBackground.vue'
@@ -190,6 +203,19 @@ const tocTreeRefs = {}
 store.loadFiles()
 store.loadFavourites()
 store.loadSettings()
+
+let restoringSession = false
+onMounted(async () => {
+  restoringSession = true
+  await store.restoreSession()
+  restoringSession = false
+})
+
+watch(
+  () => [store.openTabs.map(t => t.fileId), store.activeTabFileId],
+  () => { if (!restoringSession) store.persistSession() },
+  { deep: true }
+)
 
 function toggleBrowser() {
   showBrowser.value = !showBrowser.value
@@ -482,6 +508,11 @@ html, body, #app {
   background: #120808;
   border-bottom: 1px solid #2a1010;
   color: #7a4040;
+}
+.status-bar--scanning {
+  background: #080e14;
+  border-bottom: 1px solid #0e1e2a;
+  color: #3a6a5a;
 }
 
 .status-bar__fill {
