@@ -472,6 +472,7 @@ class TraceController extends AbstractController
         $settings['project_path'] = $settings['project_path'] ?? '';
         $settings['project_name'] = $settings['project_name'] ?? '';
         $settings['listener_filters'] = $settings['listener_filters'] ?? [];
+        $settings['app_namespaces'] = $settings['app_namespaces'] ?? [];
 
         return $this->json($settings);
     }
@@ -484,12 +485,15 @@ class TraceController extends AbstractController
         $projectPath = trim($body['project_path'] ?? '');
         $projectName = trim($body['project_name'] ?? '');
         $listenerFilters = array_values(array_filter(array_map('trim', (array)($body['listener_filters'] ?? [])), fn($s) => $s !== ''));
+        // app_namespaces: [{namespace: "App\\", label: "app"}, ...]
+        $appNamespaces = array_values(array_filter((array)($body['app_namespaces'] ?? []), fn($e) => !empty($e['namespace'])));
 
         $settings = [
             'traces_host_path' => $tracesPath,
             'project_path'     => $projectPath,
             'project_name'     => $projectName,
             'listener_filters' => $listenerFilters,
+            'app_namespaces'   => $appNamespaces,
         ];
 
         // Persist settings

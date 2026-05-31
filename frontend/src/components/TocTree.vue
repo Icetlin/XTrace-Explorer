@@ -4,7 +4,12 @@
 
     <div v-if="!toc.length" class="empty">No trace loaded</div>
 
-    <div v-for="(event, ei) in toc" :key="ei" class="event-block">
+    <div
+      v-for="(event, ei) in toc"
+      :key="ei"
+      class="event-block"
+      :class="{ 'event-block--sep': ei > 0 && eventSource(event.event, event.event_class) !== eventSource(toc[ei-1].event, toc[ei-1].event_class) }"
+    >
       <!-- Event header -->
       <div
         class="event-row"
@@ -13,7 +18,7 @@
         @contextmenu.prevent="onEventCtx($event, event)"
       >
         <span class="chevron">{{ expandedEvents.has(ei) ? '▾' : '▸' }}</span>
-        <span v-if="eventSource(event.event)" class="event-source" :data-src="eventSource(event.event)">{{ eventSource(event.event) }}</span>
+        <span v-if="eventSource(event.event, event.event_class)" class="event-source" :data-src="eventSource(event.event, event.event_class)">{{ eventSource(event.event, event.event_class) }}</span>
         <span class="event-name">{{ event.event }}</span>
         <span
           v-for="m in eventScanMatches(ei)"
@@ -33,6 +38,7 @@
           v-show="!store.isListenerFiltered(listener.sig)"
           :key="li"
           class="listener-block"
+          :class="{ 'listener-block--sep': li > 0 && listenerSource(listener.sig) !== listenerSource(event.listeners[li-1].sig) }"
         >
           <!-- Listener row -->
           <div
@@ -151,42 +157,40 @@ function eventScanMatches(ei) {
 
 function listenerSource(sig) {
   if (!sig) return null
+  // Check user-defined app namespaces first
+  for (const { namespace, label } of store.appNamespaces) {
+    if (sig.startsWith(namespace)) return label || namespace.replace(/\\+$/, '').split('\\').pop()
+  }
   if (sig.startsWith('Symfony\\')) return 'sf'
-  if (sig.startsWith('App\\')) return null
   const parts = sig.split('\\')
-  // find first segment ending with "Bundle", strip the word "Bundle"
   const bundle = parts.find(p => p.endsWith('Bundle'))
   if (bundle) return bundle.replace(/Bundle$/, '')
   return parts[0] || null
 }
 
-// Known Symfony/vendor PascalCase event class name substrings
-const SF_EVENT_CLASSES = [
-  'CheckPassportEvent', 'AuthenticationTokenCreatedEvent', 'AuthenticationSuccessEvent',
-  'AuthenticationFailureEvent', 'LoginSuccessEvent', 'LoginFailureEvent',
-  'LogoutEvent', 'SwitchUserEvent', 'InteractiveLoginEvent',
-  'RequestEvent', 'ResponseEvent', 'FinishRequestEvent', 'TerminateEvent',
-  'ExceptionEvent', 'ControllerEvent', 'ControllerArgumentsEvent', 'ViewEvent',
-  'SendMessageToTransportsEvent', 'WorkerMessageHandledEvent', 'WorkerMessageFailedEvent',
-  'WorkerRunningEvent', 'WorkerStartedEvent', 'WorkerStoppedEvent',
-  'ConsoleCommandEvent', 'ConsoleErrorEvent', 'ConsoleTerminateEvent',
-]
-
-function eventSource(name) {
+function eventSource(name, eventClass) {
   if (!name) return null
-  // dotted symfony convention: kernel.*, security.*, console.*, messenger.*, workflow.*
+
+  // Use full FQCN when available — most reliable
+  if (eventClass) {
+    for (const { namespace, label } of store.appNamespaces) {
+      if (eventClass.startsWith(namespace)) return label || namespace.replace(/\\+$/, '').split('\\').pop()
+    }
+    if (eventClass.startsWith('Symfony\\')) return 'sf'
+    const parts = eventClass.split('\\')
+    const bundle = parts.find(p => p.endsWith('Bundle'))
+    if (bundle) return bundle.replace(/Bundle$/, '')
+    return parts[0] || null
+  }
+
+  // Fallback: parse dotted event name
   if (name.startsWith('kernel.') || name.startsWith('security.') ||
       name.startsWith('console.') || name.startsWith('messenger.') ||
       name.startsWith('workflow.')) return 'sf'
-  // prefixed vendor events
-  if (name.startsWith('sf') && name.includes('.')) return 'sf'
   if (name.startsWith('lexik_jwt')) return 'jwt'
   if (name.startsWith('scheb_')) return '2fa'
-  // any other dotted name = symfony convention
   if (name.includes('.')) return 'sf'
-  // known Symfony PascalCase event class names
-  if (SF_EVENT_CLASSES.some(c => name.endsWith(c))) return 'sf'
-  return null  // PascalCase unknown = assume app event, no label
+  return null
 }
 
 function toggleEvent(ei) {
@@ -355,6 +359,11 @@ defineExpose({ jumpToLine })
 .event-block {
   margin-bottom: 6px;
 }
+.event-block--sep {
+  margin-top: 14px;
+  border-top: 1px solid rgba(50, 55, 100, 0.25);
+  padding-top: 8px;
+}
 
 .event-row {
   display: flex;
@@ -362,13 +371,13 @@ defineExpose({ jumpToLine })
   gap: 10px;
   padding: 10px 18px;
   cursor: pointer;
-  border-left: 3px solid rgba(80, 80, 140, 0.4);
+  border-left: none;
   transition: background 0.15s;
 }
 .event-row:hover {
   background: rgba(255, 255, 255, 0.04);
 }
-.event-row.has-listeners { border-left-color: rgba(90, 130, 210, 0.6); }
+.event-row.has-listeners { }
 .event-row--fav { border-left-width: 3px; }
 
 .fav-badge-ev {
@@ -419,14 +428,17 @@ defineExpose({ jumpToLine })
 /* ── Listeners ── */
 .listeners {
   margin-left: 24px;
-  border-left: 1px solid #1e1e32;
-  padding-left: 10px;
   margin-top: 2px;
   margin-bottom: 6px;
 }
 
 .listener-block {
   margin-bottom: 2px;
+}
+.listener-block--sep {
+  margin-top: 8px;
+  border-top: 1px solid rgba(40, 45, 80, 0.3);
+  padding-top: 4px;
 }
 
 .listener-row {

@@ -89,9 +89,11 @@ class TraceParser
                 // --- TOC: detect TraceableEventDispatcher->dispatch (outermost, has $eventName) ---
                 if (preg_match(self::DISPATCH_RE, $sig)) {
                     $eventName = null;
+                    $eventClass = null; // full FQCN when available
                     if (preg_match(self::EVENT_NAME_RE, $line, $em2)) {
                         $eventName = $em2[1];
                     } elseif (preg_match(self::EVENT_CLASS_RE, $line, $em2)) {
+                        $eventClass = $em2[1]; // full FQCN
                         $parts = explode('\\', $em2[1]);
                         $eventName = end($parts);
                     }
@@ -111,15 +113,20 @@ class TraceParser
                             if (!str_contains($eventName, '\\')) {
                                 $dispatchStack[count($dispatchStack)-1]['event'] = $eventName;
                             }
+                            if ($eventClass && !isset($dispatchStack[count($dispatchStack)-1]['event_class'])) {
+                                $dispatchStack[count($dispatchStack)-1]['event_class'] = $eventClass;
+                            }
                         } else {
                             // New event — push onto stack
-                            $dispatchStack[] = [
+                            $entry = [
                                 'type'      => 'event',
                                 'event'     => $eventName,
                                 'line_no'   => $lineNo,
                                 'depth'     => $depth,
                                 'listeners' => [],
                             ];
+                            if ($eventClass) $entry['event_class'] = $eventClass;
+                            $dispatchStack[] = $entry;
                         }
                         $pendingInvoke = null;
                     }
