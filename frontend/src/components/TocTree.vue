@@ -32,9 +32,6 @@
           class="fav-badge-ev"
           :style="{ color: favColor(m.pattern).text, background: favColor(m.pattern).bg, borderColor: favColor(m.pattern).border }"
         >{{ m.label || m.pattern }}</span>
-        <span class="line-badge" @click.stop="$emit('jump', event.line_no)">
-          line {{ event.line_no.toLocaleString() }}
-        </span>
       </div>
 
       <!-- Listeners -->
@@ -70,17 +67,7 @@
                 class="fav-badge-li"
                 :style="{ color: favColor(m.pattern).text, background: favColor(m.pattern).bg, borderColor: favColor(m.pattern).border }"
               >{{ m.label || m.pattern }}</span>
-              <span
-                v-for="hit in listenerHits(ei, li, m.pattern)"
-                :key="hit.line_no"
-                class="fav-hit-line"
-                :style="{ color: favColor(m.pattern).bubble }"
-                @click.stop="$emit('jump', hit.line_no)"
-              >↱{{ hit.line_no.toLocaleString() }}</span>
             </template>
-            <span class="line-badge-sm" @click.stop="$emit('jump', listener.line_no)">
-              {{ listener.line_no.toLocaleString() }}
-            </span>
           </div>
 
           <!-- Lazy children -->

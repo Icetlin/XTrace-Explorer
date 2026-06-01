@@ -6,6 +6,8 @@
         'call-row--fav': directMatches.length,
         'call-row--fav-bubble': !directMatches.length && bubbleMatches.length,
         'call-row--selected': store.isSelected(node.line_no),
+        'call-row--leaf': isLeaf,
+        'call-row--noisy': isNoisy,
       }"
       :style="{
         paddingLeft: (indent * 16 + 14) + 'px',
@@ -18,8 +20,8 @@
       @click="onRowClick"
       @contextmenu.prevent="onContextMenu"
     >
-      <span class="chevron-sm">{{ expanded ? '▾' : '▸' }}</span>
-      <span class="call-sig" :class="sigClass" :title="node.sig" v-html="renderSig(node.sig)"></span>
+      <span class="chevron-sm" :class="{ 'chevron-sm--leaf': isLeaf || isNoisy }">{{ isLeaf || isNoisy ? '·' : (expanded ? '▾' : '▸') }}</span>
+      <span class="call-sig" :class="[sigClass, { 'call-sig--dim': isLeaf || isNoisy }]" :title="node.sig" v-html="renderSig(node.sig)"></span>
       <template v-if="node.args?.length">
         <span
           v-for="(a, i) in node.args"
@@ -50,7 +52,7 @@
       </template>
       <span v-if="node.return != null" class="call-return" :class="{ 'call-return--fav': returnMatches }">⇒ {{ node.return }}</span>
       <span v-if="expanded && parentReturn != null" class="call-return call-return--parent">⇒ {{ parentReturn }}</span>
-      <span v-if="node.file" class="call-file">{{ node.file }}</span>
+      <span v-if="node.file" class="call-file" :class="{ 'call-file--dim': isLeaf || isNoisy }">{{ node.file }}</span>
       <!-- Fav match badges -->
       <span
         v-for="m in directMatches"
@@ -65,9 +67,6 @@
         class="fav-badge fav-badge--bubble"
         :style="{ color: favColor(m.pattern).text, background: favColor(m.pattern).bg, borderColor: favColor(m.pattern).border }"
       >{{ m.label || m.pattern }}</span>
-      <span class="call-line" @click.stop="$emit('jump', node.line_no)">
-        {{ node.line_no.toLocaleString() }}
-      </span>
     </div>
 
     <div v-if="expanded" class="call-children">
@@ -115,11 +114,21 @@ const props = defineProps({
 const emit = defineEmits(['jump', 'fav-match', 'ctx-menu', 'breadcrumb'])
 
 const store = useTraceStore()
+
+const isLeaf = computed(() => {
+  if (props.node.noise_only) return false
+  if (rawCount.value === 0) return true
+  if (rawCount.value === null && props.node.subtree_end != null && props.node.subtree_end <= props.node.line_no + 1) return true
+  return false
+})
+const isNoisy = computed(() => !!props.node.noise_only)
+
 const expanded = ref(false)
 const children = ref([])
 const parentReturn = ref(null)
 const loading = ref(false)
 const raw = ref(false)
+const rawCount = ref(null)  // null = unknown, 0 = true leaf, >0 = has noise children
 
 // Auto-expand when this node is in the expandPath
 watch(() => props.expandPath, async (path) => {
@@ -280,6 +289,7 @@ function onRowClick(e) {
 }
 
 async function toggle() {
+  if (isLeaf.value || isNoisy.value) return
   expanded.value = !expanded.value
   emit('breadcrumb', { crumbs: myCrumbs.value, line: props.node.line_no })
   if (expanded.value && !children.value.length) {
@@ -293,6 +303,7 @@ async function load(isRaw) {
   const result = await store.fetchChildren(props.fileId, props.node.line_no, props.node.depth, isRaw)
   children.value = result.children ?? result
   parentReturn.value = result.parent_return ?? null
+  if (!isRaw && result.raw_count != null) rawCount.value = result.raw_count
   loading.value = false
   // Bubble fav matches from entire subtree using favScan — covers any depth
   if (children.value.length) {
@@ -494,6 +505,13 @@ function renderSig(sig) {
 .call-row:hover { background: rgba(255, 255, 255, 0.035); }
 
 .chevron-sm { color: #343448; font-size: 10px; width: 10px; flex-shrink: 0; }
+.chevron-sm--leaf { color: #232330; font-size: 14px; line-height: 1; }
+.call-row--leaf { cursor: default; }
+.call-row--leaf:hover { background: transparent; }
+.call-row--noisy { cursor: default; }
+.call-row--noisy:hover { background: transparent; }
+.call-sig--dim { opacity: 0.35; }
+.call-file--dim { opacity: 0.35; }
 
 .call-sig { color: #8a8a9a; }
 .sig-op   { opacity: 0.4; }
