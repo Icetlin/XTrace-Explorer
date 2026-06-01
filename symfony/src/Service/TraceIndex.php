@@ -134,8 +134,7 @@ class TraceIndex
             $matched = [];
             foreach ($patterns as $p) {
                 if ($p['pattern'] === '') continue;
-                $escaped = preg_quote($p['pattern'], '/');
-                if (preg_match('/\b' . $escaped . '\b/', $searchable)) {
+                if (str_contains($searchable, $p['pattern'])) {
                     $matched[] = $p;
                 }
             }
