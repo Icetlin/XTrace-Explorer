@@ -257,7 +257,7 @@ class TraceController extends AbstractController
             unset($child);
         }
 
-        return $this->json(['children' => $children, 'parent_return' => $parentReturn]);
+        return $this->json(['children' => $children, 'parent_return' => $parentReturn, 'raw_count' => $result['raw_count'] ?? 0]);
     }
 
     #[Route('/favourites-scan/{id}', methods: ['GET'])]

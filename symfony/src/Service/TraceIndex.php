@@ -359,6 +359,7 @@ class TraceIndex
         fseek($fh, $startOffset);
 
         $children = [];
+        $rawChildCount = 0;
         $currentLine = $startLine - 1;
         $childDepth = $callDepth + 1;
         $foundParent = false;
@@ -404,6 +405,7 @@ class TraceIndex
             $lastChildIdx = null;
             if ($depth === $childDepth) {
                 $sig = $this->extractSig($m[2]);
+                $rawChildCount++;
 
                 // Close previous child's subtree_end
                 if ($children) {
@@ -414,16 +416,24 @@ class TraceIndex
 
                 $rawFile = $this->extractFile($m[2]);
                 $children[] = [
-                    'line_no'     => $currentLine,
-                    'depth'       => $depth,
-                    'sig'         => $sig,
-                    'args'        => $this->extractArgs($m[2]),
-                    'file'        => $rawFile ? $this->shortFile($rawFile) : null,
-                    'file_abs'    => $rawFile,
-                    'return'      => null,
-                    'subtree_end' => null,
+                    'line_no'        => $currentLine,
+                    'depth'          => $depth,
+                    'sig'            => $sig,
+                    'args'           => $this->extractArgs($m[2]),
+                    'file'           => $rawFile ? $this->shortFile($rawFile) : null,
+                    'file_abs'       => $rawFile,
+                    'return'         => null,
+                    'subtree_end'    => null,
+                    'noise_only'     => false,  // filled below
                 ];
                 $lastChildIdx = count($children) - 1;
+            } elseif ($depth === $childDepth + 1 && $children) {
+                // Grandchild line — track whether last child has only noisy grandchildren
+                $grandSig = $this->extractSig($m[2]);
+                $last = &$children[count($children) - 1];
+                if (!isset($last['_grand_total'])) { $last['_grand_total'] = 0; $last['_grand_noisy'] = 0; }
+                $last['_grand_total']++;
+                if ($this->isNoisySig($grandSig)) $last['_grand_noisy']++;
             }
         }
 
@@ -432,8 +442,17 @@ class TraceIndex
             $children[count($children) - 1]['subtree_end'] = $currentLine;
         }
 
+        // Finalize noise_only flag and clean up temp fields
+        foreach ($children as &$child) {
+            $total = $child['_grand_total'] ?? 0;
+            $noisy = $child['_grand_noisy'] ?? 0;
+            $child['noise_only'] = $total > 0 && $total === $noisy;
+            unset($child['_grand_total'], $child['_grand_noisy']);
+        }
+        unset($child);
+
         fclose($fh);
-        return ['children' => $children, 'parent_return' => $parentReturn];
+        return ['children' => $children, 'parent_return' => $parentReturn, 'raw_count' => $rawChildCount];
     }
 
     private function isNoisySig(string $sig): bool

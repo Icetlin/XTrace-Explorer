@@ -32,7 +32,7 @@ const props = defineProps({
 })
 
 const store = useTraceStore()
-const collapsed = ref(false)
+const collapsed = ref(true)
 const sourceData = ref(null)
 
 // Extract absolute file path and line numbers from children
