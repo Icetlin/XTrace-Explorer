@@ -11,6 +11,7 @@ services:
       - ./symfony/migrations:/app/migrations
       - ./symfony/public/app:/app/public/app
       - ./docker-compose.yml:/compose/compose.yaml:rw
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       - db
     environment:
@@ -22,6 +23,8 @@ services:
       DEFAULT_URI: http://localhost:8765
       TRACES_SOURCE_DIR: /traces
       COMPOSE_FILE_PATH: /compose/compose.yaml
+      XDEBUG_CONTAINER: ${XDEBUG_CONTAINER:-}
+      XDEBUG_TRACE_DIR_CTR: ${XDEBUG_TRACE_DIR_CTR:-/traces}
 
   db:
     image: postgres:16-alpine

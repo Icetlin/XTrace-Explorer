@@ -52,19 +52,31 @@
           <span v-if="loadingBrowse" class="file-browser__loading">
             <span class="spinner-inline" /> scanning…
           </span>
-          <span v-else class="file-browser__count">{{ browseFiles.length }} files</span>
+          <span v-else class="file-browser__count">{{ filteredBrowseFiles.length }} / {{ browseFiles.length }} files</span>
           <button class="file-browser__close" @click="showBrowser = false">✕</button>
         </div>
-        <div v-if="!browseFiles.length && !loadingBrowse" class="file-browser__empty">
-          No .xt files found in traces directory
+        <div class="file-browser__search">
+          <input
+            ref="searchInput"
+            v-model="browseQuery"
+            class="file-browser__search-input"
+            placeholder="filter by name…"
+            @keydown.escape="showBrowser = false"
+          />
+        </div>
+        <div v-if="!filteredBrowseFiles.length && !loadingBrowse" class="file-browser__empty">
+          {{ browseQuery ? 'No files match "' + browseQuery + '"' : 'No .xt files found in traces directory' }}
         </div>
         <div
-          v-for="f in browseFiles"
-          :key="f.name"
+          v-for="f in filteredBrowseFiles"
+          :key="f.rel_path"
           class="file-row"
-          @click="openFile(f.name)"
+          @click="openFile(f.rel_path)"
         >
-          <span class="file-row__name">{{ f.name }}</span>
+          <span class="file-row__info">
+            <span class="file-row__name">{{ f.name }}</span>
+            <span v-if="f.dir" class="file-row__dir">{{ f.dir }}</span>
+          </span>
           <span class="file-row__size">{{ formatSize(f.size) }}</span>
         </div>
       </div>
@@ -178,7 +190,7 @@
 </template>
 
 <script setup>
-import { ref, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { useTraceStore } from './stores/trace'
 import TocTree from './components/TocTree.vue'
 import DesertBackground from './components/DesertBackground.vue'
@@ -193,12 +205,22 @@ const store = useTraceStore()
 const activeSection = ref('trace')
 const showBrowser = ref(false)
 const browseFiles = ref([])
+const browseQuery = ref('')
 const loadingBrowse = ref(false)
 const jumpToast = ref(null)
 const breadcrumbPath = ref([])
 const breadcrumbLine = ref(null)
+const searchInput = ref(null)
 let jumpToastTimer = null
 const tocTreeRefs = {}
+
+const filteredBrowseFiles = computed(() => {
+  const q = browseQuery.value.trim().toLowerCase()
+  if (!q) return browseFiles.value
+  return browseFiles.value.filter(f =>
+    f.name.toLowerCase().includes(q) || (f.dir && f.dir.toLowerCase().includes(q))
+  )
+})
 
 store.loadFiles()
 store.loadFavourites()
@@ -219,7 +241,11 @@ watch(
 
 function toggleBrowser() {
   showBrowser.value = !showBrowser.value
-  if (showBrowser.value) loadBrowse()
+  if (showBrowser.value) {
+    browseQuery.value = ''
+    loadBrowse()
+    nextTick(() => searchInput.value?.focus())
+  }
 }
 
 async function loadBrowse() {
@@ -229,10 +255,11 @@ async function loadBrowse() {
   loadingBrowse.value = false
 }
 
-async function openFile(filename) {
+async function openFile(relPath) {
   showBrowser.value = false
-  const { data } = await axios.post('/api/open', { filename })
-  await store.selectFile(data.file_id, filename)
+  const { data } = await axios.post('/api/open', { rel_path: relPath })
+  const displayName = relPath.includes('/') ? relPath.split('/').pop() : relPath
+  await store.selectFile(data.file_id, displayName)
   await store.loadFiles()
   activeSection.value = 'trace'
   if (store.currentFile?.status !== 'ready') startPolling(data.file_id)
@@ -462,6 +489,25 @@ html, body, #app {
   border-radius: 3px;
 }
 .file-browser__close:hover { color: #cc6060; }
+.file-browser__search {
+  padding: 6px 14px;
+  border-bottom: 1px solid rgba(16, 16, 32, 0.8);
+  background: rgba(8, 8, 18, 0.9);
+}
+.file-browser__search-input {
+  width: 100%;
+  background: rgba(14, 14, 28, 0.8);
+  border: 1px solid rgba(30, 30, 60, 0.5);
+  border-radius: 4px;
+  color: #6a8aaa;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 5px 10px;
+  outline: none;
+}
+.file-browser__search-input::placeholder { color: #252540; }
+.file-browser__search-input:focus { border-color: rgba(50, 80, 130, 0.7); }
+
 .file-browser__empty {
   padding: 16px 24px;
   font-size: 12px;
@@ -474,7 +520,7 @@ html, body, #app {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 28px;
+  padding: 7px 28px;
   cursor: pointer;
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
@@ -482,8 +528,10 @@ html, body, #app {
   transition: background 0.1s;
 }
 .file-row:hover { background: rgba(16, 16, 28, 0.6); }
+.file-row__info { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .file-row__name { color: #4a5a6a; }
-.file-row__size { color: #202030; font-size: 10px; }
+.file-row__dir  { color: #242438; font-size: 10px; }
+.file-row__size { color: #202030; font-size: 10px; flex-shrink: 0; margin-left: 12px; }
 
 /* ── Status bar ── */
 .status-bar {

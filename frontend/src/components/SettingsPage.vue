@@ -127,6 +127,40 @@ xdebug.trace_output_name = trace.%t.%p</pre>
         </div>
       </template>
 
+      <!-- ── Xdebug ── -->
+      <template v-if="activeSection === 'xdebug'">
+        <div class="section-title">Xdebug mode</div>
+
+        <div class="xd-status-row">
+          <span class="xd-status-label">Current mode:</span>
+          <span class="xd-status-val" :class="'xd-mode--' + xdStatus">{{ xdStatusLabel }}</span>
+          <button class="xd-refresh" :disabled="xdLoading" @click="refreshXdStatus" title="Refresh">⟳</button>
+        </div>
+
+        <div class="xd-cards">
+          <button
+            v-for="m in xdModes"
+            :key="m.id"
+            class="xd-card"
+            :class="{ 'xd-card--active': xdStatus === m.id, 'xd-card--loading': xdSetting === m.id }"
+            :disabled="xdLoading || xdStatus === m.id"
+            @click="setXdMode(m.id)"
+          >
+            <span class="xd-card-icon">{{ m.icon }}</span>
+            <span class="xd-card-name">{{ m.label }}</span>
+            <span class="xd-card-desc">{{ m.desc }}</span>
+            <span v-if="xdSetting === m.id" class="xd-card-spinner spinner" />
+          </button>
+        </div>
+
+        <div v-if="xdStatus === 'debug+trace'" class="xd-clear-row">
+          <button class="btn btn--danger" :disabled="xdLoading" @click="clearTraces">Clear trace files</button>
+          <span class="xd-clear-hint">Deletes <code>trace_*.xt</code> from the container trace dir</span>
+        </div>
+
+        <transition name="toast"><div v-if="toast" class="toast" :class="'toast--' + toast.type">{{ toast.msg }}</div></transition>
+      </template>
+
       <!-- ── Listener Filters ── -->
       <template v-if="activeSection === 'filters'">
         <div class="section-title">Listener filters</div>
@@ -174,7 +208,7 @@ xdebug.trace_output_name = trace.%t.%p</pre>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useTraceStore } from '../stores/trace'
 import { favColor } from '../favColor.js'
 import axios from 'axios'
@@ -185,6 +219,7 @@ const sections = [
   { id: 'general',    icon: '⚙', label: 'General' },
   { id: 'favourites', icon: '★', label: 'Favourites' },
   { id: 'filters',    icon: '⊘', label: 'Listener filters' },
+  { id: 'xdebug',    icon: '⚡', label: 'Xdebug' },
 ]
 const activeSection = ref('general')
 
@@ -201,6 +236,23 @@ const newLabel = ref('')
 
 // Filters
 const newFilter = ref('')
+
+// Xdebug
+const xdStatus  = ref(null)   // null | 'off' | 'debug' | 'debug+trace'
+const xdLoading = ref(false)
+const xdSetting = ref(null)
+const xdModes = [
+  { id: 'off',         icon: '○', label: 'Off',         desc: 'xdebug disabled entirely' },
+  { id: 'debug',       icon: '⬤', label: 'Debug only',  desc: 'Breakpoints on XDEBUG_TRIGGER' },
+  { id: 'debug+trace', icon: '◉', label: 'Debug+Trace',  desc: 'Full trace file per request' },
+]
+const xdStatusLabel = computed(() => {
+  if (xdStatus.value === null) return '…'
+  if (xdStatus.value === 'off') return 'off'
+  if (xdStatus.value === 'debug') return 'debug'
+  if (xdStatus.value === 'debug+trace') return 'debug + trace'
+  return xdStatus.value
+})
 
 const filterExamples = [
   { pattern: 'DataCollector',      desc: 'Symfony profiler data collectors' },
@@ -219,11 +271,12 @@ onMounted(async () => {
     const data = await store.loadSettings()
     form.value = {
       traces_host_path: data.traces_host_path || '',
-      project_path: data.project_path || '',
-      project_name: data.project_name || '',
-      app_namespaces: data.app_namespaces ? JSON.parse(JSON.stringify(data.app_namespaces)) : [],
+      project_path:     data.project_path     || '',
+      project_name:     data.project_name     || '',
+      app_namespaces:   data.app_namespaces ? JSON.parse(JSON.stringify(data.app_namespaces)) : [],
     }
     savedOnce.value = !!(data.traces_host_path || data.project_path)
+    refreshXdStatus()
   } catch {}
 })
 
@@ -289,11 +342,54 @@ async function addFilterValue(v) {
 function formPayload(overrides = {}) {
   return {
     traces_host_path: form.value.traces_host_path,
-    project_path: form.value.project_path,
-    project_name: form.value.project_name,
-    app_namespaces: form.value.app_namespaces,
+    project_path:     form.value.project_path,
+    project_name:     form.value.project_name,
+    app_namespaces:   form.value.app_namespaces,
     listener_filters: store.listenerFilters,
     ...overrides,
+  }
+}
+
+async function refreshXdStatus() {
+  xdLoading.value = true
+  try {
+    const { data } = await axios.get('/api/xdebug/status')
+    xdStatus.value = data.running ? (data.mode || 'off') : null
+  } catch {
+    xdStatus.value = null
+  } finally {
+    xdLoading.value = false
+  }
+}
+
+async function setXdMode(mode) {
+  xdSetting.value = mode
+  xdLoading.value = true
+  try {
+    const { data } = await axios.post('/api/xdebug/set', { mode })
+    if (data.ok) {
+      xdStatus.value = mode
+      showToast(`Xdebug set to: ${mode}`)
+    } else {
+      showToast(data.error || 'Failed', 'err')
+    }
+  } catch (e) {
+    showToast('Request failed', 'err')
+  } finally {
+    xdSetting.value = null
+    xdLoading.value = false
+  }
+}
+
+async function clearTraces() {
+  xdLoading.value = true
+  try {
+    const { data } = await axios.post('/api/xdebug/clear')
+    showToast(data.ok ? 'Trace files cleared' : (data.output || 'Error'), data.ok ? 'ok' : 'err')
+  } catch {
+    showToast('Clear failed', 'err')
+  } finally {
+    xdLoading.value = false
   }
 }
 
@@ -709,4 +805,104 @@ async function removeFilter(pattern) {
   flex-shrink: 0;
 }
 .ex-desc { color: rgba(120, 125, 170, 0.6); }
+
+
+/* ── Xdebug section ── */
+.xd-status-block {
+  margin-top: 28px;
+  padding: 18px 20px;
+  border-radius: 10px;
+  border: 1px solid rgba(40, 50, 100, 0.4);
+  background: rgba(255, 255, 255, 0.022);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.xd-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+  font-size: 12px;
+}
+.xd-status-label { color: rgba(90, 100, 150, 0.7); }
+.xd-status-val {
+  font-weight: 700;
+  font-size: 12px;
+  padding: 2px 10px;
+  border-radius: 5px;
+  border: 1px solid;
+}
+.xd-mode--off         { color: rgba(100, 100, 140, 0.7); border-color: rgba(60,60,100,0.3); background: rgba(255,255,255,0.025); }
+.xd-mode--debug       { color: rgba(90, 190, 120, 0.9);  border-color: rgba(40,130,70,0.35); background: rgba(20,60,30,0.35); }
+.xd-mode--debug\+trace { color: rgba(255, 190, 60, 0.95); border-color: rgba(170,120,20,0.4); background: rgba(60,40,5,0.5); }
+
+.xd-refresh {
+  background: none; border: none; cursor: pointer;
+  color: rgba(70, 85, 135, 0.6); font-size: 15px; line-height: 1;
+  padding: 2px 5px; border-radius: 4px;
+  transition: color 0.12s;
+}
+.xd-refresh:hover { color: rgba(130, 170, 220, 0.9); }
+.xd-refresh:disabled { opacity: 0.3; cursor: default; }
+
+.xd-cards {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.xd-card {
+  flex: 1; min-width: 120px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 9px;
+  border: 1px solid rgba(40, 45, 80, 0.55);
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  font-family: 'JetBrains Mono', monospace;
+  text-align: left;
+  transition: border-color 0.14s, background 0.14s, box-shadow 0.14s;
+}
+.xd-card:not(:disabled):hover {
+  border-color: rgba(70, 120, 200, 0.5);
+  background: rgba(255, 255, 255, 0.052);
+  box-shadow: 0 2px 12px rgba(50, 90, 180, 0.12);
+}
+.xd-card:disabled { opacity: 0.45; cursor: default; }
+.xd-card--active {
+  border-color: rgba(80, 150, 230, 0.55);
+  background: rgba(30, 60, 120, 0.2);
+  box-shadow: 0 0 0 1px rgba(80, 150, 230, 0.2);
+}
+.xd-card--loading { opacity: 0.65; }
+
+.xd-card-icon { font-size: 17px; color: rgba(100, 140, 200, 0.75); }
+.xd-card--active .xd-card-icon { color: rgba(100, 190, 255, 0.9); }
+.xd-card-name { font-size: 12px; font-weight: 700; color: rgba(160, 175, 220, 0.9); }
+.xd-card-desc { font-size: 10.5px; color: rgba(90, 100, 150, 0.65); line-height: 1.5; }
+.xd-card-spinner { margin-top: 4px; }
+
+.xd-clear-row {
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.btn--danger {
+  background: rgba(80, 10, 10, 0.45);
+  color: rgba(220, 100, 100, 0.9);
+  border-color: rgba(130, 35, 35, 0.4);
+}
+.btn--danger:not(:disabled):hover {
+  background: rgba(100, 15, 15, 0.55);
+  border-color: rgba(160, 50, 50, 0.5);
+}
+.xd-clear-hint { font-size: 11px; color: rgba(80, 85, 135, 0.6); }
+.xd-clear-hint code { color: rgba(120, 150, 200, 0.7); }
+
+
 </style>

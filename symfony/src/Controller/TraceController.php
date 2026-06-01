@@ -33,42 +33,67 @@ class TraceController extends AbstractController
     ) {}
 
     #[Route('/browse', methods: ['GET'])]
-    public function browse(): JsonResponse
+    public function browse(Request $request): JsonResponse
     {
+        $q = strtolower(trim($request->query->get('q', '')));
         $files = [];
         if (is_dir($this->tracesSourceDir)) {
-            foreach (glob($this->tracesSourceDir . '/*.xt') as $path) {
-                $files[] = [
-                    'name' => basename($path),
-                    'path' => $path,
-                    'size' => filesize($path),
-                ];
-            }
+            $this->collectXtFiles($this->tracesSourceDir, $this->tracesSourceDir, $files);
+        }
+        if ($q !== '') {
+            $files = array_values(array_filter($files, fn($f) => str_contains(strtolower($f['name']), $q)));
         }
         usort($files, fn($a, $b) => $b['size'] <=> $a['size']);
         return $this->json($files);
+    }
+
+    private function collectXtFiles(string $baseDir, string $dir, array &$files): void
+    {
+        $entries = @scandir($dir);
+        if (!$entries) return;
+        foreach ($entries as $entry) {
+            if ($entry === '.' || $entry === '..') continue;
+            $path = $dir . '/' . $entry;
+            if (is_dir($path)) {
+                $this->collectXtFiles($baseDir, $path, $files);
+            } elseif (str_ends_with($entry, '.xt') && is_file($path)) {
+                $rel = ltrim(substr($path, strlen($baseDir)), '/');
+                $files[] = [
+                    'name'     => $entry,
+                    'rel_path' => $rel,
+                    'dir'      => ltrim(substr(dirname($path), strlen($baseDir)), '/'),
+                    'path'     => $path,
+                    'size'     => filesize($path),
+                ];
+            }
+        }
     }
 
     #[Route('/open', methods: ['POST'])]
     public function open(Request $request): JsonResponse
     {
         $data = json_decode($request->getContent(), true);
-        $filename = $data['filename'] ?? '';
+        // Support rel_path (relative path within tracesSourceDir) or legacy filename
+        $relPath = $data['rel_path'] ?? $data['filename'] ?? '';
 
-        // Security: only allow files from tracesSourceDir, no path traversal
-        $realSource = realpath($this->tracesSourceDir . '/' . basename($filename));
-        if (!$realSource || !str_starts_with($realSource, realpath($this->tracesSourceDir))) {
+        // Security: resolve and verify the path stays within tracesSourceDir
+        $realSource = realpath($this->tracesSourceDir . '/' . $relPath);
+        $realBase   = realpath($this->tracesSourceDir);
+        if (!$realSource || !$realBase || !str_starts_with($realSource, $realBase . '/')) {
             return $this->json(['error' => 'Invalid file'], 400);
         }
 
+        $displayName = basename($realSource);
+
         // Check if already imported (same path)
-        $existing = $this->traceRepo->findOneBy(['originalName' => basename($filename)]);
+        $existing = $this->traceRepo->findOneBy(['originalName' => $relPath])
+            ?? $this->traceRepo->findOneBy(['originalName' => $displayName]);
         if ($existing && $existing->getStatus() === 'ready') {
             return $this->json(['file_id' => $existing->getId(), 'status' => $existing->getStatus()]);
         }
 
         $traceFile = new TraceFile();
-        $traceFile->setOriginalName(basename($filename));
+        $traceFile->setOriginalName($relPath);
         $traceFile->setFileHash(md5($realSource));
 
         $this->em->persist($traceFile);
@@ -475,10 +500,10 @@ class TraceController extends AbstractController
         }
 
         $settings['traces_host_path'] = $settings['traces_host_path'] ?? '';
-        $settings['project_path'] = $settings['project_path'] ?? '';
-        $settings['project_name'] = $settings['project_name'] ?? '';
+        $settings['project_path']     = $settings['project_path']     ?? '';
+        $settings['project_name']     = $settings['project_name']     ?? '';
         $settings['listener_filters'] = $settings['listener_filters'] ?? [];
-        $settings['app_namespaces'] = $settings['app_namespaces'] ?? [];
+        $settings['app_namespaces']   = $settings['app_namespaces']   ?? [];
 
         return $this->json($settings);
     }
@@ -494,13 +519,15 @@ class TraceController extends AbstractController
         // app_namespaces: [{namespace: "App\\", label: "app"}, ...]
         $appNamespaces = array_values(array_filter((array)($body['app_namespaces'] ?? []), fn($e) => !empty($e['namespace'])));
 
+        // Preserve xdebug_* fields that are stored separately (written by /api/xdebug/config)
+        $existing = file_exists($this->getSettingsPath()) ? (json_decode(file_get_contents($this->getSettingsPath()), true) ?? []) : [];
         $settings = [
             'traces_host_path' => $tracesPath,
             'project_path'     => $projectPath,
             'project_name'     => $projectName,
             'listener_filters' => $listenerFilters,
             'app_namespaces'   => $appNamespaces,
-        ];
+        ] + array_filter($existing, fn($k) => str_starts_with($k, 'xdebug_'), ARRAY_FILTER_USE_KEY);
 
         // Persist settings
         $settingsDir = dirname($this->getSettingsPath());
@@ -588,5 +615,171 @@ class TraceController extends AbstractController
         }
 
         return $this->json(['ok' => true, 'docker_available' => file_exists('/var/run/docker.sock'), 'output' => implode("\n", $output)]);
+    }
+
+    // ── Xdebug mode control ───────────────────────────────────────────────────
+
+    private function getXdebugSettings(): array
+    {
+        $s = file_exists($this->getSettingsPath()) ? json_decode(file_get_contents($this->getSettingsPath()), true) : [];
+        return [
+            'container'     => (getenv('XDEBUG_CONTAINER')   ?: null) ?? $s['xdebug_container']   ?? '',
+            'compose_dir'   => (getenv('XDEBUG_COMPOSE_DIR') ?: null) ?? $s['xdebug_compose_dir'] ?? '',
+            'ini_path'      => '/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini',
+            'trace_dir_ctr' => (getenv('XDEBUG_TRACE_DIR_CTR') ?: null) ?? $s['xdebug_trace_dir_ctr'] ?? '/traces',
+            'client_host'   => 'host.docker.internal',
+            'client_port'   => '9003',
+            'idekey'        => 'PHPSTORM',
+        ];
+    }
+
+    #[Route('/xdebug/config', methods: ['POST'])]
+    public function xdebugSaveConfig(Request $request): JsonResponse
+    {
+        $body = json_decode($request->getContent(), true);
+        $path = $this->getSettingsPath();
+        $existing = file_exists($path) ? (json_decode(file_get_contents($path), true) ?? []) : [];
+        $existing['xdebug_container']  = trim($body['container']   ?? '');
+        $existing['xdebug_compose_dir'] = trim($body['compose_dir'] ?? '');
+        $settingsDir = dirname($path);
+        if (!is_dir($settingsDir)) mkdir($settingsDir, 0755, true);
+        file_put_contents($path, json_encode($existing, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        return $this->json(['ok' => true]);
+    }
+
+    private function resolveContainerId(array $xd): ?string
+    {
+        // Try by name first (works when container_name matches)
+        $out = [];
+        exec('docker inspect --format={{.Id}} ' . escapeshellarg($xd['container']) . ' 2>/dev/null', $out, $code);
+        $id = trim(implode('', $out));
+        if ($code === 0 && $id) return $id;
+        return null;
+    }
+
+    private function dockerExec(array $xd, string $command): array
+    {
+        if (!$xd['container'] || !file_exists('/var/run/docker.sock')) {
+            return ['ok' => false, 'error' => 'docker not available or container not configured'];
+        }
+        $id = $this->resolveContainerId($xd);
+        if (!$id) {
+            return ['ok' => false, 'error' => "container '{$xd['container']}' not found or not running"];
+        }
+        $cmd = 'docker exec -u root ' . escapeshellarg($id) . ' sh -c ' . escapeshellarg($command) . ' 2>&1';
+        $output = [];
+        exec($cmd, $output, $code);
+        return ['ok' => $code === 0, 'output' => implode("\n", $output), 'code' => $code];
+    }
+
+    private function dockerCpIni(array $xd, string $iniContent): array
+    {
+        if (!$xd['container'] || !file_exists('/var/run/docker.sock')) {
+            return ['ok' => false, 'error' => 'docker not available or container not configured'];
+        }
+        $id = $this->resolveContainerId($xd);
+        if (!$id) {
+            return ['ok' => false, 'error' => "container '{$xd['container']}' not found or not running"];
+        }
+        $tmp = tempnam(sys_get_temp_dir(), 'xdebug_ini_');
+        file_put_contents($tmp, $iniContent);
+        $cmd = 'docker cp ' . escapeshellarg($tmp) . ' ' . escapeshellarg($id . ':' . $xd['ini_path']) . ' 2>&1';
+        $output = [];
+        exec($cmd, $output, $code);
+        unlink($tmp);
+        return ['ok' => $code === 0, 'output' => implode("\n", $output), 'code' => $code];
+    }
+
+    private function buildIni(array $xd, string $mode): string
+    {
+        $base = "zend_extension=xdebug\n"
+              . "xdebug.client_host={$xd['client_host']}\n"
+              . "xdebug.client_port={$xd['client_port']}\n"
+              . "xdebug.log=/var/log/xdebug.log\n"
+              . "xdebug.idekey={$xd['idekey']}\n";
+
+        if ($mode === 'debug+trace') {
+            return $base
+                 . "xdebug.mode=debug,trace\n"
+                 . "xdebug.start_with_request=yes\n"
+                 . "xdebug.output_dir={$xd['trace_dir_ctr']}\n"
+                 . "xdebug.trace_output_name=trace_%R_%t\n";
+        }
+        if ($mode === 'debug') {
+            return $base
+                 . "xdebug.mode=debug\n"
+                 . "xdebug.start_with_request=trigger\n";
+        }
+        // off
+        return $base . "xdebug.mode=off\n";
+    }
+
+    #[Route('/xdebug/status', methods: ['GET'])]
+    public function xdebugStatus(): JsonResponse
+    {
+        $xd = $this->getXdebugSettings();
+        if (!$xd['container']) {
+            return $this->json(['configured' => false, 'mode' => null, 'running' => false]);
+        }
+        $res = $this->dockerExec($xd, 'cat ' . escapeshellarg($xd['ini_path']));
+        if (!$res['ok']) {
+            return $this->json(['configured' => true, 'running' => false, 'mode' => null, 'error' => $res['output'] ?? $res['error']]);
+        }
+        $mode = 'off';
+        foreach (explode("\n", $res['output']) as $line) {
+            $line = trim($line);
+            if (str_starts_with($line, 'xdebug.mode=')) {
+                $val = trim(substr($line, strlen('xdebug.mode=')));
+                if (str_contains($val, 'trace')) $mode = 'debug+trace';
+                elseif (str_contains($val, 'debug')) $mode = 'debug';
+                else $mode = 'off';
+            }
+        }
+        return $this->json(['configured' => true, 'running' => true, 'mode' => $mode]);
+    }
+
+    #[Route('/xdebug/set', methods: ['POST'])]
+    public function xdebugSet(Request $request): JsonResponse
+    {
+        $body = json_decode($request->getContent(), true);
+        $mode = $body['mode'] ?? 'off'; // 'off' | 'debug' | 'debug+trace'
+        if (!in_array($mode, ['off', 'debug', 'debug+trace'], true)) {
+            return $this->json(['ok' => false, 'error' => 'invalid mode'], 400);
+        }
+
+        $xd = $this->getXdebugSettings();
+        if (!$xd['container']) {
+            return $this->json(['ok' => false, 'error' => 'xdebug container not configured in Settings → Xdebug']);
+        }
+
+        // Create trace dir if switching to trace mode
+        if ($mode === 'debug+trace') {
+            $this->dockerExec($xd, 'mkdir -p ' . escapeshellarg($xd['trace_dir_ctr']));
+        }
+
+        $ini = $this->buildIni($xd, $mode);
+        $cp  = $this->dockerCpIni($xd, $ini);
+        if (!$cp['ok']) {
+            return $this->json(['ok' => false, 'error' => $cp['output'] ?? $cp['error']]);
+        }
+
+        // Graceful FPM reload via USR2 to master process (no downtime)
+        $this->dockerExec($xd, 'kill -USR2 $(cat /var/run/php-fpm.pid 2>/dev/null || pgrep -f "php-fpm: master") 2>&1');
+
+        return $this->json([
+            'ok'  => true,
+            'mode' => $mode,
+        ]);
+    }
+
+    #[Route('/xdebug/clear', methods: ['POST'])]
+    public function xdebugClear(): JsonResponse
+    {
+        $xd = $this->getXdebugSettings();
+        if (!$xd['container']) {
+            return $this->json(['ok' => false, 'error' => 'xdebug not configured']);
+        }
+        $res = $this->dockerExec($xd, 'rm -f ' . escapeshellarg($xd['trace_dir_ctr']) . '/trace_*.xt 2>/dev/null; echo done');
+        return $this->json(['ok' => $res['ok'], 'output' => $res['output'] ?? '']);
     }
 }

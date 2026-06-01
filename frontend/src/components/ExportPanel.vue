@@ -87,12 +87,12 @@ function buildMarkdown() {
   // Build tree: group by event → listener → calls
   // Each item has breadcrumb: [{sig, line_no}, ...] where [0]=event, [1]=listener, [2+]=call ancestors
   let lastEventSig = null
-  let lastListenerSig = null
+  let lastListenerLineNo = null  // track by line_no, not sig — same class may appear multiple times
 
   for (const item of sorted) {
     const crumbs = item.breadcrumb || []
-    const eventCrumb   = crumbs[0] ?? null   // always event
-    const listenerCrumb = crumbs[1] ?? null  // always listener (for call nodes)
+    const eventCrumb    = crumbs[0] ?? null
+    const listenerCrumb = crumbs[1] ?? null
 
     // Event header
     const eventSig = item.type === 'event' ? item.sig : eventCrumb?.sig
@@ -100,19 +100,19 @@ function buildMarkdown() {
       lines.push(`### ${eventSig}`)
       lines.push('')
       lastEventSig = eventSig
-      lastListenerSig = null
+      lastListenerLineNo = null
     }
 
-    // Listener header
+    // Listener header — keyed by line_no so duplicate-sig listeners each get their own block
     const listenerSig = item.type === 'listener' ? item.sig : listenerCrumb?.sig
-    if (listenerSig && listenerSig !== lastListenerSig && item.type !== 'event') {
-      if (lastListenerSig) lines.push('')  // blank line between listener blocks
-      const lno = item.type === 'listener' ? item.line_no : listenerCrumb?.line_no
+    const listenerLineNo = item.type === 'listener' ? item.line_no : listenerCrumb?.line_no
+    if (listenerSig && listenerLineNo !== lastListenerLineNo && item.type !== 'event') {
+      if (lastListenerLineNo !== null) lines.push('')  // blank line between listener blocks
       const badges = item.type === 'listener' ? favBadges(item.sig, []) : ''
       const src = sigSource(listenerSig)
       const srcTag = src ? ` *(${src})*` : ''
-      lines.push(`- **${shortSig(listenerSig)}**${srcTag}${badges}  \`${lno?.toLocaleString() ?? ''}\``)
-      lastListenerSig = listenerSig
+      lines.push(`- **${shortSig(listenerSig)}**${srcTag}${badges}  \`${listenerLineNo?.toLocaleString() ?? ''}\``)
+      lastListenerLineNo = listenerLineNo
     }
 
     if (item.type === 'event') continue

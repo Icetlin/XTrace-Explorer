@@ -80,22 +80,16 @@ cd XTrace-Explorer
 cp .env.example .env
 ```
 
-Edit `.env`:
+Edit `.env` — set the three paths for your machine:
 
 ```env
-# Where your .xt trace files live on disk
-TRACES_DIR=/path/to/your/xdebug/traces
+# Where xdebug writes .xt files on your host
+TRACES_DIR=/path/to/xdebug_traces
 
-# Inline source view — shows PHP code next to the call tree.
-# Use the same path mapping you have in PHPStorm for Xdebug:
-#   Settings → PHP → Servers → path mappings
-#   Left column  (local)  → SOURCE_HOST_DIR
-#   Right column (remote) → SOURCE_CONTAINER_DIR
-SOURCE_HOST_DIR=/home/user/myapp
-SOURCE_CONTAINER_DIR=/var/www/myapp
+# PHPStorm Xdebug server path mapping (Settings → PHP → Servers):
+SOURCE_HOST_DIR=/home/me/projects/my-app       # local  (left column)
+SOURCE_CONTAINER_DIR=/var/www/my-app           # remote (right column)
 ```
-
-Start:
 
 ```bash
 docker compose up -d
@@ -105,26 +99,67 @@ Open **http://localhost:8765**, click **`+`**, pick a `.xt` file.
 
 First open triggers background parsing (10–60 s for large files). Status is shown in the tab. Parsed index is cached — subsequent opens are instant.
 
+You can also change paths later via **Settings → General** (gear icon, top-right):
+
+| Setting | What it is |
+|---------|-----------|
+| **Traces directory** | Host path to your xdebug trace folder — saved to `docker-compose.yml` and applied on container restart |
+| **Project source path** | Host path to your PHP project root — used for inline source view |
+| **App namespaces** | PHP namespaces that belong to your project (e.g. `App\`) — get colored badges in the call tree |
+
+After saving the trace directory: click **Restart container** so Docker remounts the volume. Then click **`+`** and pick a `.xt` file.
+
+First open triggers background parsing (10–60 s for large files). Status is shown in the tab. Parsed index is cached — subsequent opens are instant.
+
 ---
 
 ## Generating traces with Xdebug
 
+### Option A — via Settings UI (recommended if using Docker)
+
+Open **Settings → Xdebug** (⚡ in the sidebar). Configure the container name and compose project directory, then click a mode card:
+
+| Mode | What happens |
+|------|-------------|
+| **Off** | Xdebug disabled entirely |
+| **Debug only** | Breakpoints active; trace on `XDEBUG_TRIGGER` only |
+| **Debug + Trace** | Every request writes a `.xt` file to the trace dir |
+
+XTrace Explorer writes the xdebug ini directly into the container and restarts it — no manual ssh or config editing needed.
+
+### Option B — manual xdebug.ini
+
 Add to your `php.ini` / `xdebug.ini`:
 
+**Trace every request:**
 ```ini
-xdebug.mode=trace
-xdebug.start_with_request=trigger
-xdebug.trace_output_dir=/path/to/traces
-xdebug.trace_format=0
+zend_extension=xdebug
+xdebug.mode=debug,trace
+xdebug.start_with_request=yes
+xdebug.output_dir=/path/to/traces
+xdebug.trace_output_name=trace_%R_%t
 ```
 
-Then trigger a trace with the `XDEBUG_TRIGGER` cookie or query param:
+**Trace on demand (via trigger):**
+```ini
+zend_extension=xdebug
+xdebug.mode=debug,trace
+xdebug.start_with_request=trigger
+xdebug.output_dir=/path/to/traces
+xdebug.trace_output_name=trace_%R_%t
+```
+
+Trigger a trace request:
 
 ```bash
+# trigger via cookie
 curl -b "XDEBUG_TRIGGER=1" https://your-app.local/api/some/endpoint
+
+# or via query param
+curl "https://your-app.local/api/some/endpoint?XDEBUG_TRIGGER=1"
 ```
 
-The resulting `trace__*.xt` file will appear in the file browser automatically.
+The resulting `.xt` file will appear in the file browser automatically.
 
 ---
 
@@ -173,6 +208,10 @@ xtrace-explorer/
 | `GET/POST/DELETE` | `/api/annotations/{id}` | per-line annotations |
 | `GET` | `/api/annotations/{id}/export` | export annotations as Markdown |
 | `POST` | `/api/reparse/{id}` | force re-parse (after upgrading) |
+| `GET/POST` | `/api/settings` | read / write all settings (General + Xdebug) |
+| `GET` | `/api/xdebug/status` | current xdebug mode from the PHP container |
+| `POST` | `/api/xdebug/set` | set xdebug mode (`off` / `debug` / `debug+trace`) |
+| `POST` | `/api/xdebug/clear` | delete all `trace_*.xt` from the container trace dir |
 
 ---
 
