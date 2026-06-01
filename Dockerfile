@@ -9,6 +9,8 @@ RUN apk add --no-cache \
     unzip \
     nodejs \
     npm \
+    docker-cli \
+    docker-cli-compose \
     && docker-php-ext-install pdo pdo_pgsql zip opcache
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
@@ -27,7 +29,9 @@ RUN cd /frontend && npm ci && npm run build -- --outDir /app/public/app --emptyO
 
 RUN composer dump-autoload --optimize \
     && mkdir -p var/traces var/log var/cache \
-    && chmod -R 777 var
+    && chmod -R 777 var \
+    && addgroup -g 984 docker-host 2>/dev/null || true \
+    && adduser www-data docker-host 2>/dev/null || true
 
 # Nginx config
 COPY docker/nginx.conf /etc/nginx/nginx.conf
