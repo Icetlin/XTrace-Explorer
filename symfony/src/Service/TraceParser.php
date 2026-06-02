@@ -9,22 +9,6 @@ class TraceParser
 {
     private const SPARSE_EVERY = 500;
 
-    // Format: "    0.0036     444040     -> call() file:line"
-    // Group 1: indent spaces before "->", group 2: everything after "-> " (no $ anchor to avoid backtracking on 20KB+ lines)
-    private const CALL_RE = '/^\s+[\d.]+\s+\d+([ ]*)->\s+(.+)/';
-
-    // Only TraceableEventDispatcher->dispatch — this is the outermost, has $eventName in args
-    private const DISPATCH_RE = '/TraceableEventDispatcher->dispatch$/';
-    private const EVENT_NAME_RE = '/\$eventName\s*=\s*\'([^\']+)\'/';
-    private const EVENT_CLASS_RE = '/\$event\s*=\s*class\s+([\w\\\\]+)/';
-
-    // Extracts voter class name from addVoterVote($voter = class App\Foo\VoterName { ... })
-    private const VOTER_CLASS_RE = '/\$voter\s*=\s*(?:class\s+)?([\w\\\\]+)\s*[{\[]/';
-    // Extracts string attributes from addVoterVote(..., $attributes = [0 => 'ATTR', ...], ...)
-    private const VOTER_ATTRS_RE = '/\$attributes\s*=\s*\[([^\]]*)\]/';
-    // Extracts $vote = -1|0|1 from addVoterVote
-    private const VOTER_VOTE_RE = '/\$vote\s*=\s*(-?\d+)/';
-
     // Classes to skip when looking for real listener name after WrappedListener->__invoke
     private const LISTENER_NOISE = [
         'TraceableEventDispatcher', 'EventDispatcher', 'WrappedListener',
@@ -58,6 +42,7 @@ class TraceParser
         // Each entry: ['event' => string, 'line_no' => int, 'depth' => int, 'listeners' => [...]]
         $dispatchStack = [];
         $pendingInvoke = null; // ['depth' => int]
+        $lastShallowSig = null; // last sig seen at depth <= 18, used to label vote event caller
 
         $requestInfo = $this->extractRequestInfo($xtFilePath);
 
@@ -75,9 +60,20 @@ class TraceParser
                 $sparseIndex[(string)$lineNo] = $offset;
             }
 
-            if (preg_match(self::CALL_RE, $line, $m)) {
+            if (preg_match(TraceRegex::CallLine->value, $line, $m)) {
                 $depth = (int)(strlen($m[1]) / 2);
                 $sig = $this->extractSignature($m[2]);
+
+                // Track which top-level security listener is executing, to label vote events.
+                // Always overwrite when we see a new listener; reset on depth ≤ 11 (between kernel.request listeners).
+                if ($depth <= 11) {
+                    $lastShallowSig = null;
+                } elseif (str_contains($sig, '\\')
+                    && (str_contains($sig, 'TwoFactorAccessListener') || str_contains($sig, 'Firewall\\AccessListener'))
+                ) {
+                    $parts = explode('\\', $sig);
+                    $lastShallowSig = end($parts);
+                }
 
                 // --- TOC: track {main} depth ---
                 if ($sig === '{main}' && $mainDepth === null) {
@@ -94,12 +90,12 @@ class TraceParser
                 }
 
                 // --- TOC: detect TraceableEventDispatcher->dispatch (outermost, has $eventName) ---
-                if (preg_match(self::DISPATCH_RE, $sig)) {
+                if (preg_match(TraceRegex::DispatchCall->value, $sig)) {
                     $eventName = null;
                     $eventClass = null; // full FQCN when available
-                    if (preg_match(self::EVENT_NAME_RE, $line, $em2)) {
+                    if (preg_match(TraceRegex::EventName->value, $line, $em2)) {
                         $eventName = $em2[1];
-                    } elseif (preg_match(self::EVENT_CLASS_RE, $line, $em2)) {
+                    } elseif (preg_match(TraceRegex::EventClass->value, $line, $em2)) {
                         $eventClass = $em2[1]; // full FQCN
                         $parts = explode('\\', $em2[1]);
                         $eventName = end($parts);
@@ -137,6 +133,10 @@ class TraceParser
                                 'listeners' => [],
                             ];
                             if ($eventClass) $entry['event_class'] = $eventClass;
+                            // For vote events: record which security layer triggered this decide()
+                            if ($eventName === 'debug.security.authorization.vote' && $lastShallowSig !== null) {
+                                $entry['caller'] = $lastShallowSig;
+                            }
                             $dispatchStack[] = $entry;
                         }
                         $pendingInvoke = null;
@@ -169,15 +169,15 @@ class TraceParser
                     $top = &$dispatchStack[count($dispatchStack)-1];
                     if (!empty($top['listeners'])) {
                         $last = &$top['listeners'][count($top['listeners'])-1];
-                        if (!isset($last['voter_class']) && preg_match(self::VOTER_CLASS_RE, $line, $vm)) {
+                        if (!isset($last['voter_class']) && preg_match(TraceRegex::VoterClass->value, $line, $vm)) {
                             $parts = explode('\\', $vm[1]);
                             $last['voter_class'] = end($parts);
                         }
-                        if (!isset($last['vote_attrs']) && preg_match(self::VOTER_ATTRS_RE, $line, $am)) {
+                        if (!isset($last['vote_attrs']) && preg_match(TraceRegex::VoterAttrs->value, $line, $am)) {
                             preg_match_all("/'([^']+)'/", $am[1], $strings);
                             if ($strings[1]) $last['vote_attrs'] = $strings[1];
                         }
-                        if (!isset($last['vote_result']) && preg_match('/,\s*\$vote\s*=\s*(-?\d+)/', $line, $rm)) {
+                        if (!isset($last['vote_result']) && preg_match(TraceRegex::VoterResult->value, $line, $rm)) {
                             $last['vote_result'] = (int)$rm[1]; // -1=DENIED, 0=ABSTAIN, 1=GRANTED
                         }
                         unset($last);
@@ -253,12 +253,12 @@ class TraceParser
         while (($line = fgets($fh, 1048576)) !== false) {
             // ResponseHeaderBag->setCookie($cookie = class ...Cookie { protected $name = 'sio_u'; protected $value = '...' })
             if (str_contains($line, '->setCookie') && str_contains($line, 'Cookie')) {
-                if (preg_match('/\$name\s*=\s*\'([^\']+)\'/', $line, $m)) {
+                if (preg_match(TraceRegex::CookieName->value, $line, $m)) {
                     $name = $m[1];
                     if (!isset($cookiesSeen[$name])) {
                         $cookiesSeen[$name] = true;
                         $cookie = ['name' => $name];
-                        if (preg_match('/\$value\s*=\s*\'([^\']+)\'/', $line, $mv)) {
+                        if (preg_match(TraceRegex::CookieValue->value, $line, $mv)) {
                             $val = $mv[1];
                             $cookie['value'] = strlen($val) > 40 ? substr($val, 0, 20) . '…' : $val;
                         }
@@ -268,15 +268,15 @@ class TraceParser
             }
             // RedirectResponse->__construct or targetUrl in object dump
             if ($info['location'] === null && str_contains($line, 'RedirectResponse')) {
-                if (preg_match('/\$url\s*=\s*\'([^\']+)\'/', $line, $m)) {
+                if (preg_match(TraceRegex::RedirectUrl->value, $line, $m)) {
                     $info['location'] = $m[1];
-                } elseif (preg_match('/targetUrl\s*=\s*\'([^\']+)\'/', $line, $m)) {
+                } elseif (preg_match(TraceRegex::RedirectTargetUrl->value, $line, $m)) {
                     $info['location'] = $m[1];
                 }
             }
             // Response->setStatusCode or statusCode in dump
             if ($info['status'] === null && str_contains($line, 'setStatusCode')) {
-                if (preg_match('/\$code\s*=\s*(\d{3})/', $line, $m)) {
+                if (preg_match(TraceRegex::StatusCode->value, $line, $m)) {
                     $info['status'] = (int)$m[1];
                 }
             }
@@ -292,7 +292,7 @@ class TraceParser
             fseek($fh, max(0, $size - 524288));
             $tail = fread($fh, 524288);
             fclose($fh);
-            if (preg_match_all('/statusCode\s*=\s*(\d{3})/', $tail, $matches)) {
+            if (preg_match_all(TraceRegex::StatusCodeDump->value, $tail, $matches)) {
                 $info['status'] = (int)end($matches[1]);
             }
         }
@@ -313,7 +313,7 @@ class TraceParser
 
         // TRACE START [2026-05-30 20:34:36.703988]
         $firstLine = fgets($fh, 1048576);
-        if ($firstLine && preg_match('/TRACE START \[([^]]+)]/', $firstLine, $m)) {
+        if ($firstLine && preg_match(TraceRegex::TraceStart->value, $firstLine, $m)) {
             $info['started_at'] = $m[1];
         }
 
@@ -324,19 +324,19 @@ class TraceParser
 
             if (str_contains($line, 'REQUEST_METHOD') && str_contains($line, 'REQUEST_URI')) {
                 // Extract individual fields via regex
-                if (preg_match("/'REQUEST_METHOD'\s*=>\s*'([^']+)'/", $line, $m)) {
+                if (preg_match(TraceRegex::ServerRequestMethod->value, $line, $m)) {
                     $info['method'] = $m[1];
                 }
-                if (preg_match("/'REQUEST_URI'\s*=>\s*'([^']+)'/", $line, $m)) {
+                if (preg_match(TraceRegex::ServerRequestUri->value, $line, $m)) {
                     $info['uri'] = $m[1];
                 }
-                if (preg_match("/'HTTP_HOST'\s*=>\s*'([^']+)'/", $line, $m)) {
+                if (preg_match(TraceRegex::ServerHttpHost->value, $line, $m)) {
                     $info['host'] = $m[1];
                 }
-                if (preg_match("/'QUERY_STRING'\s*=>\s*'([^']*)'/", $line, $m)) {
+                if (preg_match(TraceRegex::ServerQueryString->value, $line, $m)) {
                     $info['query'] = $m[1];
                 }
-                if (preg_match("/'HTTP_COOKIE'\s*=>\s*'([^']+)'/", $line, $m)) {
+                if (preg_match(TraceRegex::ServerHttpCookie->value, $line, $m)) {
                     // Parse cookies into key=>value pairs
                     $cookies = [];
                     foreach (explode(';', $m[1]) as $pair) {
@@ -345,19 +345,19 @@ class TraceParser
                     }
                     $info['cookies'] = $cookies;
                 }
-                if (preg_match("/'HTTP_USER_AGENT'\s*=>\s*'([^']+)'/", $line, $m)) {
+                if (preg_match(TraceRegex::ServerUserAgent->value, $line, $m)) {
                     $info['user_agent'] = $m[1];
                 }
-                if (preg_match("/'REMOTE_ADDR'\s*=>\s*'([^']+)'/", $line, $m)) {
+                if (preg_match(TraceRegex::ServerRemoteAddr->value, $line, $m)) {
                     $info['remote_addr'] = $m[1];
                 }
-                if (preg_match("/'REQUEST_TIME_FLOAT'\s*=>\s*([\d.]+)/", $line, $m)) {
+                if (preg_match(TraceRegex::ServerRequestTimeFloat->value, $line, $m)) {
                     $info['request_time'] = (float)$m[1];
                 }
-                if (preg_match("/'CONTENT_TYPE'\s*=>\s*'([^']+)'/", $line, $m)) {
+                if (preg_match(TraceRegex::ServerContentType->value, $line, $m)) {
                     $info['content_type'] = $m[1];
                 }
-                if (preg_match("/'HTTP_REFERER'\s*=>\s*'([^']+)'/", $line, $m)) {
+                if (preg_match(TraceRegex::ServerReferer->value, $line, $m)) {
                     $info['referer'] = $m[1];
                 }
                 break;
