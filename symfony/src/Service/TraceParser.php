@@ -20,6 +20,10 @@ class TraceParser
 
     // Extracts voter class name from addVoterVote($voter = class App\Foo\VoterName { ... })
     private const VOTER_CLASS_RE = '/\$voter\s*=\s*(?:class\s+)?([\w\\\\]+)\s*[{\[]/';
+    // Extracts string attributes from addVoterVote(..., $attributes = [0 => 'ATTR', ...], ...)
+    private const VOTER_ATTRS_RE = '/\$attributes\s*=\s*\[([^\]]*)\]/';
+    // Extracts $vote = -1|0|1 from addVoterVote
+    private const VOTER_VOTE_RE = '/\$vote\s*=\s*(-?\d+)/';
 
     // Classes to skip when looking for real listener name after WrappedListener->__invoke
     private const LISTENER_NOISE = [
@@ -168,6 +172,13 @@ class TraceParser
                         if (!isset($last['voter_class']) && preg_match(self::VOTER_CLASS_RE, $line, $vm)) {
                             $parts = explode('\\', $vm[1]);
                             $last['voter_class'] = end($parts);
+                        }
+                        if (!isset($last['vote_attrs']) && preg_match(self::VOTER_ATTRS_RE, $line, $am)) {
+                            preg_match_all("/'([^']+)'/", $am[1], $strings);
+                            if ($strings[1]) $last['vote_attrs'] = $strings[1];
+                        }
+                        if (!isset($last['vote_result']) && preg_match('/,\s*\$vote\s*=\s*(-?\d+)/', $line, $rm)) {
+                            $last['vote_result'] = (int)$rm[1]; // -1=DENIED, 0=ABSTAIN, 1=GRANTED
                         }
                         unset($last);
                     }
