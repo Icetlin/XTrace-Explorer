@@ -18,6 +18,9 @@ class TraceParser
     private const EVENT_NAME_RE = '/\$eventName\s*=\s*\'([^\']+)\'/';
     private const EVENT_CLASS_RE = '/\$event\s*=\s*class\s+([\w\\\\]+)/';
 
+    // Extracts voter class name from addVoterVote($voter = class App\Foo\VoterName { ... })
+    private const VOTER_CLASS_RE = '/\$voter\s*=\s*(?:class\s+)?([\w\\\\]+)\s*[{\[]/';
+
     // Classes to skip when looking for real listener name after WrappedListener->__invoke
     private const LISTENER_NOISE = [
         'TraceableEventDispatcher', 'EventDispatcher', 'WrappedListener',
@@ -155,6 +158,20 @@ class TraceParser
                         ];
                         $pendingInvoke = null;
                     }
+                }
+
+                // --- TOC: enrich last listener with voter_class from addVoterVote ---
+                if (!empty($dispatchStack) && str_ends_with($sig, 'TraceableAccessDecisionManager->addVoterVote')) {
+                    $top = &$dispatchStack[count($dispatchStack)-1];
+                    if (!empty($top['listeners'])) {
+                        $last = &$top['listeners'][count($top['listeners'])-1];
+                        if (!isset($last['voter_class']) && preg_match(self::VOTER_CLASS_RE, $line, $vm)) {
+                            $parts = explode('\\', $vm[1]);
+                            $last['voter_class'] = end($parts);
+                        }
+                        unset($last);
+                    }
+                    unset($top);
                 }
 
                 // --- skeleton building (unchanged) ---
