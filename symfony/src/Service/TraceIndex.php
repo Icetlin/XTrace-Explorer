@@ -4,10 +4,6 @@ namespace App\Service;
 
 class TraceIndex
 {
-    // Format: "    0.0036     444040     -> call() /file:line"
-    // Group 1: indent spaces, group 2: everything after "-> " (call + args + file suffix)
-    // File is parsed separately via strrchr to avoid catastrophic backtracking on 20KB+ lines.
-    private const CALL_RE = '/^\s+[\d.]+\s+\d+([ ]*)->\s+(.+)$/';
 
     public function __construct(private readonly string $tracesDir) {}
 
@@ -78,7 +74,7 @@ class TraceIndex
 
             while (($l2 = fgets($fh2, 1048576)) !== false) {
                 $ln2++;
-                if (!preg_match(self::CALL_RE, $l2, $cm2)) continue;
+                if (!preg_match(TraceRegex::CallLineStrict->value, $l2, $cm2)) continue;
                 $d2 = (int)(strlen($cm2[1]) / 2);
 
                 // Activate listeners that start at this line
@@ -141,7 +137,7 @@ class TraceIndex
             if (!$anyMatch) continue;
 
             // Parse the call line; match only against sig + simplified args (not raw object dumps)
-            if (!preg_match(self::CALL_RE, $line, $cm)) continue;
+            if (!preg_match(TraceRegex::CallLineStrict->value, $line, $cm)) continue;
 
             $hitDepth = (int)(strlen($cm[1]) / 2);
 
@@ -153,7 +149,7 @@ class TraceIndex
                 if ($p['pattern'] === '') continue;
                 // PascalCase patterns are class names — match only in sig to avoid false
                 // positives where Profiler/DI enumerates class names as string identifiers.
-                if (preg_match('/^[A-Z][A-Za-z0-9]+$/', $p['pattern'])) {
+                if (preg_match(TraceRegex::PascalCaseWord->value, $p['pattern'])) {
                     if (str_contains($sig, $p['pattern'])) $matched[] = $p;
                 } else {
                     if ($searchable === null) {
@@ -197,7 +193,7 @@ class TraceIndex
             $liKey = (string)$entry['li'];
             foreach ($patterns as $p) {
                 if ($p['pattern'] === '') continue;
-                if (!preg_match('/^[A-Z][A-Za-z0-9]+$/', $p['pattern'])) continue;
+                if (!preg_match(TraceRegex::PascalCaseWord->value, $p['pattern'])) continue;
                 if (!str_contains($entry['voter_class'], $p['pattern'])) continue;
                 // Only add if no hit for this pattern already recorded for this listener
                 $already = false;
@@ -248,7 +244,7 @@ class TraceIndex
             if ($lineNo < $fromLine) continue;
             if ($lineNo > $targetLine) break;
 
-            if (!preg_match(self::CALL_RE, $line, $m)) continue;
+            if (!preg_match(TraceRegex::CallLineStrict->value, $line, $m)) continue;
             $depth = (int)(strlen($m[1]) / 2);
             $sig   = $this->extractSig($m[2]);
 
@@ -452,7 +448,7 @@ class TraceIndex
 
             $depth = 0;
             $sig = null;
-            if (preg_match(self::CALL_RE, $line, $m)) {
+            if (preg_match(TraceRegex::CallLineStrict->value, $line, $m)) {
                 $depth = (int)(strlen($m[1]) / 2);
                 $sig = $this->extractSig($m[2]);
             }
@@ -479,7 +475,7 @@ class TraceIndex
             $lineNo++;
 
             if (stripos($line, $query) === false) continue;
-            if (!preg_match(self::CALL_RE, $line, $m)) continue;
+            if (!preg_match(TraceRegex::CallLineStrict->value, $line, $m)) continue;
 
             $results[] = [
                 'line_no' => $lineNo,
@@ -575,7 +571,7 @@ class TraceIndex
             if ($currentLine < $lineNo) continue;
 
             // Return value line: "   >=> value"
-            if (preg_match('/^([ ]*)>=>\s*(.+)$/', $line, $rm)) {
+            if (preg_match(TraceRegex::ReturnLine->value, $line, $rm)) {
                 $retDepth = (int)(strlen($rm[1]) / 2);
                 if ($retDepth === $callDepth && $foundParent) {
                     // Return value of the parent itself
@@ -591,7 +587,7 @@ class TraceIndex
                 continue;
             }
 
-            if (!preg_match(self::CALL_RE, $line, $m)) {
+            if (!preg_match(TraceRegex::CallLineStrict->value, $line, $m)) {
                 $lastChildIdx = null;
                 continue;
             }
@@ -689,7 +685,7 @@ class TraceIndex
 
         $argsStr = substr($call, $paren + 1);
         // Remove trailing )
-        $argsStr = preg_replace('/\)\s*$/', '', $argsStr);
+        $argsStr = preg_replace(TraceRegex::TrailingParen->value, '', $argsStr);
         if (trim($argsStr) === '' || $argsStr === '???') return [];
 
         // Split on top-level commas (not inside braces/brackets)
@@ -712,7 +708,7 @@ class TraceIndex
         $result = [];
         foreach ($args as $arg) {
             // Format: "$name = value"
-            if (preg_match('/^\$(\w+)\s*=\s*(.+)$/', $arg, $am)) {
+            if (preg_match(TraceRegex::ArgAssignment->value, $arg, $am)) {
                 $name = $am[1];
                 $val  = $this->simplifyValue(trim($am[2]));
                 if ($val !== null) {
@@ -726,27 +722,27 @@ class TraceIndex
     private function simplifyValue(string $val): ?string
     {
         // String literal (truncate long values like JWTs)
-        if (preg_match("/^'(.{0,200})'\s*$/s", $val, $m)) {
+        if (preg_match(TraceRegex::StringLiteral->value, $val, $m)) {
             $s = $m[1];
             // Truncate JWT tokens and other long strings
-            if (strlen($s) > 40 && preg_match('/^ey[A-Za-z0-9]/', $s)) return "'<JWT>'";
+            if (strlen($s) > 40 && preg_match(TraceRegex::JwtToken->value, $s)) return "'<JWT>'";
             if (strlen($s) > 60) return "'" . substr($s, 0, 57) . "...'";
             return "'" . $s . "'";
         }
         // Integer / float / bool / null
-        if (preg_match('/^(TRUE|FALSE|NULL|-?\d+\.?\d*)$/i', $val)) return $val;
+        if (preg_match(TraceRegex::ScalarLiteral->value, $val)) return $val;
         // Cookie object — extract name from any visibility: "class ...Cookie { ... $name = 'sio_u' ..."
-        if (preg_match('/^class\s+[\w\\\\]*Cookie[\s{]/', $val)
-            && preg_match('/\$name\s*=\s*\'([^\']+)\'/', $val, $m)) {
+        if (preg_match(TraceRegex::CookieObjectClass->value, $val)
+            && preg_match(TraceRegex::CookieName->value, $val, $m)) {
             return "Cookie('" . $m[1] . "')";
         }
         // Short class name: "class Foo\Bar { ... }" → "Bar {…}"
-        if (preg_match('/^class\s+([\w\\\\]+)/', $val, $m)) {
+        if (preg_match(TraceRegex::ClassDump->value, $val, $m)) {
             $parts = explode('\\', $m[1]);
             return end($parts) . ' {…}';
         }
         // enum: "enum Foo\Bar::Name('value')" → "Bar::Name"
-        if (preg_match('/^enum\s+([\w\\\\]+)::([\w]+)/', $val, $m)) {
+        if (preg_match(TraceRegex::EnumDump->value, $val, $m)) {
             $parts = explode('\\', $m[1]);
             return end($parts) . '::' . $m[2];
         }
@@ -783,14 +779,14 @@ class TraceIndex
         }
         fclose($fh);
 
-        if ($rawLine === null || !preg_match(self::CALL_RE, $rawLine, $m)) return null;
+        if ($rawLine === null || !preg_match(TraceRegex::CallLineStrict->value, $rawLine, $m)) return null;
 
         $rawArgs = $this->splitRawArgs($m[2]);
         if (!isset($rawArgs[$argIdx])) return null;
 
         $arg = $rawArgs[$argIdx];
         // Format: "$name = value"
-        if (!preg_match('/^\$\w+\s*=\s*(.+)$/s', $arg, $am)) return null;
+        if (!preg_match(TraceRegex::ArgRawValue->value, $arg, $am)) return null;
         $val = trim($am[1]);
 
         return $this->parseObjectFields($val);
@@ -804,7 +800,7 @@ class TraceIndex
         $paren = strpos($call, '(');
         if ($paren === false) return [];
         $argsStr = substr($call, $paren + 1);
-        $argsStr = preg_replace('/\)\s*$/', '', $argsStr);
+        $argsStr = preg_replace(TraceRegex::TrailingParen->value, '', $argsStr);
         if (trim($argsStr) === '' || $argsStr === '???') return [];
 
         $args = [];
@@ -834,7 +830,7 @@ class TraceIndex
      */
     private function parseObjectFields(string $val): ?array
     {
-        if (!preg_match('/^class\s+([\w\\\\]+)\s*\{(.+)\}\s*$/s', $val, $m)) return null;
+        if (!preg_match(TraceRegex::ObjectBody->value, $val, $m)) return null;
 
         $fullClass = $m[1];
         $parts = explode('\\', $fullClass);
@@ -863,7 +859,7 @@ class TraceIndex
         foreach ($segments as $seg) {
             // Each segment: "public|protected|private|static [readonly] [?TypeHint] $name = value"
             // or just "$name = value" (public properties in older format)
-            if (!preg_match('/(?:(?:public|protected|private|static|readonly)\s+)*(?:[\w\\\\?|&]+\s+)?\$(\w+)\s*=\s*(.+)$/s', $seg, $sm)) continue;
+            if (!preg_match(TraceRegex::ObjectField->value, $seg, $sm)) continue;
             $name = $sm[1];
             $rawVal = trim($sm[2]);
             $simplified = $this->simplifyValue($rawVal);
@@ -879,7 +875,7 @@ class TraceIndex
 
     private function truncateRaw(string $val): string
     {
-        $short = preg_replace('/\s+/', ' ', $val);
+        $short = (string) preg_replace('/\s+/', ' ', $val);
         return strlen($short) > 80 ? substr($short, 0, 77) . '...' : $short;
     }
 
@@ -892,7 +888,7 @@ class TraceIndex
         $pos = strrpos($raw, ' /');
         if ($pos === false) return null;
         $candidate = substr($raw, $pos + 1); // "/path/file.php:123"
-        if (preg_match('#^/[^\s]+\.php:\d+$#', $candidate)) return $candidate;
+        if (preg_match(TraceRegex::FilePathSuffix->value, $candidate)) return $candidate;
         return null;
     }
 
@@ -900,7 +896,7 @@ class TraceIndex
     {
         // "/var/www/monolith-backend/vendor/symfony/http-kernel/EventListener/Foo.php:123"
         // → "EventListener/Foo.php:123"
-        if (preg_match('#/(src|vendor)/(.+)$#', $fileColon, $m)) {
+        if (preg_match(TraceRegex::ShortFilePath->value, $fileColon, $m)) {
             $parts = explode('/', $m[2]);
             // keep last 2-3 segments
             return implode('/', array_slice($parts, max(0, count($parts) - 3)));

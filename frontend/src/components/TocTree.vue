@@ -20,6 +20,7 @@
             <span :class="group.voteAttr ? 'event-name--dimmed' : ''">{{ group.eventName }}</span>
             <span v-if="group.voteAttr" class="event-name--attr"> · {{ group.voteAttr }}</span>
           </span>
+          <span v-if="group.caller" class="vote-caller-badge">{{ group.caller }}</span>
           <span class="event-group-count">× {{ group.count }}</span>
           <span
             v-for="m in groupScanMatches(group)"
@@ -41,7 +42,7 @@
 
         <!-- Collapse button for expanded group -->
         <div v-if="group.count > 1" class="event-group-bar" @click="expandedGroups = new Set([...expandedGroups].filter(x => x !== gi))">
-          <span class="event-group-collapse">▾ {{ group.eventName }}<span v-if="group.voteAttr" class="event-group-collapse--attr"> · {{ group.voteAttr }}</span> × {{ group.count }} — collapse</span>
+          <span class="event-group-collapse">▾ {{ group.eventName }}<span v-if="group.voteAttr" class="event-group-collapse--attr"> · {{ group.voteAttr }}</span><span v-if="group.caller" class="event-group-collapse--caller"> [{{ group.caller }}]</span> × {{ group.count }} — collapse</span>
         </div>
 
         <!-- ── FLATTEN MODE: homogeneous group → skip event level, show listeners directly ── -->
@@ -213,10 +214,12 @@ function voteAttr(tocEvent) {
   return tocEvent.listeners?.[0]?.vote_attrs?.[0] ?? null
 }
 
-// Group key: for vote events, include the attribute so different checks form separate groups
+// Group key: for vote events, include attribute AND caller so each security layer is a separate group
 function groupKey(tocEvent) {
   const attr = voteAttr(tocEvent)
-  return attr ? `${tocEvent.event}::${attr}` : tocEvent.event
+  if (!attr) return tocEvent.event
+  const caller = tocEvent.caller ?? ''
+  return `${tocEvent.event}::${attr}::${caller}`
 }
 
 // Build groups of consecutive identical events for collapsing
@@ -236,9 +239,18 @@ const tocGroups = computed(() => {
       (props.toc[k].listeners ?? []).map(l => l.sig).join('|') === firstSigs
     )
     const attr = voteAttr(props.toc[i])
+    const caller = attr ? (props.toc[i].caller ?? null) : null
+    // Shorten caller: "TwoFactorAccessListener->authenticate" → "2FA", "AccessListener->authenticate" → "access_control"
+    let callerLabel = null
+    if (caller) {
+      if (caller.includes('TwoFactor')) callerLabel = '2FA check'
+      else if (caller.includes('AccessListener')) callerLabel = 'access_control'
+      else callerLabel = caller.split('->')[0]
+    }
     groups.push({
       eventName: name,
       voteAttr: attr,
+      caller: callerLabel,
       displayName: attr ? `${name} · ${attr}` : name,
       count: j - i,
       startEi: i,
@@ -622,6 +634,17 @@ defineExpose({ jumpToLine })
 .event-name--dimmed { color: #6080a0; }
 .event-name--attr { color: #c8e8a0; font-weight: 600; }
 .event-group-collapse--attr { color: #a0c070; }
+.event-group-collapse--caller { color: #6878a8; font-size: 10px; }
+.vote-caller-badge {
+  font-size: 10px;
+  color: #7888b8;
+  background: rgba(60, 70, 120, 0.2);
+  border: 1px solid rgba(80, 90, 150, 0.3);
+  border-radius: 10px;
+  padding: 1px 8px;
+  flex-shrink: 0;
+  letter-spacing: 0.02em;
+}
 
 .line-badge {
   font-size: 10px;
