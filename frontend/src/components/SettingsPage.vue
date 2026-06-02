@@ -203,12 +203,65 @@ xdebug.trace_output_name = trace.%t.%p</pre>
         </div>
       </template>
 
+      <!-- ── AI / MCP ── -->
+      <template v-if="activeSection === 'mcp'">
+        <div class="section-title">AI / MCP</div>
+        <div class="section-desc">
+          Connect any MCP-compatible AI assistant to XTrace Explorer via Server-Sent Events (SSE).
+          The MCP server exposes tools for trace analysis, parser validation, worker restart, and log inspection.
+        </div>
+
+        <div class="mcp-server-status" :class="mcpStatusClass">
+          <span class="mcp-status-dot" />
+          <span class="mcp-status-text">{{ mcpStatusText }}</span>
+          <span v-if="mcpStatus?.ok && mcpStatus.connections > 0" class="mcp-status-badge">
+            {{ mcpStatus.connections }} connected
+          </span>
+          <span v-else-if="mcpStatus?.ok && mcpStatus.total_tool_calls > 0" class="mcp-status-badge mcp-status-badge--dim">
+            {{ mcpStatus.total_tool_calls }} calls total
+          </span>
+        </div>
+
+        <div class="mcp-url-block">
+          <span class="mcp-url-label">SSE endpoint</span>
+          <code class="mcp-url-val">{{ mcpSseUrl }}</code>
+        </div>
+
+        <div class="mcp-clients">
+          <div v-for="client in mcpClients" :key="client.id" class="mcp-card">
+            <div class="mcp-card__header">
+              <span class="mcp-card__name">{{ client.name }}</span>
+              <span class="mcp-card__desc">{{ client.desc }}</span>
+              <button
+                class="mcp-card__copy"
+                :class="{ 'mcp-card__copy--ok': mcpCopiedId === client.id }"
+                @click="mcpCopy(client)"
+              >
+                {{ mcpCopiedId === client.id ? '✓ Copied' : 'Copy' }}
+              </button>
+            </div>
+            <pre class="mcp-card__cmd">{{ client.cmd }}</pre>
+          </div>
+        </div>
+
+        <div class="howto">
+          <div class="howto-title">Available MCP tools</div>
+          <div class="mcp-tools-grid">
+            <div class="mcp-tool" v-for="t in mcpTools" :key="t.name">
+              <code class="mcp-tool__name">{{ t.name }}</code>
+              <span class="mcp-tool__desc">{{ t.desc }}</span>
+            </div>
+          </div>
+        </div>
+      </template>
+
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+
 import { useTraceStore } from '../stores/trace'
 import { favColor } from '../favColor.js'
 import axios from 'axios'
@@ -220,6 +273,7 @@ const sections = [
   { id: 'favourites', icon: '★', label: 'Favourites' },
   { id: 'filters',    icon: '⊘', label: 'Listener filters' },
   { id: 'xdebug',    icon: '⚡', label: 'Xdebug' },
+  { id: 'mcp',        icon: '⬡', label: 'AI / MCP' },
 ]
 const activeSection = ref('general')
 
@@ -396,6 +450,104 @@ async function clearTraces() {
 async function removeFilter(pattern) {
   await store.saveSettings(formPayload({ listener_filters: store.listenerFilters.filter(f => f !== pattern) }))
 }
+
+// ── MCP ──
+const mcpCopiedId = ref(null)
+const mcpStatus = ref(null)   // null = unknown, { ok, connections } = fetched
+let mcpPollTimer = null
+
+async function fetchMcpStatus() {
+  const url = `http://${window.location.hostname}:8766/status`
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(2500) })
+    mcpStatus.value = r.ok ? await r.json() : { ok: false, connections: 0 }
+  } catch {
+    mcpStatus.value = { ok: false, connections: 0 }
+  }
+}
+
+watch(() => activeSection.value, (s) => {
+  if (s === 'mcp') {
+    fetchMcpStatus()
+    mcpPollTimer = setInterval(fetchMcpStatus, 5000)
+  } else {
+    clearInterval(mcpPollTimer)
+  }
+})
+
+onUnmounted(() => clearInterval(mcpPollTimer))
+
+const mcpStatusClass = computed(() => {
+  if (mcpStatus.value === null) return 'mcp-server-status--unknown'
+  if (!mcpStatus.value.ok) return 'mcp-server-status--offline'
+  if (mcpStatus.value.connections > 0) return 'mcp-server-status--active'
+  if (mcpStatus.value.last_tool_call_ago !== null && mcpStatus.value.last_tool_call_ago < 300) return 'mcp-server-status--recent'
+  return 'mcp-server-status--online'
+})
+
+const mcpStatusText = computed(() => {
+  if (mcpStatus.value === null) return 'Checking…'
+  if (!mcpStatus.value.ok) return 'MCP server offline'
+  if (mcpStatus.value.connections > 0) return 'MCP server online'
+  const ago = mcpStatus.value.last_tool_call_ago
+  if (ago === null) return 'MCP server online — never used'
+  if (ago < 60) return `MCP server online — last used ${ago}s ago`
+  if (ago < 3600) return `MCP server online — last used ${Math.round(ago / 60)}m ago`
+  return 'MCP server online — no active connections'
+})
+
+const mcpSseUrl = computed(() => {
+  const host = window.location.hostname
+  return `http://${host}:8766/sse`
+})
+
+const mcpClients = computed(() => [
+  {
+    id: 'claude-code',
+    name: 'Claude Code',
+    desc: 'Run in terminal',
+    cmd: `claude mcp add xtrace --transport sse ${mcpSseUrl.value} --scope user`,
+  },
+  {
+    id: 'vscode',
+    name: 'VS Code',
+    desc: 'Add to settings.json → "mcp" key',
+    cmd: `"xtrace": { "type": "sse", "url": "${mcpSseUrl.value}" }`,
+  },
+  {
+    id: 'cursor',
+    name: 'Cursor',
+    desc: 'Add to .cursor/mcp.json',
+    cmd: `"xtrace": { "url": "${mcpSseUrl.value}" }`,
+  },
+  {
+    id: 'windsurf',
+    name: 'Windsurf',
+    desc: 'Add to ~/.codeium/windsurf/mcp_config.json',
+    cmd: `"xtrace": { "serverUrl": "${mcpSseUrl.value}", "disabled": false }`,
+  },
+])
+
+async function mcpCopy(client) {
+  await navigator.clipboard.writeText(client.cmd)
+  mcpCopiedId.value = client.id
+  setTimeout(() => { mcpCopiedId.value = null }, 1500)
+}
+
+const mcpTools = [
+  { name: 'get_files',       desc: 'List all trace files with status' },
+  { name: 'get_toc',         desc: 'Events + listeners for a trace file' },
+  { name: 'get_children',    desc: 'Child calls at a given line/depth' },
+  { name: 'get_meta',        desc: 'Total lines, request/response info' },
+  { name: 'search_trace',    desc: 'Search by signature fragment' },
+  { name: 'get_schema',      desc: 'Aggregated call schema for selected items' },
+  { name: 'reparse',         desc: 'Trigger reparse and wait for ready' },
+  { name: 'restart_worker',  desc: 'Restart Messenger async worker' },
+  { name: 'run_tests',       desc: 'Run PHPUnit inside container' },
+  { name: 'validate_toc',    desc: 'Detect broken parser output' },
+  { name: 'get_logs',        desc: 'Last N lines of container logs' },
+  { name: 'get_worker_logs', desc: 'Worker/parse error lines only' },
+]
 </script>
 
 <style scoped>
@@ -903,6 +1055,197 @@ async function removeFilter(pattern) {
 }
 .xd-clear-hint { font-size: 11px; color: rgba(80, 85, 135, 0.6); }
 .xd-clear-hint code { color: rgba(120, 150, 200, 0.7); }
+
+/* ── MCP ── */
+.mcp-server-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  border-radius: 8px;
+  border: 1px solid;
+  margin-bottom: 16px;
+  font-size: 12px;
+  transition: border-color 0.2s, background 0.2s;
+}
+.mcp-server-status--unknown {
+  border-color: rgba(50, 55, 90, 0.4);
+  background: rgba(255, 255, 255, 0.02);
+  color: rgba(80, 90, 135, 0.6);
+}
+.mcp-server-status--offline {
+  border-color: rgba(120, 35, 35, 0.4);
+  background: rgba(60, 10, 10, 0.25);
+  color: rgba(200, 90, 90, 0.8);
+}
+.mcp-server-status--online {
+  border-color: rgba(40, 100, 65, 0.4);
+  background: rgba(15, 45, 28, 0.3);
+  color: rgba(90, 175, 120, 0.8);
+}
+.mcp-server-status--recent {
+  border-color: rgba(40, 100, 65, 0.45);
+  background: rgba(15, 45, 28, 0.3);
+  color: rgba(90, 175, 120, 0.8);
+}
+.mcp-server-status--active {
+  border-color: rgba(50, 150, 90, 0.55);
+  background: rgba(20, 65, 40, 0.35);
+  color: rgba(100, 210, 140, 0.9);
+}
+
+.mcp-status-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: currentColor;
+}
+.mcp-server-status--unknown .mcp-status-dot { opacity: 0.4; }
+.mcp-server-status--active .mcp-status-dot {
+  animation: mcp-pulse 1.8s ease-in-out infinite;
+  box-shadow: 0 0 0 0 currentColor;
+}
+@keyframes mcp-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(100, 210, 140, 0.5); }
+  60%  { box-shadow: 0 0 0 5px rgba(100, 210, 140, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(100, 210, 140, 0); }
+}
+
+.mcp-status-text { flex: 1; }
+
+.mcp-status-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(50, 150, 90, 0.25);
+  border: 1px solid rgba(60, 180, 110, 0.35);
+  color: rgba(100, 220, 150, 0.9);
+  white-space: nowrap;
+}
+.mcp-status-badge--dim {
+  background: rgba(40, 50, 80, 0.25);
+  border-color: rgba(55, 70, 110, 0.35);
+  color: rgba(90, 110, 160, 0.75);
+}
+
+.mcp-url-block {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(40, 110, 80, 0.3);
+  background: rgba(20, 50, 35, 0.25);
+  margin-bottom: 24px;
+}
+.mcp-url-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: rgba(80, 160, 120, 0.7);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+.mcp-url-val {
+  font-size: 12px;
+  color: rgba(100, 200, 150, 0.85);
+  font-family: monospace;
+}
+
+.mcp-clients {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.mcp-card {
+  border: 1px solid rgba(40, 55, 90, 0.5);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.028);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  overflow: hidden;
+}
+
+.mcp-card__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  border-bottom: 1px solid rgba(40, 50, 85, 0.4);
+}
+.mcp-card__name {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(160, 185, 230, 0.9);
+  white-space: nowrap;
+}
+.mcp-card__desc {
+  flex: 1;
+  font-size: 10.5px;
+  color: rgba(90, 100, 150, 0.65);
+}
+.mcp-card__copy {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(55, 65, 105, 0.45);
+  border-radius: 5px;
+  color: rgba(110, 135, 190, 0.8);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  padding: 4px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.mcp-card__copy:hover {
+  background: rgba(60, 100, 180, 0.15);
+  color: rgba(150, 190, 255, 0.9);
+  border-color: rgba(70, 120, 200, 0.5);
+}
+.mcp-card__copy--ok {
+  background: rgba(30, 90, 55, 0.35);
+  color: rgba(80, 210, 130, 0.9);
+  border-color: rgba(50, 150, 90, 0.45);
+}
+
+.mcp-card__cmd {
+  margin: 0;
+  padding: 10px 14px;
+  font-size: 11px;
+  font-family: monospace;
+  color: rgba(100, 175, 140, 0.8);
+  background: rgba(0, 0, 0, 0.18);
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.6;
+}
+
+.mcp-tools-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.mcp-tool {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(30, 32, 58, 0.4);
+}
+.mcp-tool__name {
+  font-size: 11px;
+  color: rgba(100, 175, 140, 0.85);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.mcp-tool__desc {
+  font-size: 10.5px;
+  color: rgba(90, 100, 150, 0.6);
+  line-height: 1.4;
+}
 
 
 </style>
