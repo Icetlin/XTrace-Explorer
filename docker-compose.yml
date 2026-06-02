@@ -9,6 +9,7 @@ services:
       - ${SOURCE_HOST_DIR}:${SOURCE_CONTAINER_DIR}:ro
       - ./symfony/src:/app/src
       - ./symfony/migrations:/app/migrations
+      - ./symfony/tests:/app/tests
       - ./symfony/public/app:/app/public/app
       - ./docker-compose.yml:/compose/compose.yaml:rw
       - /var/run/docker.sock:/var/run/docker.sock:ro
