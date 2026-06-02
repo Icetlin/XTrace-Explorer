@@ -218,6 +218,7 @@ const searchInput = ref(null)
 let jumpToastTimer = null
 const tocTreeRefs = {}
 
+
 const filteredBrowseFiles = computed(() => {
   const q = browseQuery.value.trim().toLowerCase()
   if (!q) return browseFiles.value

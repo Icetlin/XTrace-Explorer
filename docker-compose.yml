@@ -27,6 +27,29 @@ services:
       XDEBUG_CONTAINER: ${XDEBUG_CONTAINER:-}
       XDEBUG_TRACE_DIR_CTR: ${XDEBUG_TRACE_DIR_CTR:-/traces}
 
+  mcp:
+    build:
+      context: ./docker/mcp
+      dockerfile: Dockerfile
+    ports:
+      - "8766:8766"
+    volumes:
+      - ./docker/mcp/server.py:/app/server.py:ro
+      - ./docker/mcp/generate_demo_trace.py:/app/generate_demo_trace.py:ro
+      - ./docker/mcp/readme_updater.py:/app/readme_updater.py:ro
+      - ./:/project:rw
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - app
+    environment:
+      APP_URL: http://app
+      APP_CONTAINER: ${COMPOSE_PROJECT_NAME:-xtrace-explorer}-app-1
+      TRACES_DIR_HOST: ${TRACES_DIR}
+      PLAYWRIGHT_PYTHON: /usr/local/bin/python3
+      README_UPDATER: /app/readme_updater.py
+      PROJECT_DIR: /project
+    restart: unless-stopped
+
   db:
     image: postgres:16-alpine
     environment:
