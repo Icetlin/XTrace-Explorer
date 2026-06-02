@@ -538,6 +538,9 @@ class TraceIndex
         'ResponseHeaderBag->hasCacheControlDirective', 'HeaderBag->addCacheControlDirective',
         'Response->setMaxAge', 'Response->setPrivate', 'Response->setExpires', 'Response->getMaxAge',
         'DateTimeImmutable->__construct',
+        // VoteEvent infra — voter/attributes/vote already surfaced as toc voter_class+vote_attrs badges
+        'VoteEvent->getVoter', 'VoteEvent->getAttributes', 'VoteEvent->getVote',
+        'TraceableAccessDecisionManager->addVoterVote',
     ];
 
     /**

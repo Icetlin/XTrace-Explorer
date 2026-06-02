@@ -16,7 +16,10 @@
         >{{ group.src }}</div>
         <div class="event-row event-row--group" @click="expandedGroups = new Set([...expandedGroups, gi])">
           <span class="chevron">▸</span>
-          <span class="event-name">{{ group.eventName }}</span>
+          <span class="event-name">
+            <span :class="group.voteAttr ? 'event-name--dimmed' : ''">{{ group.eventName }}</span>
+            <span v-if="group.voteAttr" class="event-name--attr"> · {{ group.voteAttr }}</span>
+          </span>
           <span class="event-group-count">× {{ group.count }}</span>
           <span
             v-for="m in groupScanMatches(group)"
@@ -38,7 +41,7 @@
 
         <!-- Collapse button for expanded group -->
         <div v-if="group.count > 1" class="event-group-bar" @click="expandedGroups = new Set([...expandedGroups].filter(x => x !== gi))">
-          <span class="event-group-collapse">▾ {{ group.eventName }} × {{ group.count }} — collapse</span>
+          <span class="event-group-collapse">▾ {{ group.eventName }}<span v-if="group.voteAttr" class="event-group-collapse--attr"> · {{ group.voteAttr }}</span> × {{ group.count }} — collapse</span>
         </div>
 
         <!-- ── FLATTEN MODE: homogeneous group → skip event level, show listeners directly ── -->
@@ -56,7 +59,7 @@
             >
               <div
                 class="listener-row"
-                :class="{ 'listener-row--fav': listenerScanMatches(ei, li).length, 'listener-row--selected': store.isSelected(listener.line_no) }"
+                :class="{ 'listener-row--fav': listenerScanMatches(ei, li).length, 'listener-row--selected': store.isSelected(listener.line_no), 'listener-row--abstain': listener.vote_result === 0, 'listener-row--granted': listener.vote_result === 1, 'listener-row--denied': listener.vote_result === -1 }"
                 :data-listener-line="listener.line_no"
                 @click="onListenerClick($event, ei, li, listener, toc[ei])"
                 @contextmenu.prevent="onListenerCtx($event, listener)"
@@ -66,6 +69,9 @@
                 <span class="listener-class">{{ listenerClass(listener.sig) }}</span>
                 <span class="listener-method">{{ listenerMethod(listener.sig) }}</span>
                 <span v-if="listener.voter_class" class="voter-badge">{{ listener.voter_class }}</span>
+                <span v-for="attr in (listener.vote_attrs ?? [])" :key="attr" class="vote-attr-badge">{{ attr }}</span>
+                <span v-if="listener.vote_result === 1" class="vote-result vote-result--granted">GRANTED</span>
+                <span v-else-if="listener.vote_result === -1" class="vote-result vote-result--denied">DENIED</span>
                 <template v-for="m in listenerScanMatches(ei, li)" :key="m.pattern">
                   <span class="fav-badge-li" :style="{ color: favColor(m.pattern).text, background: favColor(m.pattern).bg, borderColor: favColor(m.pattern).border }">{{ m.label || m.pattern }}</span>
                 </template>
@@ -105,7 +111,10 @@
               @contextmenu.prevent="onEventCtx($event, toc[ei])"
             >
               <span class="chevron">{{ expandedEvents.has(ei) ? '▾' : '▸' }}</span>
-              <span class="event-name">{{ toc[ei].event }}</span>
+              <span class="event-name">
+                <span :class="voteAttr(toc[ei]) ? 'event-name--dimmed' : ''">{{ toc[ei].event }}</span>
+                <span v-if="voteAttr(toc[ei])" class="event-name--attr"> · {{ voteAttr(toc[ei]) }}</span>
+              </span>
               <span
                 v-for="m in eventScanMatches(ei)"
                 :key="m.pattern"
@@ -129,7 +138,7 @@
                 >{{ listenerSource(listener.sig) }}</div>
                 <div
                   class="listener-row"
-                  :class="{ 'listener-row--fav': listenerScanMatches(ei, li).length, 'listener-row--selected': store.isSelected(listener.line_no) }"
+                  :class="{ 'listener-row--fav': listenerScanMatches(ei, li).length, 'listener-row--selected': store.isSelected(listener.line_no), 'listener-row--abstain': listener.vote_result === 0, 'listener-row--granted': listener.vote_result === 1, 'listener-row--denied': listener.vote_result === -1 }"
                   :data-listener-line="listener.line_no"
                   @click="onListenerClick($event, ei, li, listener, toc[ei])"
                   @contextmenu.prevent="onListenerCtx($event, listener)"
@@ -139,6 +148,9 @@
                   <span class="listener-class">{{ listenerClass(listener.sig) }}</span>
                   <span class="listener-method">{{ listenerMethod(listener.sig) }}</span>
                   <span v-if="listener.voter_class" class="voter-badge">{{ listener.voter_class }}</span>
+                  <span v-for="attr in (listener.vote_attrs ?? [])" :key="attr" class="vote-attr-badge">{{ attr }}</span>
+                  <span v-if="listener.vote_result === 1" class="vote-result vote-result--granted">GRANTED</span>
+                  <span v-else-if="listener.vote_result === -1" class="vote-result vote-result--denied">DENIED</span>
                   <template v-for="m in listenerScanMatches(ei, li)" :key="m.pattern">
                     <span class="fav-badge-li" :style="{ color: favColor(m.pattern).text, background: favColor(m.pattern).bg, borderColor: favColor(m.pattern).border }">{{ m.label || m.pattern }}</span>
                   </template>
@@ -194,14 +206,27 @@ const expandedEvents = ref(new Set())
 const expandedListeners = ref(new Set())
 const expandedGroups = ref(new Set())
 
+// For debug.security.authorization.vote: extract the voted attribute from listeners
+function voteAttr(tocEvent) {
+  if (!tocEvent.event?.includes('authorization.vote')) return null
+  return tocEvent.listeners?.[0]?.vote_attrs?.[0] ?? null
+}
+
+// Group key: for vote events, include the attribute so different checks form separate groups
+function groupKey(tocEvent) {
+  const attr = voteAttr(tocEvent)
+  return attr ? `${tocEvent.event}::${attr}` : tocEvent.event
+}
+
 // Build groups of consecutive identical events for collapsing
 const tocGroups = computed(() => {
   const groups = []
   let i = 0
   while (i < props.toc.length) {
+    const key = groupKey(props.toc[i])
     const name = props.toc[i].event
     let j = i + 1
-    while (j < props.toc.length && props.toc[j].event === name) j++
+    while (j < props.toc.length && groupKey(props.toc[j]) === key) j++
     const indices = []
     for (let k = i; k < j; k++) indices.push(k)
     // Homogeneous = all events in this run have identical listener sig lists
@@ -209,8 +234,11 @@ const tocGroups = computed(() => {
     const homogeneous = j - i > 1 && indices.every(k =>
       (props.toc[k].listeners ?? []).map(l => l.sig).join('|') === firstSigs
     )
+    const attr = voteAttr(props.toc[i])
     groups.push({
       eventName: name,
+      voteAttr: attr,
+      displayName: attr ? `${name} · ${attr}` : name,
       count: j - i,
       startEi: i,
       indices,
@@ -568,6 +596,9 @@ defineExpose({ jumpToLine })
   flex: 1;
   letter-spacing: 0.01em;
 }
+.event-name--dimmed { color: #6080a0; }
+.event-name--attr { color: #c8e8a0; font-weight: 600; }
+.event-group-collapse--attr { color: #a0c070; }
 
 .line-badge {
   font-size: 10px;
@@ -629,6 +660,11 @@ defineExpose({ jumpToLine })
 .listener-row:hover { background: rgba(255, 255, 255, 0.03); }
 .listener-row--fav { border-left-width: 2px; }
 .listener-row--selected { background: rgba(80, 120, 180, 0.07); border-left: 2px solid rgba(80, 130, 200, 0.4); }
+/* Vote result states */
+.listener-row--abstain { opacity: 0.38; }
+.listener-row--abstain:hover { opacity: 0.65; }
+.listener-row--granted { border-left: 2px solid rgba(80, 200, 100, 0.6); background: rgba(40, 100, 50, 0.08); }
+.listener-row--denied { border-left: 2px solid rgba(220, 80, 80, 0.6); background: rgba(100, 30, 30, 0.08); }
 
 .fav-hit-line {
   font-size: 10px;
@@ -671,6 +707,27 @@ defineExpose({ jumpToLine })
   flex-shrink: 0;
   font-style: italic;
 }
+.vote-attr-badge {
+  font-size: 10px;
+  color: #7ab0d0;
+  background: rgba(30, 70, 100, 0.3);
+  border: 1px solid rgba(60, 110, 150, 0.3);
+  border-radius: 3px;
+  padding: 1px 5px;
+  flex-shrink: 0;
+  font-family: monospace;
+}
+.vote-result {
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 3px;
+  padding: 1px 6px;
+  flex-shrink: 0;
+  letter-spacing: 0.04em;
+  margin-left: auto;
+}
+.vote-result--granted { color: #70e090; background: rgba(40, 120, 60, 0.25); border: 1px solid rgba(60, 180, 90, 0.35); }
+.vote-result--denied  { color: #e07070; background: rgba(120, 30, 30, 0.25); border: 1px solid rgba(200, 60, 60, 0.35); }
 .line-badge-sm {
   font-size: 10px;
   color: #5a6888;
