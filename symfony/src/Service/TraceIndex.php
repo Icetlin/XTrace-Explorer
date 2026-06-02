@@ -44,12 +44,13 @@ class TraceIndex
                     if (str_contains($sig, $n)) { $noise = true; break; }
                 }
                 $flat[] = [
-                    'ei'    => $ei,
-                    'li'    => $li,
-                    'start' => $listener['line_no'],
-                    'depth' => $listener['depth'] ?? 0,
-                    'end'   => PHP_INT_MAX,
-                    'noise' => $noise,
+                    'ei'         => $ei,
+                    'li'         => $li,
+                    'start'      => $listener['line_no'],
+                    'depth'      => $listener['depth'] ?? 0,
+                    'end'        => PHP_INT_MAX,
+                    'noise'      => $noise,
+                    'voter_class' => $listener['voter_class'] ?? null,
                 ];
             }
         }
@@ -187,6 +188,32 @@ class TraceIndex
         }
 
         fclose($fh);
+
+        // voter_class post-pass: for PascalCase patterns not matched via sig scan,
+        // check voter_class stored in toc — it is a reliable class name, not a raw trace string.
+        foreach ($flat as $entry) {
+            if (!$entry['voter_class'] || $entry['noise']) continue;
+            $eiKey = (string)$entry['ei'];
+            $liKey = (string)$entry['li'];
+            foreach ($patterns as $p) {
+                if ($p['pattern'] === '') continue;
+                if (!preg_match('/^[A-Z][A-Za-z0-9]+$/', $p['pattern'])) continue;
+                if (!str_contains($entry['voter_class'], $p['pattern'])) continue;
+                // Only add if no hit for this pattern already recorded for this listener
+                $already = false;
+                foreach ($result[$eiKey][$liKey] ?? [] as $h) {
+                    if ($h['pattern'] === $p['pattern']) { $already = true; break; }
+                }
+                if (!$already) {
+                    $result[$eiKey][$liKey][] = [
+                        'pattern' => $p['pattern'],
+                        'label'   => $p['label'],
+                        'line_no' => $entry['start'],
+                    ];
+                }
+            }
+        }
+
         return $result;
     }
 

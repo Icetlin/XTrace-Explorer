@@ -4,98 +4,173 @@
 
     <div v-if="!toc.length" class="empty">No trace loaded</div>
 
-    <div
-      v-for="(event, ei) in toc"
-      :key="ei"
-      class="event-block"
-      :class="{ 'event-block--sep': ei > 0 && eventSource(event.event, event.event_class) !== eventSource(toc[ei-1].event, toc[ei-1].event_class) }"
-    >
-      <!-- Source group header — only on first event of a new source group -->
-      <div
-        v-if="eventSource(event.event, event.event_class) && (ei === 0 || eventSource(event.event, event.event_class) !== eventSource(toc[ei-1].event, toc[ei-1].event_class))"
-        class="source-group-header"
-        :data-src="eventSource(event.event, event.event_class)"
-      >{{ eventSource(event.event, event.event_class) }}</div>
+    <template v-for="(group, gi) in tocGroups" :key="gi">
 
-      <!-- Event header -->
-      <div
-        class="event-row"
-        :class="{ 'has-listeners': event.listeners?.length, 'event-row--selected': store.isSelected(event.line_no) }"
-        @click="onEventClick($event, ei, event)"
-        @contextmenu.prevent="onEventCtx($event, event)"
-      >
-        <span class="chevron">{{ expandedEvents.has(ei) ? '▾' : '▸' }}</span>
-        <span class="event-name">{{ event.event }}</span>
-        <span
-          v-for="m in eventScanMatches(ei)"
-          :key="m.pattern"
-          class="fav-badge-ev"
-          :style="{ color: favColor(m.pattern).text, background: favColor(m.pattern).bg, borderColor: favColor(m.pattern).border }"
-        >{{ m.label || m.pattern }}</span>
-      </div>
-
-      <!-- Listeners -->
-      <div v-if="expandedEvents.has(ei) && event.listeners?.length" class="listeners">
+      <!-- ── Collapsed repeated-event group ── -->
+      <div v-if="group.count > 1 && !expandedGroups.has(gi)" class="event-block event-group">
+        <!-- Source group header for the group -->
         <div
-          v-for="(listener, li) in event.listeners"
-          v-show="!store.isListenerFiltered(listener.sig)"
-          :key="li"
-          class="listener-block"
-          :class="{ 'listener-block--sep': li > 0 && listenerSource(listener.sig) !== listenerSource(event.listeners[li-1].sig) }"
-        >
-          <!-- Listener source group header -->
-          <div
-            v-if="listenerSource(listener.sig) && listenerSource(listener.sig) !== listenerSource(prevVisibleListener(event.listeners, li)?.sig)"
-            class="listener-source-header"
-            :data-src="listenerSource(listener.sig)"
-          >{{ listenerSource(listener.sig) }}</div>
-
-          <!-- Listener row -->
-          <div
-            class="listener-row"
-            :class="{ 'listener-row--fav': listenerScanMatches(ei, li).length, 'listener-row--selected': store.isSelected(listener.line_no) }"
-            :data-listener-line="listener.line_no"
-            @click="onListenerClick($event, ei, li, listener, event)"
-            @contextmenu.prevent="onListenerCtx($event, listener)"
-          >
-            <span class="connector">└</span>
-            <span class="chevron-sm">{{ expandedListeners.has(`${ei}-${li}`) ? '▾' : '▸' }}</span>
-            <span class="listener-class">{{ listenerClass(listener.sig) }}</span>
-            <span class="listener-method">{{ listenerMethod(listener.sig) }}</span>
-            <template v-for="m in listenerScanMatches(ei, li)" :key="m.pattern">
-              <span
-                class="fav-badge-li"
-                :style="{ color: favColor(m.pattern).text, background: favColor(m.pattern).bg, borderColor: favColor(m.pattern).border }"
-              >{{ m.label || m.pattern }}</span>
-            </template>
-          </div>
-
-          <!-- Lazy children -->
-          <div v-if="expandedListeners.has(`${ei}-${li}`)" class="children">
-            <div v-if="loadingKey === `${ei}-${li}`" class="loading">loading…</div>
-            <template v-else>
-              <CallNode
-                v-for="(child, ci) in getChildren(ei, li)"
-                :key="ci"
-                :node="child"
-                :file-id="fileId"
-                :indent="0"
-                :expand-path="expandPaths[`${ei}-${li}`]"
-                :ancestor-crumbs="[{ sig: event.event, line_no: event.line_no }, { sig: listener.sig, line_no: listener.line_no }]"
-                @jump="$emit('jump', $event)"
-                @ctx-menu="onCallNodeCtx"
-                @breadcrumb="$emit('breadcrumb', $event)"
-              />
-            </template>
-          </div>
+          v-if="group.src && (gi === 0 || tocGroups[gi-1].src !== group.src)"
+          class="source-group-header"
+          :data-src="group.src"
+        >{{ group.src }}</div>
+        <div class="event-row event-row--group" @click="expandedGroups = new Set([...expandedGroups, gi])">
+          <span class="chevron">▸</span>
+          <span class="event-name">{{ group.eventName }}</span>
+          <span class="event-group-count">× {{ group.count }}</span>
+          <span
+            v-for="m in groupScanMatches(group)"
+            :key="m.pattern"
+            class="fav-badge-ev"
+            :style="{ color: favColor(m.pattern).text, background: favColor(m.pattern).bg, borderColor: favColor(m.pattern).border }"
+          >{{ m.label || m.pattern }}</span>
         </div>
       </div>
 
-      <!-- Event has no listeners — show line-only -->
-      <div v-if="expandedEvents.has(ei) && !event.listeners?.length" class="no-listeners">
-        no listeners recorded
-      </div>
-    </div>
+      <!-- ── Expanded or singleton events ── -->
+      <template v-else>
+        <!-- Source group header (singleton only — groups show it in collapsed state) -->
+        <div
+          v-if="group.count === 1 && group.src && (gi === 0 || tocGroups[gi-1].src !== group.src)"
+          class="source-group-header"
+          :data-src="group.src"
+        >{{ group.src }}</div>
+
+        <!-- Collapse button for expanded group -->
+        <div v-if="group.count > 1" class="event-group-bar" @click="expandedGroups = new Set([...expandedGroups].filter(x => x !== gi))">
+          <span class="event-group-collapse">▾ {{ group.eventName }} × {{ group.count }} — collapse</span>
+        </div>
+
+        <!-- ── FLATTEN MODE: homogeneous group → skip event level, show listeners directly ── -->
+        <template v-if="group.count > 1 && group.homogeneous">
+          <div
+            v-for="ei in group.indices"
+            :key="ei"
+            class="event-block"
+          >
+            <div
+              v-for="(listener, li) in toc[ei].listeners"
+              v-show="!store.isListenerFiltered(listener.sig)"
+              :key="li"
+              class="listener-block"
+            >
+              <div
+                class="listener-row"
+                :class="{ 'listener-row--fav': listenerScanMatches(ei, li).length, 'listener-row--selected': store.isSelected(listener.line_no) }"
+                :data-listener-line="listener.line_no"
+                @click="onListenerClick($event, ei, li, listener, toc[ei])"
+                @contextmenu.prevent="onListenerCtx($event, listener)"
+              >
+                <span class="event-idx">#{{ ei - group.startEi + 1 }}</span>
+                <span class="chevron-sm">{{ expandedListeners.has(`${ei}-${li}`) ? '▾' : '▸' }}</span>
+                <span class="listener-class">{{ listenerClass(listener.sig) }}</span>
+                <span class="listener-method">{{ listenerMethod(listener.sig) }}</span>
+                <span v-if="listener.voter_class" class="voter-badge">{{ listener.voter_class }}</span>
+                <template v-for="m in listenerScanMatches(ei, li)" :key="m.pattern">
+                  <span class="fav-badge-li" :style="{ color: favColor(m.pattern).text, background: favColor(m.pattern).bg, borderColor: favColor(m.pattern).border }">{{ m.label || m.pattern }}</span>
+                </template>
+              </div>
+              <div v-if="expandedListeners.has(`${ei}-${li}`)" class="children">
+                <div v-if="loadingKey === `${ei}-${li}`" class="loading">loading…</div>
+                <template v-else>
+                  <CallNode
+                    v-for="(child, ci) in getChildren(ei, li)"
+                    :key="ci"
+                    :node="child"
+                    :file-id="fileId"
+                    :indent="0"
+                    :expand-path="expandPaths[`${ei}-${li}`]"
+                    :ancestor-crumbs="[{ sig: toc[ei].event, line_no: toc[ei].line_no }, { sig: listener.sig, line_no: listener.line_no }]"
+                    @jump="$emit('jump', $event)"
+                    @ctx-menu="onCallNodeCtx"
+                    @breadcrumb="$emit('breadcrumb', $event)"
+                  />
+                </template>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <!-- ── NORMAL MODE: singleton or heterogeneous group ── -->
+        <template v-else>
+          <div
+            v-for="ei in group.indices"
+            :key="ei"
+            class="event-block"
+          >
+            <div
+              class="event-row"
+              :class="{ 'has-listeners': toc[ei].listeners?.length, 'event-row--selected': store.isSelected(toc[ei].line_no) }"
+              @click="onEventClick($event, ei, toc[ei])"
+              @contextmenu.prevent="onEventCtx($event, toc[ei])"
+            >
+              <span class="chevron">{{ expandedEvents.has(ei) ? '▾' : '▸' }}</span>
+              <span class="event-name">{{ toc[ei].event }}</span>
+              <span
+                v-for="m in eventScanMatches(ei)"
+                :key="m.pattern"
+                class="fav-badge-ev"
+                :style="{ color: favColor(m.pattern).text, background: favColor(m.pattern).bg, borderColor: favColor(m.pattern).border }"
+              >{{ m.label || m.pattern }}</span>
+            </div>
+
+            <div v-if="expandedEvents.has(ei) && toc[ei].listeners?.length" class="listeners">
+              <div
+                v-for="(listener, li) in toc[ei].listeners"
+                v-show="!store.isListenerFiltered(listener.sig)"
+                :key="li"
+                class="listener-block"
+                :class="{ 'listener-block--sep': li > 0 && listenerSource(listener.sig) !== listenerSource(toc[ei].listeners[li-1].sig) }"
+              >
+                <div
+                  v-if="listenerSource(listener.sig) && listenerSource(listener.sig) !== listenerSource(prevVisibleListener(toc[ei].listeners, li)?.sig)"
+                  class="listener-source-header"
+                  :data-src="listenerSource(listener.sig)"
+                >{{ listenerSource(listener.sig) }}</div>
+                <div
+                  class="listener-row"
+                  :class="{ 'listener-row--fav': listenerScanMatches(ei, li).length, 'listener-row--selected': store.isSelected(listener.line_no) }"
+                  :data-listener-line="listener.line_no"
+                  @click="onListenerClick($event, ei, li, listener, toc[ei])"
+                  @contextmenu.prevent="onListenerCtx($event, listener)"
+                >
+                  <span class="connector">└</span>
+                  <span class="chevron-sm">{{ expandedListeners.has(`${ei}-${li}`) ? '▾' : '▸' }}</span>
+                  <span class="listener-class">{{ listenerClass(listener.sig) }}</span>
+                  <span class="listener-method">{{ listenerMethod(listener.sig) }}</span>
+                  <span v-if="listener.voter_class" class="voter-badge">{{ listener.voter_class }}</span>
+                  <template v-for="m in listenerScanMatches(ei, li)" :key="m.pattern">
+                    <span class="fav-badge-li" :style="{ color: favColor(m.pattern).text, background: favColor(m.pattern).bg, borderColor: favColor(m.pattern).border }">{{ m.label || m.pattern }}</span>
+                  </template>
+                </div>
+                <div v-if="expandedListeners.has(`${ei}-${li}`)" class="children">
+                  <div v-if="loadingKey === `${ei}-${li}`" class="loading">loading…</div>
+                  <template v-else>
+                    <CallNode
+                      v-for="(child, ci) in getChildren(ei, li)"
+                      :key="ci"
+                      :node="child"
+                      :file-id="fileId"
+                      :indent="0"
+                      :expand-path="expandPaths[`${ei}-${li}`]"
+                      :ancestor-crumbs="[{ sig: toc[ei].event, line_no: toc[ei].line_no }, { sig: listener.sig, line_no: listener.line_no }]"
+                      @jump="$emit('jump', $event)"
+                      @ctx-menu="onCallNodeCtx"
+                      @breadcrumb="$emit('breadcrumb', $event)"
+                    />
+                  </template>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="expandedEvents.has(ei) && !toc[ei].listeners?.length" class="no-listeners">
+              no listeners recorded
+            </div>
+          </div>
+        </template>
+      </template>
+
+    </template>
   </div>
 </template>
 
@@ -117,6 +192,35 @@ const ctxMenu = ref(null)
 
 const expandedEvents = ref(new Set())
 const expandedListeners = ref(new Set())
+const expandedGroups = ref(new Set())
+
+// Build groups of consecutive identical events for collapsing
+const tocGroups = computed(() => {
+  const groups = []
+  let i = 0
+  while (i < props.toc.length) {
+    const name = props.toc[i].event
+    let j = i + 1
+    while (j < props.toc.length && props.toc[j].event === name) j++
+    const indices = []
+    for (let k = i; k < j; k++) indices.push(k)
+    // Homogeneous = all events in this run have identical listener sig lists
+    const firstSigs = (props.toc[i].listeners ?? []).map(l => l.sig).join('|')
+    const homogeneous = j - i > 1 && indices.every(k =>
+      (props.toc[k].listeners ?? []).map(l => l.sig).join('|') === firstSigs
+    )
+    groups.push({
+      eventName: name,
+      count: j - i,
+      startEi: i,
+      indices,
+      src: eventSource(name, props.toc[i].event_class),
+      homogeneous,
+    })
+    i = j
+  }
+  return groups
+})
 const childrenCache = reactive({})
 const loadingKey = ref(null)
 
@@ -148,6 +252,18 @@ function eventScanMatches(ei) {
   const result = []
   for (const hits of Object.values(eventHits)) {
     for (const h of hits) {
+      if (!seen.has(h.pattern)) { seen.add(h.pattern); result.push(h) }
+    }
+  }
+  return result
+}
+
+// Collect unique fav matches across all events in a group
+function groupScanMatches(group) {
+  const seen = new Set()
+  const result = []
+  for (const ei of group.indices) {
+    for (const h of eventScanMatches(ei)) {
       if (!seen.has(h.pattern)) { seen.add(h.pattern); result.push(h) }
     }
   }
@@ -545,6 +661,16 @@ defineExpose({ jumpToLine })
   font-size: 13.5px;
   color: #8888a0;
 }
+.voter-badge {
+  font-size: 11px;
+  color: #c0a060;
+  background: rgba(120, 80, 20, 0.25);
+  border: 1px solid rgba(180, 120, 40, 0.3);
+  border-radius: 3px;
+  padding: 1px 5px;
+  flex-shrink: 0;
+  font-style: italic;
+}
 .line-badge-sm {
   font-size: 10px;
   color: #5a6888;
@@ -573,5 +699,55 @@ defineExpose({ jumpToLine })
   font-size: 12.5px;
   padding: 4px 0 8px;
   font-style: italic;
+}
+
+/* ── Flatten mode: event index badge ── */
+.event-idx {
+  font-size: 10px;
+  color: #4a6080;
+  min-width: 28px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+/* ── Repeated-event group ── */
+.event-row--group {
+  opacity: 0.75;
+}
+.event-group-count {
+  font-size: 11px;
+  color: #5a7090;
+  background: rgba(50, 70, 100, 0.25);
+  border: 1px solid rgba(60, 85, 130, 0.3);
+  border-radius: 10px;
+  padding: 1px 8px;
+  margin-left: 2px;
+  flex-shrink: 0;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+.event-row--group:hover .event-group-count {
+  color: #7a9cc0;
+  background: rgba(60, 90, 140, 0.35);
+}
+
+.event-group-bar {
+  display: flex;
+  align-items: center;
+  padding: 3px 18px 3px 14px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(40, 55, 90, 0.3);
+  margin-bottom: 4px;
+}
+.event-group-collapse {
+  font-size: 10.5px;
+  color: #5a7090;
+  font-family: 'JetBrains Mono', monospace;
+  letter-spacing: 0.02em;
+  transition: color 0.1s;
+}
+.event-group-bar:hover .event-group-collapse {
+  color: #90b8e0;
 }
 </style>

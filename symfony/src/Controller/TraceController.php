@@ -320,13 +320,23 @@ class TraceController extends AbstractController
         $xtPath = $this->tracesDir . '/' . $id . '/trace.xt';
         $result = $this->traceIndex->scanFavourites($id, $xtPath, $patterns);
 
-        // Ensure ei→li maps are always JSON objects even when keys start at 0
-        // (PHP json_encode treats ['0'=>...] as array; cast inner maps to stdClass)
-        $normalized = [];
+        // Ensure ei→li maps are always JSON objects even when keys start at 0.
+        // Symfony's json() uses the serializer which may unwrap stdClass — use JsonResponse
+        // with raw json_encode(JSON_FORCE_OBJECT on inner maps) to be explicit.
+        $normalized = new \stdClass();
         foreach ($result as $eiKey => $listeners) {
-            $normalized[$eiKey] = (object)array_map(fn($hits) => array_values($hits), $listeners);
+            $innerMap = new \stdClass();
+            foreach ($listeners as $liKey => $hits) {
+                $innerMap->$liKey = array_values($hits);
+            }
+            $normalized->$eiKey = $innerMap;
         }
-        return $this->json((object)$normalized);
+        return new \Symfony\Component\HttpFoundation\JsonResponse(
+            json_encode($normalized),
+            200,
+            [],
+            true,
+        );
     }
 
     #[Route('/path/{id}', methods: ['GET'])]
