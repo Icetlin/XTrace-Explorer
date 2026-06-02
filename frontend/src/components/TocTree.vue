@@ -47,7 +47,7 @@
         <!-- ── FLATTEN MODE: homogeneous group → skip event level, show listeners directly ── -->
         <template v-if="group.count > 1 && group.homogeneous">
           <div
-            v-for="ei in group.indices"
+            v-for="ei in sortedGroupIndices(group)"
             :key="ei"
             class="event-block"
           >
@@ -125,14 +125,14 @@
 
             <div v-if="expandedEvents.has(ei) && toc[ei].listeners?.length" class="listeners">
               <div
-                v-for="(listener, li) in toc[ei].listeners"
+                v-for="({ li, listener }, sortIdx) in sortedListenersWithIdx(toc[ei].listeners)"
                 v-show="!store.isListenerFiltered(listener.sig)"
                 :key="li"
                 class="listener-block"
-                :class="{ 'listener-block--sep': li > 0 && listenerSource(listener.sig) !== listenerSource(toc[ei].listeners[li-1].sig) }"
+                :class="{ 'listener-block--sep': sortIdx > 0 && listenerSource(listener.sig) !== listenerSource(sortedListenersWithIdx(toc[ei].listeners)[sortIdx-1]?.listener.sig) }"
               >
                 <div
-                  v-if="listenerSource(listener.sig) && listenerSource(listener.sig) !== listenerSource(prevVisibleListener(toc[ei].listeners, li)?.sig)"
+                  v-if="listenerSource(listener.sig) && listenerSource(listener.sig) !== listenerSource(sortedListenersWithIdx(toc[ei].listeners)[sortIdx-1]?.listener.sig)"
                   class="listener-source-header"
                   :data-src="listenerSource(listener.sig)"
                 >{{ listenerSource(listener.sig) }}</div>
@@ -144,6 +144,7 @@
                   @contextmenu.prevent="onListenerCtx($event, listener)"
                 >
                   <span class="connector">└</span>
+                  <span class="listener-idx">#{{ li + 1 }}</span>
                   <span class="chevron-sm">{{ expandedListeners.has(`${ei}-${li}`) ? '▾' : '▸' }}</span>
                   <span class="listener-class">{{ listenerClass(listener.sig) }}</span>
                   <span class="listener-method">{{ listenerMethod(listener.sig) }}</span>
@@ -296,6 +297,28 @@ function groupScanMatches(group) {
     }
   }
   return result
+}
+
+// Returns [{li, listener}, ...] sorted: non-ABSTAIN first (original order), then ABSTAIN (original order)
+function sortedListenersWithIdx(listeners) {
+  const entries = listeners.map((listener, li) => ({ li, listener }))
+  const nonAbstain = entries.filter(e => e.listener.vote_result !== 0 && e.listener.vote_result !== undefined)
+  const abstain = entries.filter(e => e.listener.vote_result === 0 || e.listener.vote_result === undefined)
+  return [...nonAbstain, ...abstain]
+}
+
+// For flatten mode: sort group.indices so non-ABSTAIN voters come first
+function sortedGroupIndices(group) {
+  const indices = group.indices
+  const nonAbstain = indices.filter(ei => {
+    const r = props.toc[ei].listeners?.[0]?.vote_result
+    return r !== 0 && r !== undefined
+  })
+  const abstain = indices.filter(ei => {
+    const r = props.toc[ei].listeners?.[0]?.vote_result
+    return r === 0 || r === undefined
+  })
+  return [...nonAbstain, ...abstain]
 }
 
 function prevVisibleListener(listeners, li) {
@@ -766,6 +789,14 @@ defineExpose({ jumpToLine })
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
+}
+/* Normal mode: original listener index (shown when voters are sorted) */
+.listener-idx {
+  font-size: 10px;
+  color: #4a6080;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  min-width: 26px;
 }
 
 /* ── Repeated-event group ── */
