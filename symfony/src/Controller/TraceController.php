@@ -285,6 +285,24 @@ class TraceController extends AbstractController
         return $this->json(['children' => $children, 'parent_return' => $parentReturn, 'raw_count' => $result['raw_count'] ?? 0]);
     }
 
+    #[Route('/schema/{id}', methods: ['POST'])]
+    public function schema(int $id, Request $request): JsonResponse
+    {
+        $traceFile = $this->traceRepo->find($id);
+        if (!$traceFile || $traceFile->getStatus() !== 'ready') {
+            return $this->json(['error' => 'Not ready'], 404);
+        }
+
+        $data  = json_decode($request->getContent(), true);
+        $items = $data['items'] ?? [];
+        if (!$items) return $this->json([]);
+
+        $xtPath = $this->tracesDir . '/' . $id . '/trace.xt';
+        $tree   = $this->traceIndex->buildSchema($id, $xtPath, $items);
+
+        return $this->json($tree);
+    }
+
     #[Route('/favourites-scan/{id}', methods: ['GET'])]
     public function favouritesScan(int $id): JsonResponse
     {

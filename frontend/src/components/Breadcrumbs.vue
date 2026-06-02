@@ -49,13 +49,13 @@ const crumbs = computed(() =>
   align-items: center;
   gap: 4px;
   padding: 5px 28px;
-  background: rgba(6, 6, 14, 0.65);
+  background: rgba(6, 8, 18, 0.75);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  border-top: 1px solid rgba(16, 16, 32, 0.5);
+  border-top: 1px solid rgba(30, 35, 65, 0.5);
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
-  color: #1e1e30;
+  color: #5a6a88;
   overflow-x: auto;
   white-space: nowrap;
   flex-shrink: 0;
@@ -63,7 +63,7 @@ const crumbs = computed(() =>
 }
 
 .crumb {
-  color: #383858;
+  color: #6878a0;
   cursor: default;
   padding: 1px 4px;
   border-radius: 3px;
@@ -72,18 +72,18 @@ const crumbs = computed(() =>
   text-overflow: ellipsis;
 }
 .crumb--last {
-  color: #5a6a80;
+  color: #90a8c8;
 }
 
 .crumb-sep {
-  color: #252535;
+  color: #4a5070;
   font-size: 12px;
   flex-shrink: 0;
 }
 
 .crumb-line {
   margin-left: auto;
-  color: #2a2a3a;
+  color: #5a6888;
   flex-shrink: 0;
   padding-left: 12px;
 }
