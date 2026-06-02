@@ -31,16 +31,25 @@ class TraceIndex
         // Build flat sorted list of listeners with their ranges:
         // [{ event_idx, listener_idx, start_line, end_line }]
         // end_line = next listener start - 1, or next event start - 1, or PHP_INT_MAX
+        // Listeners whose subtree is noise for favourite scanning (profiler/debug infra).
+        $scanNoiseListeners = ['ProfilerListener'];
+
         $flat = [];
         foreach ($toc as $ei => $event) {
             $listeners = $event['listeners'] ?? [];
             foreach ($listeners as $li => $listener) {
+                $sig = $listener['sig'] ?? '';
+                $noise = false;
+                foreach ($scanNoiseListeners as $n) {
+                    if (str_contains($sig, $n)) { $noise = true; break; }
+                }
                 $flat[] = [
                     'ei'    => $ei,
                     'li'    => $li,
                     'start' => $listener['line_no'],
                     'depth' => $listener['depth'] ?? 0,
-                    'end'   => PHP_INT_MAX, // will be filled by single-pass below
+                    'end'   => PHP_INT_MAX,
+                    'noise' => $noise,
                 ];
             }
         }
@@ -100,6 +109,15 @@ class TraceIndex
             fclose($fh2);
         }
 
+        // Cap each listener's end at the start of the next listener (minus 1).
+        // The depth-drop heuristic above may leave end=PHP_INT_MAX when adjacent
+        // listeners share the same call-depth boundary, causing cross-listener hits.
+        for ($i = 0; $i < count($flat) - 1; $i++) {
+            if ($flat[$i]['end'] >= $flat[$i + 1]['start']) {
+                $flat[$i]['end'] = $flat[$i + 1]['start'] - 1;
+            }
+        }
+
         $startLines = array_column($flat, 'start');
 
         // Results map: ei → li → hits[]
@@ -126,16 +144,22 @@ class TraceIndex
 
             $hitDepth = (int)(strlen($cm[1]) / 2);
 
-            // Build a compact searchable string: sig + simplified scalar args only
             $sig = $this->extractSig($cm[2]);
-            $args = $this->extractArgs($cm[2]); // already strips object internals
-            $searchable = $sig . ' ' . implode(' ', $args);
+            $searchable = null; // computed lazily for non-class patterns
 
             $matched = [];
             foreach ($patterns as $p) {
                 if ($p['pattern'] === '') continue;
-                if (str_contains($searchable, $p['pattern'])) {
-                    $matched[] = $p;
+                // PascalCase patterns are class names — match only in sig to avoid false
+                // positives where Profiler/DI enumerates class names as string identifiers.
+                if (preg_match('/^[A-Z][A-Za-z0-9]+$/', $p['pattern'])) {
+                    if (str_contains($sig, $p['pattern'])) $matched[] = $p;
+                } else {
+                    if ($searchable === null) {
+                        $args = $this->extractArgs($cm[2]);
+                        $searchable = $sig . ' ' . implode(' ', $args);
+                    }
+                    if (str_contains($searchable, $p['pattern'])) $matched[] = $p;
                 }
             }
             if (!$matched) continue;
@@ -148,7 +172,7 @@ class TraceIndex
                 else $hi = $mid - 1;
             }
             while ($found >= 0 && $lineNo > $flat[$found]['end']) $found--;
-            if ($found === -1) continue;
+            if ($found === -1 || $flat[$found]['noise']) continue;
 
             $eiKey = (string)$flat[$found]['ei'];
             $liKey = (string)$flat[$found]['li'];
@@ -227,6 +251,150 @@ class TraceIndex
 
         fclose($fh);
         return $stack;
+    }
+
+    /**
+     * Builds a merged call tree for a set of selected nodes.
+     *
+     * Strategy: for each selected node, walk its ancestor path (fromLine → line_no).
+     * At every ancestor in that path, load all its direct children — so siblings of the
+     * selected path are visible too (the "cut-out subgraph" effect).
+     * All paths are merged into one tree; common ancestors are deduped by line_no.
+     *
+     * $items = [{line_no, depth, sig, args, from_line}, ...]
+     * Returns [{line_no, depth, sig, args, children: [...], selected: bool}, ...]
+     */
+    public function buildSchema(int $fileId, string $xtPath, array $items): array
+    {
+        usort($items, fn($a, $b) => $a['line_no'] <=> $b['line_no']);
+
+        // line_no → node metadata (no children yet — tree assembled in second pass)
+        $nodeMap = [];
+        // line_no → [child_line_no, ...] — children to include (union across items)
+        $childrenOf = [];
+
+        foreach ($items as $item) {
+            $lineNo   = (int)$item['line_no'];
+            $depth    = (int)$item['depth'];
+            $fromLine = (int)($item['from_line'] ?? $lineNo);
+
+            // 1. Ancestor path from listener root to selected node
+            $path = $this->getAncestorPath($fileId, $xtPath, $lineNo, $fromLine);
+
+            foreach ($path as $step) {
+                if ($step['noise']) continue; // skip noise ancestors entirely
+                $ln = $step['line_no'];
+                if (!isset($nodeMap[$ln])) {
+                    $nodeMap[$ln] = [
+                        'line_no'  => $ln,
+                        'depth'    => $step['depth'],
+                        'sig'      => $step['sig'],
+                        'args'     => [],
+                        'selected' => false,
+                        'noise'    => false,
+                    ];
+                }
+            }
+
+            // Mark the selected node
+            if (!isset($nodeMap[$lineNo])) {
+                $nodeMap[$lineNo] = [
+                    'line_no'  => $lineNo,
+                    'depth'    => $depth,
+                    'sig'      => $item['sig'] ?? '',
+                    'args'     => $item['args'] ?? [],
+                    'selected' => true,
+                    'noise'    => false,
+                ];
+            } else {
+                $nodeMap[$lineNo]['selected'] = true;
+                if (!empty($item['args'])) $nodeMap[$lineNo]['args'] = $item['args'];
+            }
+
+            // 2. For every non-noise ancestor, load ALL direct children
+            //    so siblings along the path are visible in the schema.
+            foreach ($path as $step) {
+                if ($step['noise']) continue; // don't expand noise ancestors
+                $ln  = $step['line_no'];
+                $dep = $step['depth'];
+                if (isset($childrenOf[$ln])) continue; // already loaded
+
+                $result = $this->getChildren($fileId, $xtPath, $ln, $dep, true);
+                $childrenOf[$ln] = [];
+                foreach ($result['children'] as $child) {
+                    $cln = $child['line_no'];
+                    $childrenOf[$ln][] = $cln;
+                    if (!isset($nodeMap[$cln])) {
+                        $nodeMap[$cln] = [
+                            'line_no'  => $cln,
+                            'depth'    => $child['depth'],
+                            'sig'      => $child['sig'],
+                            'args'     => $child['args'] ?? [],
+                            'return'   => $child['return'] ?? null,
+                            'selected' => false,
+                            'noise'    => false,
+                        ];
+                    }
+                }
+            }
+
+            // Also load children of the selected node itself
+            if (!isset($childrenOf[$lineNo])) {
+                $result = $this->getChildren($fileId, $xtPath, $lineNo, $depth, true);
+                $childrenOf[$lineNo] = [];
+                foreach ($result['children'] as $child) {
+                    $cln = $child['line_no'];
+                    $childrenOf[$lineNo][] = $cln;
+                    if (!isset($nodeMap[$cln])) {
+                        $nodeMap[$cln] = [
+                            'line_no'  => $cln,
+                            'depth'    => $child['depth'],
+                            'sig'      => $child['sig'],
+                            'args'     => $child['args'] ?? [],
+                            'return'   => $child['return'] ?? null,
+                            'selected' => false,
+                            'noise'    => false,
+                        ];
+                    }
+                }
+            }
+        }
+
+        // Assemble tree using explicit childrenOf map (avoids depth-heuristic bugs)
+        // Nodes not referenced in any childrenOf list become roots.
+        $referenced = [];
+        foreach ($childrenOf as $childList) {
+            foreach ($childList as $cln) $referenced[$cln] = true;
+        }
+
+        // Build node objects with children arrays
+        $built = [];
+        foreach ($nodeMap as $ln => $meta) {
+            $built[$ln] = $meta;
+            $built[$ln]['children'] = [];
+        }
+
+        foreach ($childrenOf as $parentLn => $childList) {
+            if (!isset($built[$parentLn])) continue;
+            foreach ($childList as $cln) {
+                if (!isset($built[$cln])) continue;
+                $built[$parentLn]['children'][] = &$built[$cln];
+            }
+        }
+        unset($cln);
+
+        // Roots = nodes in nodeMap that are not children of anyone
+        $roots = [];
+        foreach ($built as $ln => &$node) {
+            if (!isset($referenced[$ln])) $roots[] = &$node;
+        }
+        unset($node);
+
+        // Sort roots and children by line_no
+        usort($roots, fn($a, $b) => $a['line_no'] <=> $b['line_no']);
+        array_walk_recursive($roots, function(&$v) {}); // noop, already sorted via built
+
+        return $roots;
     }
 
     public function getLines(int $fileId, string $xtPath, int $from, int $to): array
@@ -321,6 +489,12 @@ class TraceIndex
         'Stopwatch->start', 'Stopwatch->stop', 'StopwatchEvent->start', 'StopwatchEvent->stop',
         'StopwatchEvent->getNow', 'StopwatchEvent->formatTime', 'StopwatchPeriod->__construct',
         'StopwatchEvent->__construct', 'Section->startEvent',
+        // EventDispatcher infrastructure noise (visible in ancestor paths, not semantic)
+        'TraceableEventDispatcher->preProcess', 'TraceableEventDispatcher->beforeDispatch',
+        'TraceableEventDispatcher->afterDispatch', 'TraceableEventDispatcher->postProcess',
+        'WrappedListener->__invoke', 'EventDispatcher->dispatch',
+        // VirtualRequestStack infra
+        'VirtualRequestStack->getCurrentRequest',
         // Reflection noise
         'ReflectionClass->__construct', 'ReflectionClass->getName', 'ReflectionClass->getDocComment',
         'ReflectionExtractor->getMethodsFlags', 'ReflectionExtractor->getPropertyFlags',

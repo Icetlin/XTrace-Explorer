@@ -96,9 +96,9 @@ function truncate(s, n) {
   padding: 4px 20px;
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
-  background: rgba(255, 255, 255, 0.02);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-  color: #4a5a70;
+  background: rgba(255, 255, 255, 0.025);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  color: #7888a8;
   flex-shrink: 0;
   position: relative;
   z-index: 1;
@@ -114,15 +114,15 @@ function truncate(s, n) {
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.08em;
-  color: #2a3a4a;
-  background: rgba(40, 60, 90, 0.3);
+  color: #6888a8;
+  background: rgba(50, 80, 120, 0.25);
   border-radius: 3px;
   padding: 1px 5px;
   flex-shrink: 0;
 }
 
 .bar-toggle {
-  color: #2a2a3a;
+  color: #5a6888;
   font-size: 10px;
   cursor: pointer;
   margin-left: auto;
@@ -131,7 +131,7 @@ function truncate(s, n) {
   border-radius: 3px;
   transition: color 0.1s, background 0.1s;
 }
-.bar-toggle:hover { color: #7a9acc; background: rgba(255,255,255,0.04); }
+.bar-toggle:hover { color: #90b8e8; background: rgba(255,255,255,0.05); }
 
 .bar-detail {
   flex-basis: 100%;
@@ -139,7 +139,7 @@ function truncate(s, n) {
   flex-wrap: wrap;
   gap: 5px;
   padding-top: 5px;
-  border-top: 1px solid rgba(255,255,255,0.03);
+  border-top: 1px solid rgba(255,255,255,0.04);
   margin-top: 3px;
   align-items: center;
 }
@@ -148,7 +148,7 @@ function truncate(s, n) {
   font-size: 9.5px;
   font-weight: 600;
   letter-spacing: 0.06em;
-  color: #2a3a2a;
+  color: #5a7858;
   flex-shrink: 0;
 }
 
@@ -160,38 +160,38 @@ function truncate(s, n) {
   border-radius: 3px;
   flex-shrink: 0;
 }
-.req-method--post { color: #7a9a50; background: rgba(80, 120, 40, 0.15); }
-.req-method--get  { color: #5a8aaa; background: rgba(50, 100, 150, 0.15); }
-.req-method--put  { color: #a08040; background: rgba(140, 100, 30, 0.15); }
-.req-method--delete { color: #9a5050; background: rgba(140, 60, 50, 0.15); }
-.req-method--patch  { color: #8a60a0; background: rgba(100, 70, 130, 0.15); }
+.req-method--post { color: #90c060; background: rgba(80, 140, 40, 0.2); }
+.req-method--get  { color: #70a8d0; background: rgba(50, 110, 170, 0.2); }
+.req-method--put  { color: #c8a050; background: rgba(160, 110, 30, 0.2); }
+.req-method--delete { color: #c06060; background: rgba(160, 60, 50, 0.2); }
+.req-method--patch  { color: #a878c8; background: rgba(110, 80, 150, 0.2); }
 
-.req-uri { color: #8a9aaa; }
-.req-query { color: #6a7a8a; }
-.req-sep { color: #252535; }
-.req-time { color: #4a5060; }
-.req-ct { color: #4a5a6a; }
-.req-ip { color: #3a4a5a; }
+.req-uri { color: #a0b0c8; }
+.req-query { color: #8090a8; }
+.req-sep { color: #404860; }
+.req-time { color: #6878a0; }
+.req-ct { color: #6880a0; }
+.req-ip { color: #587090; }
 
-.req-cookies-label { color: #383848; font-size: 10px; flex-shrink: 0; }
+.req-cookies-label { color: #607880; font-size: 10px; flex-shrink: 0; }
 .req-cookies-count {
   font-size: 10px;
-  color: #3a4a3a;
-  background: rgba(60, 80, 50, 0.15);
-  border: 1px solid rgba(60, 80, 50, 0.2);
+  color: #70a070;
+  background: rgba(60, 100, 60, 0.18);
+  border: 1px solid rgba(60, 100, 60, 0.25);
   border-radius: 3px;
   padding: 0 5px;
   flex-shrink: 0;
 }
 .req-cookie {
-  color: #5a6a5a;
+  color: #78a078;
   font-size: 10px;
-  background: rgba(60, 80, 50, 0.12);
-  border: 1px solid rgba(60, 80, 50, 0.2);
+  background: rgba(60, 100, 60, 0.14);
+  border: 1px solid rgba(60, 100, 60, 0.22);
   border-radius: 3px;
   padding: 0 5px;
 }
-.req-cookie-val { color: #3a4a38; }
+.req-cookie-val { color: #507868; }
 
-.req-ref { color: #3a4a5a; font-size: 10px; }
+.req-ref { color: #5878a0; font-size: 10px; }
 </style>

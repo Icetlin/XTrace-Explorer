@@ -84,51 +84,112 @@ function buildMarkdown() {
   lines.push('## Trace')
   lines.push('')
 
-  // Build tree: group by event → listener → calls
-  // Each item has breadcrumb: [{sig, line_no}, ...] where [0]=event, [1]=listener, [2+]=call ancestors
-  let lastEventSig = null
-  let lastListenerLineNo = null  // track by line_no, not sig — same class may appear multiple times
+  // Group items by event → listener bucket.
+  // breadcrumb layout:
+  //   event item:    breadcrumb=[]
+  //   listener item: breadcrumb=[{event}]
+  //   call item:     breadcrumb=[{event}, {listener}, ...ancestors]
+  const buckets = new Map() // key=`${eventSig}::${listenerLineNo}` → { eventSig, listenerSig, listenerLineNo, listenerSrc, items[] }
 
   for (const item of sorted) {
     const crumbs = item.breadcrumb || []
-    const eventCrumb    = crumbs[0] ?? null
-    const listenerCrumb = crumbs[1] ?? null
 
-    // Event header
-    const eventSig = item.type === 'event' ? item.sig : eventCrumb?.sig
-    if (eventSig && eventSig !== lastEventSig) {
-      lines.push(`### ${eventSig}`)
-      lines.push('')
-      lastEventSig = eventSig
-      lastListenerLineNo = null
+    let eventSig, listenerSig, listenerLineNo
+    if (item.type === 'event') {
+      eventSig      = item.sig
+      listenerSig   = null
+      listenerLineNo = null
+    } else if (item.type === 'listener') {
+      eventSig      = crumbs[0]?.sig ?? '(unknown event)'
+      listenerSig   = item.sig
+      listenerLineNo = item.line_no
+    } else {
+      // call: crumbs = [event, listener, ...ancestors]
+      eventSig      = crumbs[0]?.sig ?? '(unknown event)'
+      listenerSig   = crumbs[1]?.sig ?? null
+      listenerLineNo = crumbs[1]?.line_no ?? null
     }
 
-    // Listener header — keyed by line_no so duplicate-sig listeners each get their own block
-    const listenerSig = item.type === 'listener' ? item.sig : listenerCrumb?.sig
-    const listenerLineNo = item.type === 'listener' ? item.line_no : listenerCrumb?.line_no
-    if (listenerSig && listenerLineNo !== lastListenerLineNo && item.type !== 'event') {
-      if (lastListenerLineNo !== null) lines.push('')  // blank line between listener blocks
-      const badges = item.type === 'listener' ? favBadges(item.sig, []) : ''
-      const src = sigSource(listenerSig)
+    const bucketKey = `${eventSig}::${listenerLineNo ?? '_'}`
+    if (!buckets.has(bucketKey)) {
+      buckets.set(bucketKey, { eventSig, listenerSig, listenerLineNo, items: [] })
+    }
+    buckets.get(bucketKey).items.push(item)
+  }
+
+  // Collect unique events in order
+  const seenEvents = []
+  const eventBuckets = new Map() // eventSig → [bucket, ...]
+  for (const bucket of buckets.values()) {
+    if (!eventBuckets.has(bucket.eventSig)) {
+      seenEvents.push(bucket.eventSig)
+      eventBuckets.set(bucket.eventSig, [])
+    }
+    eventBuckets.get(bucket.eventSig).push(bucket)
+  }
+
+  for (const eventSig of seenEvents) {
+    lines.push(`### ${eventSig}`)
+    lines.push('')
+
+    const eventBucketList = eventBuckets.get(eventSig)
+    // Sort listener buckets by listenerLineNo (nulls first for event-only items)
+    eventBucketList.sort((a, b) => (a.listenerLineNo ?? -1) - (b.listenerLineNo ?? -1))
+
+    let firstBucket = true
+    for (const bucket of eventBucketList) {
+      const listenerItems = bucket.items.filter(i => i.type === 'listener')
+      const callItems     = bucket.items.filter(i => i.type === 'call')
+      const eventItems    = bucket.items.filter(i => i.type === 'event')
+
+      // Pure event-only bucket (no listener)
+      if (!bucket.listenerSig) {
+        for (const _ of eventItems) { /* event header already printed above */ }
+        continue
+      }
+
+      if (!firstBucket) lines.push('')
+      firstBucket = false
+
+      // Listener header line
+      const src    = sigSource(bucket.listenerSig)
       const srcTag = src ? ` *(${src})*` : ''
-      lines.push(`- **${shortSig(listenerSig)}**${srcTag}${badges}  \`${listenerLineNo?.toLocaleString() ?? ''}\``)
-      lastListenerLineNo = listenerLineNo
+      const badges = listenerItems.length ? favBadges(bucket.listenerSig, []) : ''
+      lines.push(`- **${shortSig(bucket.listenerSig)}**${srcTag}${badges}  \`${bucket.listenerLineNo?.toLocaleString() ?? ''}\``)
+
+      // Call nodes as a tree under this listener
+      if (callItems.length) {
+        // Determine per-call ancestor depth: crumbs = [event, listener, ...ancestors]
+        // ancestor depth = crumbs.length - 2; 0 means direct child of listener
+        const maxDepth = Math.max(...callItems.map(i => Math.max(0, (i.breadcrumb?.length ?? 2) - 2)))
+
+        for (let ci = 0; ci < callItems.length; ci++) {
+          const item      = callItems[ci]
+          const nextItem  = callItems[ci + 1] ?? null
+          const crumbs    = item.breadcrumb || []
+          const depth     = Math.max(0, crumbs.length - 2)
+          const nextDepth = nextItem ? Math.max(0, (nextItem.breadcrumb?.length ?? 2) - 2) : -1
+
+          // Build tree prefix: each level contributes 2 chars
+          // Use └─ for last child at that depth, ├─ otherwise
+          const isLast = nextDepth < depth
+          const connector = isLast ? '└─' : '├─'
+          const indent    = depth === 0 ? '  ' : '  ' + '    '.repeat(depth - 1) + '    '
+          const prefix    = `${indent}${connector} `
+
+          const args      = item.args?.length ? ' ' + item.args.map(a => `\`${a}\``).join(' ') : ''
+          const filePart  = item.file ? ` *${item.file}*` : ''
+          const badge     = favBadges(item.sig, item.args)
+          const callSrc   = sigSource(item.sig)
+          const callSrcTag = callSrc ? ` *(${callSrc})*` : ''
+          const lineNo    = `  \`${item.line_no.toLocaleString()}\``
+
+          lines.push(`${prefix}\`${shortSig(item.sig)}\`${callSrcTag}${args}${badge}${filePart}${lineNo}`)
+        }
+      }
     }
 
-    if (item.type === 'event') continue
-    if (item.type === 'listener') continue
-
-    // Call node: crumbs = [event, listener, ...ancestors]
-    // depth relative to listener = crumbs.length - 2 (0 = direct child of listener)
-    const callDepth = Math.max(0, crumbs.length - 2)
-    const pad = '  ' + '    '.repeat(callDepth)  // 2 spaces base + 4 per level
-    const args = item.args?.length
-      ? ' ' + item.args.map(a => `\`${a}\``).join(' ')
-      : ''
-    const badges = favBadges(item.sig, item.args)
-    const callSrc = sigSource(item.sig)
-    const callSrcTag = callSrc ? ` *(${callSrc})*` : ''
-    lines.push(`${pad}- \`${shortSig(item.sig)}\`${callSrcTag}${args}${badges}  \`${item.line_no.toLocaleString()}\``)
+    lines.push('')
   }
 
   return lines.join('\n').trimEnd()

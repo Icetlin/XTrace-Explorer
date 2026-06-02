@@ -179,6 +179,9 @@
     <!-- ── Export panel (floating) ── -->
     <ExportPanel />
 
+    <!-- ── Selection preview (floating, right side) ── -->
+    <SelectionPreview />
+
     <!-- ── Jump toast ── -->
     <transition name="toast">
       <div v-if="jumpToast" class="jump-toast">
@@ -199,6 +202,7 @@ import ResponseInfo from './components/ResponseInfo.vue'
 import ExportPanel from './components/ExportPanel.vue'
 import SettingsPage from './components/SettingsPage.vue'
 import Breadcrumbs from './components/Breadcrumbs.vue'
+import SelectionPreview from './components/SelectionPreview.vue'
 import axios from 'axios'
 
 const store = useTraceStore()
@@ -308,8 +312,8 @@ function formatSize(bytes) {
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #app {
   height: 100%;
-  background: #0a0a14;
-  color: #ccc;
+  background: #0a0c14;
+  color: #c0c8d8;
 }
 .app { display: flex; flex-direction: column; height: 100vh; position: relative; }
 
@@ -334,10 +338,10 @@ html, body, #app {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   font-weight: 700;
-  color: #4a5e82;
+  color: #7a9ac0;
   letter-spacing: 0.08em;
   padding: 0 12px 0 4px;
-  border-right: 1px solid #1e1e38;
+  border-right: 1px solid #2a2a48;
   margin-right: 8px;
   flex-shrink: 0;
 }
@@ -351,7 +355,7 @@ html, body, #app {
   gap: 7px;
   padding: 0 12px;
   border-bottom: 2px solid transparent;
-  color: #505070;
+  color: #6878a0;
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   cursor: pointer;
@@ -360,10 +364,10 @@ html, body, #app {
   transition: color 0.12s, border-color 0.12s;
   position: relative;
 }
-.trace-tab:hover { color: #7a8aa8; }
-.trace-tab--active { color: #96aac0; border-bottom-color: #3a5a80; }
-.trace-tab--parsing { color: #4a6a88; }
-.trace-tab--error { color: #7a3a3a; }
+.trace-tab:hover { color: #a0b8d0; }
+.trace-tab--active { color: #c0d0e8; border-bottom-color: #4a7ab0; }
+.trace-tab--parsing { color: #5a8ab8; }
+.trace-tab--error { color: #b05050; }
 
 .trace-tab__dot {
   width: 6px;
@@ -409,15 +413,15 @@ html, body, #app {
   width: 32px;
   background: none;
   border: none;
-  color: #484868;
+  color: #6878a0;
   font-size: 18px;
   cursor: pointer;
   flex-shrink: 0;
   transition: color 0.12s;
   padding-bottom: 2px;
 }
-.tab-add:hover { color: #6a90b8; }
-.tab-add--open { color: #4a6a90; }
+.tab-add:hover { color: #90b8e0; }
+.tab-add--open { color: #6a9ac8; }
 
 /* Nav buttons */
 .nav-btn {
@@ -428,7 +432,7 @@ html, body, #app {
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
-  color: #505070;
+  color: #6878a0;
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   cursor: pointer;
@@ -436,12 +440,12 @@ html, body, #app {
   flex-shrink: 0;
   transition: color 0.12s, border-color 0.12s;
 }
-.nav-btn:hover { color: #8090aa; }
-.nav-btn--active { color: #8aaccc; border-bottom-color: #3a5878; }
+.nav-btn:hover { color: #a0b8d0; }
+.nav-btn--active { color: #b0d0f0; border-bottom-color: #4a7aa8; }
 
 .nav-badge {
-  background: rgba(40, 55, 90, 0.7);
-  color: #7a9acc;
+  background: rgba(50, 70, 120, 0.7);
+  color: #90b8e8;
   border-radius: 8px;
   font-size: 10px;
   padding: 0 5px;
@@ -467,51 +471,49 @@ html, body, #app {
   padding: 8px 28px;
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
-  color: #2a2a3a;
-  border-bottom: 1px solid rgba(16, 16, 32, 0.8);
+  color: #b0c8e8;
+  border-bottom: 1px solid rgba(40, 50, 90, 0.6);
   position: sticky;
   top: 0;
-  background: rgba(8, 8, 18, 0.9);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: #0d1020;
   z-index: 1;
 }
-.file-browser__count { color: #252540; }
-.file-browser__loading { display: flex; align-items: center; gap: 6px; color: #3a4a6a; }
+.file-browser__count { color: #8898c0; }
+.file-browser__loading { display: flex; align-items: center; gap: 6px; color: #6a90c8; }
 .file-browser__close {
   margin-left: auto;
   background: none;
   border: none;
-  color: #2a2a40;
+  color: #8898b8;
   cursor: pointer;
   font-size: 12px;
   padding: 2px 6px;
   border-radius: 3px;
 }
-.file-browser__close:hover { color: #cc6060; }
+.file-browser__close:hover { color: #e06060; }
 .file-browser__search {
   padding: 6px 14px;
-  border-bottom: 1px solid rgba(16, 16, 32, 0.8);
-  background: rgba(8, 8, 18, 0.9);
+  border-bottom: 1px solid rgba(40, 50, 90, 0.5);
+  background: #0d1020;
 }
 .file-browser__search-input {
   width: 100%;
-  background: rgba(14, 14, 28, 0.8);
-  border: 1px solid rgba(30, 30, 60, 0.5);
+  background: rgba(20, 24, 44, 0.95);
+  border: 1px solid rgba(60, 75, 120, 0.6);
   border-radius: 4px;
-  color: #6a8aaa;
+  color: #a0b8d8;
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   padding: 5px 10px;
   outline: none;
 }
-.file-browser__search-input::placeholder { color: #252540; }
-.file-browser__search-input:focus { border-color: rgba(50, 80, 130, 0.7); }
+.file-browser__search-input::placeholder { color: #6070a0; }
+.file-browser__search-input:focus { border-color: rgba(80, 120, 200, 0.8); }
 
 .file-browser__empty {
   padding: 16px 24px;
   font-size: 12px;
-  color: #2a2a44;
+  color: #506878;
   font-family: monospace;
   font-style: italic;
 }
@@ -524,14 +526,14 @@ html, body, #app {
   cursor: pointer;
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
-  border-bottom: 1px solid rgba(14, 14, 26, 0.6);
+  border-bottom: 1px solid rgba(25, 28, 50, 0.6);
   transition: background 0.1s;
 }
-.file-row:hover { background: rgba(16, 16, 28, 0.6); }
+.file-row:hover { background: rgba(30, 40, 70, 0.4); }
 .file-row__info { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.file-row__name { color: #4a5a6a; }
-.file-row__dir  { color: #242438; font-size: 10px; }
-.file-row__size { color: #202030; font-size: 10px; flex-shrink: 0; margin-left: 12px; }
+.file-row__name { color: #a0c0e0; }
+.file-row__dir  { color: #6878a0; font-size: 10px; }
+.file-row__size { color: #6878a0; font-size: 10px; flex-shrink: 0; margin-left: 12px; }
 
 /* ── Status bar ── */
 .status-bar {
