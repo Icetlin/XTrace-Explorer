@@ -123,6 +123,15 @@ export const useTraceStore = defineStore('trace', () => {
     return data
   }
 
+  async function fetchVarContext(fileId, lineNo, depth) {
+    try {
+      const { data } = await axios.get(`/api/var-context/${fileId}`, { params: { line_no: lineNo, depth } })
+      return data
+    } catch {
+      return null
+    }
+  }
+
   async function fetchSource(file, hint) {
     try {
       const { data } = await axios.get('/api/source', { params: { file, hint } })
@@ -309,11 +318,18 @@ export const useTraceStore = defineStore('trace', () => {
   const hoveredCodeLine = ref(null)  // absolute file path + line, e.g. "/src/Foo.php:42"
   function setHoveredCodeLine(fileAbsWithLine) { hoveredCodeLine.value = fileAbsWithLine }
 
+  // ── Theme ──
+  const theme = ref(localStorage.getItem('xtrace-theme') || 'dark')
+  function toggleTheme() {
+    theme.value = theme.value === 'dark' ? 'light' : 'dark'
+    localStorage.setItem('xtrace-theme', theme.value)
+  }
+
   return {
     files, openTabs, activeTabFileId, currentTab, currentFile, toc, totalLines, annotations, favourites,
     listenerFilters, appNamespaces,
     loadFiles, selectFile, switchToTab, closeTab, pollStatus,
-    fetchChildren, fetchPath, fetchObject, fetchSource, search,
+    fetchChildren, fetchPath, fetchObject, fetchSource, fetchVarContext, search,
     addAnnotation, deleteAnnotation,
     loadFavourites, addFavourite, deleteFavourite, matchFavourites, favMatchesInRange, scanFavourites,
     loadSettings, saveSettings, addListenerFilter, isListenerFiltered,
@@ -322,5 +338,6 @@ export const useTraceStore = defineStore('trace', () => {
     activeCodeNode, setCodeNode,
     activeCodeFile, setActiveCodeFile,
     hoveredCodeLine, setHoveredCodeLine,
+    theme, toggleTheme,
   }
 })

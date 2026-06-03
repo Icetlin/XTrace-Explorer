@@ -27,14 +27,17 @@
         :data-line="no"
         @mouseenter="store.setHoveredCodeLine(currentFile + ':' + no)"
       >
-        <span class="code-line__no">{{ no }}</span>
-        <span class="code-line__code" v-html="html" />
-        <span v-if="annotations.has(no)" class="code-line__ann">
+        <div class="code-line__main">
+          <span class="code-line__no">{{ no }}</span>
+          <span class="code-line__code" v-html="html" />
+        </div>
+        <div v-if="annotations.has(no)" class="code-line__ann">
+          <span class="code-line__ann-no" />
           <span v-for="(ann, i) in annotations.get(no)" :key="i" class="code-line__ann-item">
             <span class="ann-arrow">⇒</span>
             <span class="ann-val" :class="ann.type">{{ ann.value }}</span>
           </span>
-        </span>
+        </div>
       </div>
     </div>
   </div>
@@ -71,36 +74,65 @@ watch(() => store.activeCodeNode, (node) => {
     store.setActiveCodeFile(null)
     return
   }
+  loadNodeSource(node)
+}, { immediate: true })
 
-  // If the node's own file_abs points outside /src/ but the sig is an App\ class,
-  // prefer the first child's file_abs — it's the first line inside the method body.
-  const fileAbs = resolveFileAbs(node)
-  if (!fileAbs) return
+// Load source for a node. First fetches children (to know the body file),
+// then fetches source, then builds annotations.
+async function loadNodeSource(node) {
+  loading.value = true
+  error.value = null
+  source.value = null
+  annotations.value = new Map()
 
-  const absPath = fileAbs.replace(/:\d+$/, '')
-  const hint = extractLineNo(fileAbs)
-  if (absPath === currentFile.value && hint === currentHint.value && source.value) {
+  try {
+    // Step 1: fetch direct children — their file_abs tells us which file is the method body
+    let allCalls = node.children || []
+    const fileId = store.currentFile?.file_id
+    if (fileId && node.line_no != null) {
+      try {
+        const result = await store.fetchChildren(fileId, node.line_no, node.depth ?? 1)
+        allCalls = result.children || []
+      } catch (e) { console.warn('[CodeView] fetchChildren failed', e) }
+    }
+
+    // Step 2: determine which file to show
+    // node.file_abs = call site in parent; children's file_abs = call sites inside the body.
+    // The body file is the base of children's file_abs.
+    const bodyFileAbs = allCalls.find(c => c.file_abs)?.file_abs
+    const fileAbs = bodyFileAbs || node.file_abs
+    const absPath = fileAbs.replace(/:\d+$/, '')
+    // Hint: prefer the node's own line in the body file (first child's line) for scrolling
+    const hint = extractLineNo(fileAbs)
+
+    if (absPath === currentFile.value && hint === currentHint.value && source.value) {
+      scrollToLine(hint)
+      loading.value = false
+      return
+    }
+    currentFile.value = absPath
+    currentHint.value = hint
+    store.setActiveCodeFile(absPath)
+
+    // Step 3: fetch source
+    const data = await store.fetchSource(absPath, hint)
+    if (!data) { error.value = 'File not found'; return }
+    source.value = data
+
+    // Step 4: fetch var context (object fields + child return types from trace)
+    let varCtx = null
+    if (fileId && node.line_no != null) {
+      varCtx = await store.fetchVarContext(fileId, node.line_no, node.depth ?? 1)
+    }
+
+    annotations.value = buildAnnotations(node, absPath, allCalls, data, varCtx)
+    await nextTick()
     scrollToLine(hint)
-    return
+  } catch (e) {
+    error.value = 'Failed to load: ' + (e?.message || 'unknown error')
+  } finally {
+    loading.value = false
   }
-  currentFile.value = absPath
-  currentHint.value = hint
-  store.setActiveCodeFile(absPath)
-  annotations.value = buildAnnotations(node, absPath)
-  fetchSource(absPath, hint)
-})
-
-function resolveFileAbs(node) {
-  const own = node.file_abs || ''
-  // Own file is inside the app src — use it directly
-  if (own.includes('/src/')) return own
-  // App\ class but file_abs points to vendor/framework — use first child's file_abs
-  if (node.sig?.startsWith('App\\') && node.children?.length) {
-    const child = node.children.find(c => c.file_abs?.includes('/src/'))
-    if (child) return child.file_abs
-  }
-  // Fallback: use own regardless
-  return own
 }
 
 const highlightedLines = computed(() => {
@@ -133,55 +165,147 @@ function lineClass(no) {
   return classes
 }
 
-function buildAnnotations(node, shownFile) {
+// Build annotations for shownFile from allCalls + varCtx.
+// varCtx = { vars: { "$name": {class, fields} | {scalar} }, child_types: { lineNo: "ClassName" } }
+function buildAnnotations(node, shownFile, allCalls, sourceData, varCtx) {
   const map = new Map()
+  const lines = sourceData?.lines || {}
 
-  // Each child knows the line in the parent where it was called from (child.file_abs).
-  // Annotate those lines so the code panel shows what was passed/returned at each call site.
-  for (const child of (node.children || [])) {
-    if (!child.file_abs) continue
-    const childFile = child.file_abs.replace(/:\d+$/, '')
-    if (childFile !== shownFile) continue
-    const line = extractLineNo(child.file_abs)
+  // ── varMap: variable name → display string ────────────────────────────────
+  // Priority: varCtx.vars (full object fields from raw trace) > node.args (simplified)
+  const varMap = new Map()       // $name → display string like "User {…}"
+  const varFields = new Map()    // $name → Map(fieldName → value) for field-level lookup
+
+  // Seed from node.args (simplified, e.g. "User {…}")
+  for (const arg of (node.args || [])) {
+    const m = arg.match(/^\$(\w+)\s*=\s*(.+)$/)
+    if (m) varMap.set(m[1], m[2].trim())
+  }
+
+  // Override with varCtx.vars which has full parsed fields
+  const ctxVars = varCtx?.vars || {}
+  for (const [varKey, info] of Object.entries(ctxVars)) {
+    const name = varKey.replace(/^\$/, '')
+    if (info.scalar) {
+      varMap.set(name, info.scalar)
+    } else if (info.class) {
+      varMap.set(name, info.class + ' {…}')
+      const fm = new Map()
+      for (const f of (info.fields || [])) fm.set(f.name, f.value)
+      varFields.set(name, fm)
+    }
+  }
+
+  // child_types: child line_no (string) → inferred return class name
+  const childTypes = varCtx?.child_types || {}
+
+  // ── callsByLine: lineNo → array of calls made on that line ────────────────
+  const callsByLine = new Map()
+  for (const call of (allCalls || [])) {
+    if (!call.file_abs) continue
+    const callFile = call.file_abs.replace(/:\d+$/, '')
+    if (callFile !== shownFile) continue
+    const line = extractLineNo(call.file_abs)
     if (!line) continue
+    if (!callsByLine.has(line)) callsByLine.set(line, [])
+    callsByLine.get(line).push(call)
+  }
 
+  // Infer $var assignments from children with known return values
+  const sortedLines = [...callsByLine.keys()].sort((a, b) => a - b)
+  for (const line of sortedLines) {
+    const srcLine = lines[line] || ''
+    const assignMatch = srcLine.match(/^\s*\$(\w+)\s*=\s*[^=]/)
+    if (!assignMatch) continue
+    const varName = assignMatch[1]
+    const callsHere = callsByLine.get(line)
+    // 1. Explicit return from trace
+    const withReturn = callsHere.filter(c => c.return != null)
+    if (withReturn.length) {
+      varMap.set(varName, String(withReturn[withReturn.length - 1].return))
+      continue
+    }
+    // 2. Inferred type from child_types (grandchild receiver heuristic)
+    for (const call of callsHere) {
+      const ct = childTypes[String(call.line_no)]
+      if (ct) { varMap.set(varName, ct + ' {…}'); break }
+    }
+  }
+
+  // ── Per-line annotation entries ───────────────────────────────────────────
+  for (const [lineNoStr, lineCode] of Object.entries(lines)) {
+    const lineNo = parseInt(lineNoStr)
+    const trimmed = lineCode.trim()
     const entries = []
-    // method label (short)
-    const sig = child.sig || ''
-    const sep = Math.max(sig.lastIndexOf('->'), sig.lastIndexOf('::'))
-    const label = sep >= 0 ? sig.slice(sep) : sig.split('\\').pop()
-    entries.push({ type: 'sig', value: label })
 
-    for (const arg of (child.args || [])) {
-      const val = arg.replace(/^\$\w+\s*=\s*/, '')
-      if (val && val !== '[…]' && !val.endsWith('{…}')) {
-        entries.push({ type: 'arg', value: val.length > 36 ? val.slice(0, 36) + '…' : val })
+    const callsHere = callsByLine.get(lineNo) || []
+
+    // 1. Calls with explicit return value → show the return
+    for (const call of callsHere) {
+      if (call.return != null) {
+        const retStr = String(call.return)
+        entries.push({ type: 'ret', value: retStr.length > 48 ? retStr.slice(0, 48) + '…' : retStr })
       }
     }
-    if (child.return != null) {
-      entries.push({ type: 'ret', value: String(child.return).slice(0, 36) })
+
+    // 2. Calls without return → try to show field value from varCtx, else method name
+    for (const call of callsHere) {
+      if (call.return != null) continue
+      const sig = call.sig || ''
+      const arrowPos = sig.lastIndexOf('->')
+      if (arrowPos >= 0) {
+        const methodName = sig.slice(arrowPos + 2)
+        // Try to find which $var this is called on from source line: $var->method()
+        for (const sm of trimmed.matchAll(/\$(\w+)->/g)) {
+          const varName = sm[1]
+          const fields = varFields.get(varName)
+          if (!fields) continue
+          const fieldName = methodName
+            .replace(/^(?:is|get|has)([A-Z])/, (_, c) => c.toLowerCase())
+            .replace(/^([A-Z])/, c => c.toLowerCase())
+          const val = fields.get(fieldName) ?? fields.get(methodName)
+          if (val != null) {
+            entries.push({ type: 'field', value: `$${varName}.${fieldName} = ${val}` })
+            break
+          }
+        }
+      }
+      if (!entries.length) {
+        // Fallback: show method name
+        const sep = Math.max(sig.lastIndexOf('->'), sig.lastIndexOf('::'))
+        const label = sep >= 0 ? sig.slice(sep) : sig.split('\\').pop()
+        entries.push({ type: 'sig', value: label })
+      }
     }
-    map.set(line, entries)
+
+    // 3. Lines without direct calls: instanceof, null check, field access
+    if (!callsHere.length) {
+      for (const m of trimmed.matchAll(/\$(\w+)\s+instanceof\s+([\w\\]+)/g)) {
+        const [, varName, iface] = m
+        if (!varMap.has(varName)) continue
+        const val = varMap.get(varName)
+        const typeName = val.replace(/\s*\{…\}$/, '').split('\\').pop()
+        const ifaceName = iface.split('\\').pop().replace(/Interface$/i, '')
+        const matches = typeName.toLowerCase().includes(ifaceName.toLowerCase())
+        entries.push({ type: 'instanceof', value: `${matches ? '✓' : '✗'} $${varName}: ${typeName}` })
+      }
+
+      for (const m of trimmed.matchAll(/(?:null\s*===?\s*\$(\w+)|\$(\w+)\s*===?\s*null)/g)) {
+        const varName = m[1] || m[2]
+        if (!varMap.has(varName)) continue
+        const val = varMap.get(varName)
+        entries.push({ type: 'nullcheck', value: `$${varName} = ${val.length > 44 ? val.slice(0, 44) + '…' : val}` })
+      }
+    }
+
+    if (entries.length) map.set(lineNo, entries)
   }
+
   return map
 }
 
-async function fetchSource(absPath, hint) {
-  loading.value = true
-  error.value = null
-  source.value = null
-  try {
-    const data = await store.fetchSource(absPath, hint)
-    if (!data) { error.value = 'File not found'; return }
-    source.value = data
-    await nextTick()
-    scrollToLine(hint)
-  } catch (e) {
-    error.value = 'Failed to load: ' + (e?.message || 'unknown error')
-  } finally {
-    loading.value = false
-  }
-}
+
+
 
 function scrollToLine(lineNo) {
   if (!lineNo || !scrollEl.value) return
@@ -297,8 +421,7 @@ function extractLineNo(fileStr) {
 
 .code-line {
   display: flex;
-  align-items: baseline;
-  line-height: 1.7;
+  flex-direction: column;
   padding: 0 16px 0 0;
   border-left: 2px solid transparent;
   transition: background 0.1s, border-color 0.1s;
@@ -314,6 +437,12 @@ function extractLineNo(fileStr) {
 .code-line--tree-hover {
   background: rgba(80, 160, 80, 0.1);
   border-left-color: rgba(80, 160, 80, 0.5);
+}
+
+.code-line__main {
+  display: flex;
+  align-items: baseline;
+  line-height: 1.7;
 }
 
 .code-line__no {
@@ -338,9 +467,13 @@ function extractLineNo(fileStr) {
 .code-line__ann {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding-left: 12px;
-  flex-shrink: 0;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 1px 0 3px 50px;
+}
+
+.code-line__ann-no {
+  display: none;
 }
 
 .code-line__ann-item {
@@ -371,6 +504,30 @@ function extractLineNo(fileStr) {
   background: none;
   border: none;
   padding: 0;
+  font-style: italic;
+}
+.ann-val.var {
+  color: #a0c8a0;
+  background: rgba(40, 100, 40, 0.12);
+  border: 1px solid rgba(60, 140, 60, 0.25);
+  font-style: italic;
+}
+.ann-val.instanceof {
+  color: #b0d0a0;
+  background: rgba(40, 90, 30, 0.15);
+  border: 1px solid rgba(70, 130, 50, 0.3);
+  font-style: italic;
+}
+.ann-val.nullcheck {
+  color: #90a8c8;
+  background: rgba(40, 60, 110, 0.15);
+  border: 1px solid rgba(60, 90, 160, 0.3);
+  font-style: italic;
+}
+.ann-val.field {
+  color: #c8a860;
+  background: rgba(110, 80, 20, 0.15);
+  border: 1px solid rgba(150, 110, 30, 0.3);
   font-style: italic;
 }
 
