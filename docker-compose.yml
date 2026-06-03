@@ -5,7 +5,7 @@ services:
       - "8765:80"
     volumes:
       - traces:/app/var/traces
-      - ${TRACES_DIR}:/traces:ro
+      - ${TRACES_DIR}:/traces:rw
       - ${SOURCE_HOST_DIR}:${SOURCE_CONTAINER_DIR}:ro
       - ./symfony/src:/app/src
       - ./symfony/migrations:/app/migrations
@@ -25,6 +25,7 @@ services:
       TRACES_SOURCE_DIR: /traces
       COMPOSE_FILE_PATH: /compose/compose.yaml
       XDEBUG_CONTAINER: ${XDEBUG_CONTAINER:-}
+      XDEBUG_COMPOSE_DIR: ${XDEBUG_COMPOSE_DIR:-}
       XDEBUG_TRACE_DIR_CTR: ${XDEBUG_TRACE_DIR_CTR:-/traces}
 
   mcp:

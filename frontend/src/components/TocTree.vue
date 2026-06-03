@@ -651,7 +651,24 @@ async function jumpToLine(lineNo) {
   }
 }
 
-defineExpose({ jumpToLine })
+const allCollapsed = ref(false)
+
+function collapseAll() {
+  expandedEvents.value = new Set()
+  expandedListeners.value = new Set()
+  expandedGroups.value = new Set()
+  expandedAppCalls.value = new Set()
+  allCollapsed.value = true
+}
+
+function expandAll() {
+  const allEi = new Set(props.toc.map((_, i) => i))
+  expandedEvents.value = allEi
+  expandedGroups.value = new Set(tocGroups.value.map((_, i) => i))
+  allCollapsed.value = false
+}
+
+defineExpose({ jumpToLine, collapseAll, expandAll, allCollapsed })
 </script>
 
 <style scoped>
