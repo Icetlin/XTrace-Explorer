@@ -3,21 +3,31 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { useTraceStore } from '../stores/trace'
 
 const canvas = ref(null)
+const store = useTraceStore()
 
 function draw(ctx, W, H) {
+  const isLight = document.documentElement.getAttribute('data-theme') === 'light'
   ctx.clearRect(0, 0, W, H)
 
-  // Background — matches app theme #0a0a14
-  ctx.fillStyle = '#0a0a14'
-  ctx.fillRect(0, 0, W, H)
+  if (isLight) {
+    // Light theme — soft blue-white sky
+    const skyGrad = ctx.createLinearGradient(0, 0, 0, H)
+    skyGrad.addColorStop(0, '#dde8f8')
+    skyGrad.addColorStop(1, '#f0f4fc')
+    ctx.fillStyle = skyGrad
+    ctx.fillRect(0, 0, W, H)
+  } else {
+    // Dark theme — deep night
+    ctx.fillStyle = '#0a0a14'
+    ctx.fillRect(0, 0, W, H)
+    drawStars(ctx, W, H * 0.58)
+  }
 
-  // Few stars — very sparse
-  drawStars(ctx, W, H * 0.58)
-
-  // Single dune — smooth bezier hill, low, right-of-center
+  // Single dune — smooth bezier hill
   const duneY = H * 0.72
   ctx.beginPath()
   ctx.moveTo(0, H)
@@ -26,17 +36,31 @@ function draw(ctx, W, H) {
   ctx.bezierCurveTo(W * 0.72, duneY + H * 0.05, W * 0.88, duneY + H * 0.03, W, duneY + H * 0.04)
   ctx.lineTo(W, H)
   ctx.closePath()
-  const duneGrad = ctx.createLinearGradient(0, duneY - H * 0.08, 0, H)
-  duneGrad.addColorStop(0,   '#0e0e1c')
-  duneGrad.addColorStop(1,   '#080810')
-  ctx.fillStyle = duneGrad
+
+  if (isLight) {
+    const duneGrad = ctx.createLinearGradient(0, duneY - H * 0.08, 0, H)
+    duneGrad.addColorStop(0, '#c8d8f0')
+    duneGrad.addColorStop(1, '#b8cce8')
+    ctx.fillStyle = duneGrad
+  } else {
+    const duneGrad = ctx.createLinearGradient(0, duneY - H * 0.08, 0, H)
+    duneGrad.addColorStop(0, '#0e0e1c')
+    duneGrad.addColorStop(1, '#080810')
+    ctx.fillStyle = duneGrad
+  }
   ctx.fill()
 
-  // Subtle horizon glow — very dim blue
+  // Horizon glow
   const glow = ctx.createLinearGradient(0, duneY - 20, 0, duneY + 20)
-  glow.addColorStop(0,   'rgba(30,40,80,0)')
-  glow.addColorStop(0.5, 'rgba(30,40,80,0.07)')
-  glow.addColorStop(1,   'rgba(30,40,80,0)')
+  if (isLight) {
+    glow.addColorStop(0,   'rgba(120,160,220,0)')
+    glow.addColorStop(0.5, 'rgba(120,160,220,0.10)')
+    glow.addColorStop(1,   'rgba(120,160,220,0)')
+  } else {
+    glow.addColorStop(0,   'rgba(30,40,80,0)')
+    glow.addColorStop(0.5, 'rgba(30,40,80,0.07)')
+    glow.addColorStop(1,   'rgba(30,40,80,0)')
+  }
   ctx.fillStyle = glow
   ctx.fillRect(0, duneY - 20, W, 40)
 }
@@ -314,6 +338,8 @@ onMounted(() => {
   ro = new ResizeObserver(resize)
   ro.observe(c)
   resize()
+
+  watch(() => store.theme, () => draw(ctx, c.width, c.height))
 
   onUnmounted(() => ro.disconnect())
 })

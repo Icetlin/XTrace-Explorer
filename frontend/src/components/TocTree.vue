@@ -497,10 +497,14 @@ const NOISE_METHOD_RE = /->(?:getUserIdentifier|getPassword|getSalt|getRoles|era
 // Namespaces that are always infrastructure — filter entire subtree regardless of children.
 const NOISE_NS_RE = /^App\\Routing\\/
 
-const CLASS_COLORS = ['#e8eef4', '#c0cfe0', '#98afc8', '#7898b8', '#5880a0']
-const METHOD_COLORS = ['#8aaac8', '#6888a8', '#507090', '#3a5878', '#2a4060']
-function classPartStyle(i) { return { color: CLASS_COLORS[Math.min(i, CLASS_COLORS.length - 1)] } }
-function methodPartStyle(i) { return { color: METHOD_COLORS[Math.min(i, METHOD_COLORS.length - 1)] } }
+const CLASS_COLORS_DARK  = ['#e8eef4', '#c0cfe0', '#98afc8', '#7898b8', '#5880a0']
+const CLASS_COLORS_LIGHT = ['#0d1e3a', '#1a3460', '#2a4e80', '#3a6090', '#4a70a0']
+const METHOD_COLORS_DARK  = ['#8aaac8', '#6888a8', '#507090', '#3a5878', '#2a4060']
+const METHOD_COLORS_LIGHT = ['#0d3060', '#1a4878', '#2a5888', '#185098', '#103080']
+const classColors  = computed(() => store.theme === 'light' ? CLASS_COLORS_LIGHT  : CLASS_COLORS_DARK)
+const methodColors = computed(() => store.theme === 'light' ? METHOD_COLORS_LIGHT : METHOD_COLORS_DARK)
+function classPartStyle(i)  { return { color: classColors.value[Math.min(i,  classColors.value.length  - 1)] } }
+function methodPartStyle(i) { return { color: methodColors.value[Math.min(i, methodColors.value.length - 1)] } }
 function camelParts(str) {
   if (!str) return []
   const m = str.match(/^(->|::)(.*)$/)
@@ -984,4 +988,63 @@ defineExpose({ jumpToLine, collapseAll, expandAll, allCollapsed })
 .event-group-bar:hover .event-group-collapse {
   color: #90b8e0;
 }
+
+</style>
+
+<style>
+/* ── TocTree light theme overrides ── */
+html[data-theme="light"] .toc-tree {
+  color: #0d1828 !important;
+  background: rgba(220, 230, 248, 0.45) !important;
+}
+html[data-theme="light"] .toc-tree .empty { color: #4a5878 !important; }
+
+html[data-theme="light"] .toc-tree .source-group-header { color: #2a4870 !important; }
+html[data-theme="light"] .toc-tree .source-group-header::after { background: rgba(80, 110, 180, 0.3) !important; }
+html[data-theme="light"] .toc-tree .source-group-header[data-src="sf"] { color: #1a5880 !important; }
+html[data-theme="light"] .toc-tree .source-group-header:not([data-src="sf"]) { color: #5a4820 !important; }
+
+html[data-theme="light"] .toc-tree .event-row:hover { background: rgba(80, 120, 200, 0.07) !important; }
+html[data-theme="light"] .toc-tree .event-row--selected { background: rgba(60, 100, 200, 0.10) !important; border-left-color: rgba(50, 100, 200, 0.55) !important; }
+html[data-theme="light"] .toc-tree .event-name { color: #0d2c58 !important; }
+html[data-theme="light"] .toc-tree .event-name--dimmed { color: #3a5878 !important; }
+html[data-theme="light"] .toc-tree .event-name--attr { color: #4a7020 !important; }
+html[data-theme="light"] .toc-tree .event-name--controller { color: #2a7010 !important; }
+html[data-theme="light"] .toc-tree .chevron { color: #3a5080 !important; }
+html[data-theme="light"] .toc-tree .chevron-sm { color: #3a5080 !important; }
+html[data-theme="light"] .toc-tree .connector { color: #3a5080 !important; }
+
+html[data-theme="light"] .toc-tree .vote-caller-badge { color: #2a4878 !important; background: rgba(60, 90, 180, 0.12) !important; border-color: rgba(60, 90, 180, 0.3) !important; }
+html[data-theme="light"] .toc-tree .line-badge { color: #2a4070 !important; background: #e8eef8 !important; border-color: #9ab0d8 !important; }
+html[data-theme="light"] .toc-tree .line-badge:hover { color: #0d2060 !important; border-color: #3a6abf !important; }
+html[data-theme="light"] .toc-tree .line-badge-sm { color: #3a5070 !important; }
+html[data-theme="light"] .toc-tree .line-badge-sm:hover { color: #0d2060 !important; background: #e0e8f8 !important; }
+
+html[data-theme="light"] .toc-tree .listener-row:hover { background: rgba(60, 100, 200, 0.06) !important; }
+html[data-theme="light"] .toc-tree .listener-row--selected { background: rgba(60, 100, 200, 0.09) !important; border-left-color: rgba(50, 100, 200, 0.45) !important; }
+html[data-theme="light"] .toc-tree .listener-row--granted { border-left-color: rgba(30, 150, 60, 0.6) !important; background: rgba(20, 100, 40, 0.06) !important; }
+html[data-theme="light"] .toc-tree .listener-row--denied  { border-left-color: rgba(200, 40, 40, 0.6) !important; background: rgba(180, 20, 20, 0.06) !important; }
+
+html[data-theme="light"] .toc-tree .listener-source-header { color: #2a4060 !important; }
+html[data-theme="light"] .toc-tree .listener-source-header::after { background: rgba(60, 90, 150, 0.25) !important; }
+html[data-theme="light"] .toc-tree .listener-source-header[data-src="sf"] { color: #1a5070 !important; }
+html[data-theme="light"] .toc-tree .listener-source-header:not([data-src="sf"]) { color: #50400a !important; }
+
+html[data-theme="light"] .toc-tree .voter-badge { color: #7a5010 !important; background: rgba(160, 100, 10, 0.12) !important; border-color: rgba(180, 120, 20, 0.35) !important; }
+html[data-theme="light"] .toc-tree .vote-attr-badge { color: #1a4878 !important; background: rgba(30, 80, 150, 0.10) !important; border-color: rgba(40, 90, 170, 0.3) !important; }
+html[data-theme="light"] .toc-tree .vote-result--granted { color: #1a7030 !important; background: rgba(20, 120, 50, 0.12) !important; border-color: rgba(20, 150, 60, 0.35) !important; }
+html[data-theme="light"] .toc-tree .vote-result--denied  { color: #8a1010 !important; background: rgba(160, 20, 20, 0.10) !important; border-color: rgba(200, 30, 30, 0.35) !important; }
+
+html[data-theme="light"] .toc-tree .children { border-left-color: rgba(100, 140, 220, 0.3) !important; }
+html[data-theme="light"] .toc-tree .loading { color: #3a5080 !important; }
+html[data-theme="light"] .toc-tree .no-listeners { color: #3a5070 !important; }
+html[data-theme="light"] .toc-tree .event-idx { color: #2a4070 !important; }
+html[data-theme="light"] .toc-tree .listener-idx { color: #2a4070 !important; }
+
+html[data-theme="light"] .toc-tree .event-group-count { color: #2a4878 !important; background: rgba(50, 90, 180, 0.12) !important; border-color: rgba(60, 100, 200, 0.25) !important; }
+html[data-theme="light"] .toc-tree .event-group-bar { border-bottom-color: rgba(80, 110, 200, 0.2) !important; }
+html[data-theme="light"] .toc-tree .event-group-collapse { color: #2a4878 !important; }
+html[data-theme="light"] .toc-tree .event-group-bar:hover .event-group-collapse { color: #0d2050 !important; }
+html[data-theme="light"] .toc-tree .event-group-collapse--attr { color: #3a6010 !important; }
+html[data-theme="light"] .toc-tree .event-group-collapse--caller { color: #3a5080 !important; }
 </style>
