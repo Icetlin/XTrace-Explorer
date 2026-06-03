@@ -108,7 +108,6 @@ const props = defineProps({
   fileId: Number,
   indent: { type: Number, default: 0 },
   expandPath: { type: Array, default: null },
-  // Ancestor crumbs passed down so each node can prepend its own sig
   ancestorCrumbs: { type: Array, default: () => [] },
 })
 const emit = defineEmits(['jump', 'fav-match', 'ctx-menu', 'breadcrumb'])
@@ -285,6 +284,9 @@ function onRowClick(e) {
       breadcrumb: props.ancestorCrumbs,
     })
     return
+  }
+  if (props.node.file_abs) {
+    store.setCodeNode(props.node)
   }
   toggle()
 }

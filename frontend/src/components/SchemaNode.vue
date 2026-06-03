@@ -11,7 +11,10 @@
       <span class="schema-chevron">{{ node.children?.length ? '▸' : '·' }}</span>
 
       <!-- sig -->
-      <span class="schema-sig" :class="sigClass" :title="node.sig">{{ shortSig(node.sig) }}</span>
+      <span class="schema-sig" :title="node.sig">
+        <span v-for="(p, pi) in sigClassParts(node.sig)" :key="'c'+pi" :style="classPartStyle(pi)">{{ p }}</span>
+        <span v-for="(p, pi) in sigMethodParts(node.sig)" :key="'m'+pi" :style="methodPartStyle(pi)">{{ p }}</span>
+      </span>
 
       <!-- args (only on selected nodes) -->
       <template v-if="node.selected && node.args?.length">
@@ -43,22 +46,38 @@ const props = defineProps({
   indent: { type: Number, default: 0 },
 })
 
-const sigClass = (() => {
-  const s = props.node.sig || ''
-  if (s.startsWith('App\\')) return 'sig-app'
-  if (s.match(/Controller/)) return 'sig-ctrl'
-  if (s.match(/Subscriber|Listener/)) return 'sig-listener'
-  if (s.match(/^Symfony|^Doctrine|^Lexik|^Scheb/)) return 'sig-vendor'
-  return 'sig-other'
-})()
+const CLASS_COLORS  = ['#e8eef4', '#c0cfe0', '#98afc8', '#7898b8', '#5880a0']
+const METHOD_COLORS = ['#8aaac8', '#6888a8', '#507090', '#3a5878', '#2a4060']
+function classPartStyle(i)  { return { color: CLASS_COLORS[Math.min(i, CLASS_COLORS.length - 1)] } }
+function methodPartStyle(i) { return { color: METHOD_COLORS[Math.min(i, METHOD_COLORS.length - 1)] } }
 
-function shortSig(sig) {
-  if (!sig) return '?'
-  const arrow  = sig.lastIndexOf('->')
-  const dcolon = sig.lastIndexOf('::')
-  const sep    = Math.max(arrow, dcolon)
-  if (sep === -1) return sig
-  return sig.slice(0, sep).split('\\').pop() + sig.slice(sep)
+function camelParts(str) {
+  if (!str) return []
+  const m = str.match(/^(->|::)(.*)$/)
+  const sep = m ? m[1] : ''
+  const word = m ? m[2] : str
+  const parts = word.split(/(?=[A-Z])/).filter(Boolean)
+  if (!parts.length) return [str]
+  parts[0] = sep + parts[0]
+  return parts
+}
+
+function sigClassParts(sig) {
+  if (!sig) return []
+  const arrow = sig.lastIndexOf('->')
+  const dc    = sig.lastIndexOf('::')
+  const sep   = Math.max(arrow, dc)
+  const cls   = sep >= 0 ? sig.slice(0, sep).split('\\').pop() : sig.split('\\').pop()
+  return camelParts(cls)
+}
+
+function sigMethodParts(sig) {
+  if (!sig) return []
+  const arrow = sig.lastIndexOf('->')
+  const dc    = sig.lastIndexOf('::')
+  const sep   = Math.max(arrow, dc)
+  if (sep < 0) return []
+  return camelParts(sig.slice(sep))
 }
 
 function argVal(arg) {
@@ -103,12 +122,6 @@ function argVal(arg) {
   max-width: 240px;
 }
 
-/* same palette as CallNode */
-.sig-app      { color: #5ab0cc; }
-.sig-ctrl     { color: #b08050; }
-.sig-listener { color: #a09048; }
-.sig-vendor   { color: #585868; }
-.sig-other    { color: #6a7a8a; }
 
 .schema-arg {
   font-size: 10.5px;

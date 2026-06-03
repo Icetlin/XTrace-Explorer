@@ -151,7 +151,9 @@
         <div
           v-show="activeSection === 'trace' && store.activeTabFileId === tab.fileId && tab.status === 'ready'"
           class="trace-view"
+          :style="store.activeCodeNode ? { gridTemplateColumns: splitWidth + 'px 4px 1fr' } : { gridTemplateColumns: '1fr' }"
         >
+          <!-- Left: TOC -->
           <TocTree
             v-if="tab.toc.length"
             :ref="el => { if (el) tocTreeRefs[tab.fileId] = el }"
@@ -160,6 +162,16 @@
             @jump="onJump"
             @breadcrumb="onBreadcrumb"
           />
+
+          <!-- Resize handle (only when code panel is open) -->
+          <div
+            v-if="store.activeCodeNode"
+            class="split-resizer"
+            @mousedown.prevent="startSplitResize"
+          />
+
+          <!-- Right: Code view (only when node selected) -->
+          <CodeView v-if="store.activeCodeNode" />
         </div>
       </template>
 
@@ -203,10 +215,28 @@ import ExportPanel from './components/ExportPanel.vue'
 import SettingsPage from './components/SettingsPage.vue'
 import Breadcrumbs from './components/Breadcrumbs.vue'
 import SelectionPreview from './components/SelectionPreview.vue'
+import CodeView from './components/CodeView.vue'
 import axios from 'axios'
 
 const store = useTraceStore()
 const activeSection = ref('trace')
+const splitWidth = ref(560)
+
+let splitResizeStart = null
+function startSplitResize(e) {
+  splitResizeStart = { x: e.clientX, width: splitWidth.value }
+  document.addEventListener('mousemove', onSplitResize)
+  document.addEventListener('mouseup', stopSplitResize)
+}
+function onSplitResize(e) {
+  if (!splitResizeStart) return
+  splitWidth.value = Math.max(260, Math.min(window.innerWidth - 320, splitResizeStart.width + e.clientX - splitResizeStart.x))
+}
+function stopSplitResize() {
+  splitResizeStart = null
+  document.removeEventListener('mousemove', onSplitResize)
+  document.removeEventListener('mouseup', stopSplitResize)
+}
 const showBrowser = ref(false)
 const browseFiles = ref([])
 const browseQuery = ref('')
@@ -631,9 +661,22 @@ html, body, #app {
 .trace-view {
   flex: 1;
   overflow: hidden;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: 1fr;
   min-height: 0;
+  min-width: 0;
+}
+
+.split-resizer {
+  background: rgba(30, 50, 90, 0.4);
+  cursor: col-resize;
+  transition: background 0.15s;
+  position: relative;
+  z-index: 10;
+}
+.split-resizer:hover,
+.split-resizer:active {
+  background: rgba(60, 100, 180, 0.5);
 }
 
 /* ── Empty state ── */

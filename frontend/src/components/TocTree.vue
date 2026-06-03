@@ -67,8 +67,8 @@
               >
                 <span class="event-idx">#{{ ei - group.startEi + 1 }}</span>
                 <span class="chevron-sm">{{ expandedListeners.has(`${ei}-${li}`) ? '▾' : '▸' }}</span>
-                <span class="listener-class">{{ listenerClass(listener.sig) }}</span>
-                <span class="listener-method">{{ listenerMethod(listener.sig) }}</span>
+                <span class="listener-class"><span v-for="(p,pi) in camelParts(listenerClass(listener.sig))" :key="pi" :style="classPartStyle(pi)">{{ p }}</span></span>
+                <span class="listener-method"><span v-for="(p,pi) in camelParts(listenerMethod(listener.sig))" :key="pi" :style="methodPartStyle(pi)">{{ p }}</span></span>
                 <span v-if="listener.voter_class" class="voter-badge">{{ listener.voter_class }}</span>
                 <span v-for="attr in (listener.vote_attrs ?? [])" :key="attr" class="vote-attr-badge">{{ attr }}</span>
                 <span v-if="listener.vote_result === 1" class="vote-result vote-result--granted">GRANTED</span>
@@ -105,6 +105,32 @@
             :key="ei"
             class="event-block"
           >
+            <!-- controller_execution synthetic entry -->
+            <template v-if="toc[ei].type === 'controller_execution'">
+              <div
+                class="event-row event-row--controller"
+                :class="{ 'has-listeners': toc[ei].children?.length || toc[ei].app_calls?.length, 'event-row--selected': store.isSelected(toc[ei].line_no) }"
+                @click="onEventClick($event, ei, toc[ei])"
+              >
+                <span class="chevron">{{ expandedEvents.has(ei) ? '▾' : '▸' }}</span>
+                <span class="event-name event-name--controller">{{ controllerShortSig(toc[ei].event) }}</span>
+              </div>
+              <template v-if="expandedEvents.has(ei)">
+                <AppCallTree
+                  v-if="dedupeAppCalls(toc[ei].event, toc[ei].app_calls).length"
+                  :calls="dedupeAppCalls(toc[ei].event, toc[ei].app_calls)"
+                  :expanded="expandedAppCalls"
+                  @toggle="toggleAppCall"
+                />
+                <NestedEventList
+                  v-if="toc[ei].children?.length"
+                  :events="toc[ei].children"
+                />
+              </template>
+            </template>
+
+            <!-- normal event entry -->
+            <template v-else>
             <div
               class="event-row"
               :class="{ 'has-listeners': toc[ei].listeners?.length, 'event-row--selected': store.isSelected(toc[ei].line_no) }"
@@ -147,8 +173,8 @@
                   <span class="connector">└</span>
                   <span class="listener-idx">#{{ li + 1 }}</span>
                   <span class="chevron-sm">{{ expandedListeners.has(`${ei}-${li}`) ? '▾' : '▸' }}</span>
-                  <span class="listener-class">{{ listenerClass(listener.sig) }}</span>
-                  <span class="listener-method">{{ listenerMethod(listener.sig) }}</span>
+                  <span class="listener-class"><span v-for="(p,pi) in camelParts(listenerClass(listener.sig))" :key="pi" :style="classPartStyle(pi)">{{ p }}</span></span>
+                  <span class="listener-method"><span v-for="(p,pi) in camelParts(listenerMethod(listener.sig))" :key="pi" :style="methodPartStyle(pi)">{{ p }}</span></span>
                   <span v-if="listener.voter_class" class="voter-badge">{{ listener.voter_class }}</span>
                   <span v-for="attr in (listener.vote_attrs ?? [])" :key="attr" class="vote-attr-badge">{{ attr }}</span>
                   <span v-if="listener.vote_result === 1" class="vote-result vote-result--granted">GRANTED</span>
@@ -180,6 +206,19 @@
             <div v-if="expandedEvents.has(ei) && !toc[ei].listeners?.length" class="no-listeners">
               no listeners recorded
             </div>
+
+            <AppCallTree
+              v-if="expandedEvents.has(ei) && dedupeAppCalls(toc[ei].event, toc[ei].app_calls).length"
+              :calls="dedupeAppCalls(toc[ei].event, toc[ei].app_calls)"
+              :expanded="expandedAppCalls"
+              @toggle="toggleAppCall"
+            />
+
+            <NestedEventList
+              v-if="expandedEvents.has(ei) && toc[ei].children?.length"
+              :events="toc[ei].children"
+            />
+            </template><!-- end normal event -->
           </div>
         </template>
       </template>
@@ -193,6 +232,8 @@ import { ref, reactive, computed, nextTick } from 'vue'
 import { useTraceStore } from '../stores/trace'
 import CallNode from './CallNode.vue'
 import ContextMenu from './ContextMenu.vue'
+import NestedEventList from './NestedEventList.vue'
+import AppCallTree from './AppCallTree.vue'
 import { favColor } from '../favColor.js'
 
 const props = defineProps({
@@ -207,6 +248,13 @@ const ctxMenu = ref(null)
 const expandedEvents = ref(new Set())
 const expandedListeners = ref(new Set())
 const expandedGroups = ref(new Set())
+const expandedAppCalls = ref(new Set())
+
+function toggleAppCall(lineNo) {
+  const s = new Set(expandedAppCalls.value)
+  s.has(lineNo) ? s.delete(lineNo) : s.add(lineNo)
+  expandedAppCalls.value = s
+}
 
 // For debug.security.authorization.vote: extract the voted attribute from listeners
 function voteAttr(tocEvent) {
@@ -443,6 +491,64 @@ function getChildren(ei, li) {
   return cached.children ?? cached
 }
 
+// Method suffixes that are pure infrastructure noise — never business logic.
+const NOISE_METHOD_RE = /->(?:getUserIdentifier|getPassword|getSalt|getRoles|eraseCredentials|__serialize|__unserialize|__wakeup|__clone|getContext|setContext|setHost|getHost|getUrlMatcher|withSecurity|withRestrictionProvider|withAuthorizationChecker|withAccessProvider|setSoftRemovableFilterDisabler|setSoftDeleteableFilter|addFilterConstraint)$/
+
+// Namespaces that are always infrastructure — filter entire subtree regardless of children.
+const NOISE_NS_RE = /^App\\Routing\\/
+
+const CLASS_COLORS = ['#e8eef4', '#c0cfe0', '#98afc8', '#7898b8', '#5880a0']
+const METHOD_COLORS = ['#8aaac8', '#6888a8', '#507090', '#3a5878', '#2a4060']
+function classPartStyle(i) { return { color: CLASS_COLORS[Math.min(i, CLASS_COLORS.length - 1)] } }
+function methodPartStyle(i) { return { color: METHOD_COLORS[Math.min(i, METHOD_COLORS.length - 1)] } }
+function camelParts(str) {
+  if (!str) return []
+  const m = str.match(/^(->|::)(.*)$/)
+  const sep = m ? m[1] : ''
+  const word = m ? m[2] : str
+  const parts = word.split(/(?=[A-Z])/).filter(Boolean)
+  if (!parts.length) return [str]
+  parts[0] = sep + parts[0]
+  return parts
+}
+
+// Remove DI-container noise: calls originating from var/cache (lazy service init),
+// routing infrastructure namespace, method-level noise, and __construct with no children.
+function filterAppCalls(calls) {
+  if (!calls?.length) return []
+  return calls
+    .filter(n => {
+      if (n.file_abs?.includes('/var/cache/')) return false
+      const sig = n.sig ?? ''
+      // Skip non-App\ classes entirely — vendor/framework code
+      if (!sig.startsWith('App\\')) return false
+      if (NOISE_NS_RE.test(sig)) return false
+      const isConstructor = sig.endsWith('->__construct') || sig.endsWith('::__construct')
+      if (isConstructor && !n.children?.length) return false
+      if (NOISE_METHOD_RE.test(sig) && !n.children?.length) return false
+      return true
+    })
+    .map(n => ({ ...n, children: filterAppCalls(n.children) }))
+}
+
+// If the sole root app_call duplicates the event name (controller-as-event),
+// skip it and render its children directly to avoid repeating the header.
+function dedupeAppCalls(event, appCalls) {
+  const filtered = filterAppCalls(appCalls)
+  if (filtered.length === 1 && filtered[0].sig === event) {
+    return filterAppCalls(filtered[0].children)
+  }
+  return filtered
+}
+
+function controllerShortSig(sig) {
+  const arrow = sig.lastIndexOf('->')
+  if (arrow === -1) return sig.split('\\').pop()
+  const cls = sig.slice(0, arrow).split('\\').pop()
+  const method = sig.slice(arrow)
+  return cls + method
+}
+
 function listenerClass(sig) {
   const arrow = sig.lastIndexOf('->')
   const dcolon = sig.lastIndexOf('::')
@@ -610,6 +716,8 @@ defineExpose({ jumpToLine })
   background: rgba(255, 255, 255, 0.04);
 }
 .event-row.has-listeners { }
+.event-row--controller { border-left: 2px solid rgba(100, 160, 80, 0.3); }
+.event-name--controller { color: #80c060; font-size: 14px; }
 .event-row--selected { background: rgba(80, 120, 180, 0.08); border-left: 2px solid rgba(80, 130, 200, 0.5); }
 
 .fav-badge-ev {
@@ -736,12 +844,10 @@ defineExpose({ jumpToLine })
 
 .listener-class {
   font-size: 14px;
-  color: #d0b878;
   font-weight: 500;
 }
 .listener-method {
   font-size: 13.5px;
-  color: #8888a0;
 }
 .voter-badge {
   font-size: 11px;

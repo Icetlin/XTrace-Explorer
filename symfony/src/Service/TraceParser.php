@@ -44,6 +44,12 @@ class TraceParser
         $pendingInvoke = null; // ['depth' => int]
         $lastShallowSig = null; // last sig seen at depth <= 18, used to label vote event caller
 
+        // Per-block app_calls tree: for each open dispatchStack entry we maintain
+        // a parallel app-call depth-stack so App\ calls form a tree of "what your code did".
+        // $appCallsStacks[$stackIdx] = depth-stack of {sig, depth, line_no, children:[]}
+        // The roots of each tree are stored in dispatchStack entry['app_calls'].
+        $appCallsStacks = []; // indexed by dispatchStack index (rebuilt on push/pop)
+
         $requestInfo = $this->extractRequestInfo($xtFilePath);
 
         $fh = fopen($xtFilePath, 'rb');
@@ -53,11 +59,42 @@ class TraceParser
         $nodes = [];
         $depthStack = [];
 
+        // Tracks last app_call added per active block so return values can be attached.
+        // Each entry: ['block_idx' => int, 'depth' => int, 'path' => [int, ...]] where path
+        // is the child-index path into dispatchStack[$block_idx]['app_calls'] tree.
+        // Keyed by block_idx (int).
+        $lastAppCallPath = []; // block_idx => ['depth' => int, 'path' => [int,...]]
+
         while (($line = fgets($fh, 1048576)) !== false) {
             $lineNo++;
 
             if ($lineNo % self::SPARSE_EVERY === 0) {
                 $sparseIndex[(string)$lineNo] = $offset;
+            }
+
+            // Handle return value lines: attach to last app_call node at matching depth
+            if (preg_match(TraceRegex::ReturnLine->value, $line, $rm)) {
+                $retDepth = (int)(strlen($rm[1]) / 2);
+                $retVal = $this->simplifyValue(trim($rm[2]));
+                if ($retVal !== null && !empty($dispatchStack)) {
+                    $blockIdx = count($dispatchStack) - 1;
+                    $info = $lastAppCallPath[$blockIdx] ?? null;
+                    if ($info !== null && $info['depth'] === $retDepth) {
+                        // Navigate to the node via path and set return
+                        $ref = &$dispatchStack[$blockIdx]['app_calls'];
+                        foreach ($info['path'] as $i => $idx) {
+                            if ($i < count($info['path']) - 1) {
+                                $ref = &$ref[$idx]['children'];
+                            } else {
+                                $ref[$idx]['return'] = $retVal;
+                            }
+                        }
+                        unset($ref);
+                        unset($lastAppCallPath[$blockIdx]);
+                    }
+                }
+                $offset = ftell($fh);
+                continue;
             }
 
             if (preg_match(TraceRegex::CallLine->value, $line, $m)) {
@@ -81,12 +118,64 @@ class TraceParser
                 }
 
                 // --- TOC: pop closed dispatch blocks from stack ---
-                // When depth returns to <= a dispatch's own depth, that dispatch is done
+                // When depth returns to <= a dispatch's own depth, that dispatch is done.
+                // If a parent remains on the stack, the closed event is nested inside it → children[].
+                // Only top-level events (nothing left on stack) go into $toc directly.
                 while (!empty($dispatchStack) && $depth <= $dispatchStack[count($dispatchStack)-1]['depth']
                     && !str_ends_with($sig, '->dispatch')) {
+                    array_pop($appCallsStacks); // drop the closed block's app-call depth-stack
                     $closed = array_pop($dispatchStack);
-                    $toc[] = $closed;
+                    if ($closed['type'] === 'controller') {
+                        // Wrap controller children in a synthetic toc entry so they don't appear
+                        // as top-level events — only emit the wrapper when there are children.
+                        // Always emit when there are app_calls even if no dispatch children.
+                        if (!empty($closed['children']) || !empty($closed['app_calls'])) {
+                            $wrapper = [
+                                'type'      => 'controller_execution',
+                                'event'     => $closed['event'],
+                                'line_no'   => $closed['line_no'],
+                                'depth'     => $closed['depth'],
+                                'listeners' => [],
+                                'children'  => $closed['children'],
+                                'app_calls' => $closed['app_calls'] ?? [],
+                            ];
+                            if (!empty($dispatchStack)) {
+                                $dispatchStack[count($dispatchStack)-1]['children'][] = $wrapper;
+                            } else {
+                                $toc[] = $wrapper;
+                            }
+                        }
+                    } elseif (!empty($dispatchStack)) {
+                        $dispatchStack[count($dispatchStack)-1]['children'][] = $closed;
+                    } else {
+                        $toc[] = $closed;
+                    }
                     $pendingInvoke = null;
+                }
+
+                // --- TOC: detect controller call — push as container for nested dispatches ---
+                // The first App\Controller action call at kernel-event depth is the controller execution.
+                // We push it onto the stack so any dispatches inside it (e.g. security votes) become
+                // its children. When it closes (depth returns to kernel level for kernel.response),
+                // its children are promoted into toc as a synthetic "controller_execution" entry.
+                $topType = !empty($dispatchStack) ? $dispatchStack[count($dispatchStack)-1]['type'] : null;
+                if ($topType !== 'controller' && empty($dispatchStack) && $mainDepth !== null
+                    && str_contains($sig, 'App\\Controller\\')
+                    && str_contains($sig, '->')
+                    && !str_contains($sig, '__construct')
+                    && !str_contains($sig, 'inject')
+                    && !str_contains($sig, 'set')
+                ) {
+                    $dispatchStack[] = [
+                        'type'      => 'controller',
+                        'event'     => $sig,
+                        'line_no'   => $lineNo,
+                        'depth'     => $depth,
+                        'listeners' => [],
+                        'children'  => [],
+                        'app_calls' => [],
+                    ];
+                    $appCallsStacks[] = []; // empty depth-stack for this block
                 }
 
                 // --- TOC: detect TraceableEventDispatcher->dispatch (outermost, has $eventName) ---
@@ -131,6 +220,8 @@ class TraceParser
                                 'line_no'   => $lineNo,
                                 'depth'     => $depth,
                                 'listeners' => [],
+                                'children'  => [],
+                                'app_calls' => [],
                             ];
                             if ($eventClass) $entry['event_class'] = $eventClass;
                             // For vote events: record which security layer triggered this decide()
@@ -138,6 +229,7 @@ class TraceParser
                                 $entry['caller'] = $lastShallowSig;
                             }
                             $dispatchStack[] = $entry;
+                            $appCallsStacks[] = []; // empty depth-stack for this block
                         }
                         $pendingInvoke = null;
                     }
@@ -185,6 +277,45 @@ class TraceParser
                     unset($top);
                 }
 
+                // --- TOC: app_calls tree — track App\ calls inside the active dispatch/controller block ---
+                if (!empty($dispatchStack) && str_contains($sig, 'App\\') && str_contains($sig, '->')) {
+                    $blockIdx = count($dispatchStack) - 1;
+                    $acStack  = &$appCallsStacks[$blockIdx];
+
+                    // Pop depth-stack entries that are at same or deeper depth
+                    while (!empty($acStack) && $acStack[count($acStack)-1]['depth'] >= $depth) {
+                        array_pop($acStack);
+                    }
+
+                    $rawFile = $this->extractFile($m[2]);
+                    $node = [
+                        'sig'      => $sig,
+                        'depth'    => $depth,
+                        'line_no'  => $lineNo,
+                        'file'     => $rawFile ? $this->shortFile($rawFile) : null,
+                        'file_abs' => $rawFile,
+                        'args'     => $this->extractArgs($m[2]),
+                        'return'   => null,
+                        'children' => [],
+                    ];
+
+                    if (!empty($acStack)) {
+                        $parent = &$acStack[count($acStack)-1];
+                        $parent['children'][] = $node;
+                        $newIdx = count($parent['children']) - 1;
+                        $acStack[] = &$parent['children'][$newIdx];
+                        $newPath = $this->buildAppCallPath($dispatchStack[$blockIdx]['app_calls'], $lineNo);
+                        $lastAppCallPath[$blockIdx] = ['depth' => $depth, 'path' => $newPath];
+                        unset($parent);
+                    } else {
+                        $dispatchStack[$blockIdx]['app_calls'][] = $node;
+                        $rootIdx = count($dispatchStack[$blockIdx]['app_calls']) - 1;
+                        $acStack[] = &$dispatchStack[$blockIdx]['app_calls'][$rootIdx];
+                        $lastAppCallPath[$blockIdx] = ['depth' => $depth, 'path' => [$rootIdx]];
+                    }
+                    unset($acStack);
+                }
+
                 // --- skeleton building (unchanged) ---
                 if (!isset($seenSigs[$sig])) {
                     $seenSigs[$sig] = true;
@@ -219,7 +350,28 @@ class TraceParser
 
         // Flush remaining open dispatch blocks (outermost last)
         while (!empty($dispatchStack)) {
-            $toc[] = array_pop($dispatchStack);
+            array_pop($appCallsStacks);
+            $closed = array_pop($dispatchStack);
+            if ($closed['type'] === 'controller') {
+                if (!empty($closed['children']) || !empty($closed['app_calls'])) {
+                    $wrapper = [
+                        'type'      => 'controller_execution',
+                        'event'     => $closed['event'],
+                        'line_no'   => $closed['line_no'],
+                        'depth'     => $closed['depth'],
+                        'listeners' => [],
+                        'children'  => $closed['children'],
+                        'app_calls' => $closed['app_calls'] ?? [],
+                    ];
+                    if (!empty($dispatchStack)) {
+                        $dispatchStack[count($dispatchStack)-1]['children'][] = $wrapper;
+                    } else {
+                        $toc[] = $wrapper;
+                    }
+                }
+            } else {
+                $toc[] = $closed;
+            }
         }
 
         $sparseIndex = ['0' => 0] + $sparseIndex;
@@ -298,6 +450,101 @@ class TraceParser
         }
 
         return $info;
+    }
+
+    /**
+     * Finds the path (array of child indices) to the node with $lineNo inside $appCalls tree.
+     * Returns [] if not found.
+     */
+    private function buildAppCallPath(array $appCalls, int $lineNo): array
+    {
+        foreach ($appCalls as $idx => $node) {
+            if ($node['line_no'] === $lineNo) return [$idx];
+            if (!empty($node['children'])) {
+                $sub = $this->buildAppCallPath($node['children'], $lineNo);
+                if ($sub !== []) return array_merge([$idx], $sub);
+            }
+        }
+        return [];
+    }
+
+    private function extractFile(string $raw): ?string
+    {
+        $pos = strrpos($raw, ' /');
+        if ($pos === false) return null;
+        $candidate = substr($raw, $pos + 1);
+        if (preg_match(TraceRegex::FilePathSuffix->value, $candidate)) return $candidate;
+        return null;
+    }
+
+    private function shortFile(string $fileColon): string
+    {
+        if (preg_match(TraceRegex::ShortFilePath->value, $fileColon, $m)) {
+            $parts = explode('/', $m[2]);
+            return implode('/', array_slice($parts, max(0, count($parts) - 3)));
+        }
+        return basename($fileColon);
+    }
+
+    private function extractArgs(string $call): array
+    {
+        $paren = strpos($call, '(');
+        if ($paren === false) return [];
+        $argsStr = substr($call, $paren + 1);
+        $argsStr = preg_replace(TraceRegex::TrailingParen->value, '', $argsStr);
+        if (trim($argsStr) === '' || $argsStr === '???') return [];
+
+        $args = [];
+        $depth = 0;
+        $current = '';
+        for ($i = 0; $i < strlen($argsStr); $i++) {
+            $ch = $argsStr[$i];
+            if ($ch === '{' || $ch === '[' || $ch === '(') $depth++;
+            elseif ($ch === '}' || $ch === ']' || $ch === ')') $depth--;
+            elseif ($ch === ',' && $depth === 0) {
+                $args[] = trim($current);
+                $current = '';
+                continue;
+            }
+            $current .= $ch;
+        }
+        if (trim($current) !== '') $args[] = trim($current);
+
+        $result = [];
+        foreach ($args as $arg) {
+            if (preg_match(TraceRegex::ArgAssignment->value, $arg, $am)) {
+                $val = $this->simplifyValue(trim($am[2]));
+                if ($val !== null) {
+                    $result[] = '$' . $am[1] . ' = ' . $val;
+                }
+            }
+        }
+        return $result;
+    }
+
+    private function simplifyValue(string $val): ?string
+    {
+        if (preg_match(TraceRegex::StringLiteral->value, $val, $m)) {
+            $s = $m[1];
+            if (strlen($s) > 40 && preg_match(TraceRegex::JwtToken->value, $s)) return "'<JWT>'";
+            if (strlen($s) > 60) return "'" . substr($s, 0, 57) . "...'";
+            return "'" . $s . "'";
+        }
+        if (preg_match(TraceRegex::ScalarLiteral->value, $val)) return $val;
+        if (preg_match(TraceRegex::CookieObjectClass->value, $val)
+            && preg_match(TraceRegex::CookieName->value, $val, $m)) {
+            return "Cookie('" . $m[1] . "')";
+        }
+        if (preg_match(TraceRegex::ClassDump->value, $val, $m)) {
+            $parts = explode('\\', $m[1]);
+            return end($parts) . ' {…}';
+        }
+        if (preg_match(TraceRegex::EnumDump->value, $val, $m)) {
+            $parts = explode('\\', $m[1]);
+            return end($parts) . '::' . $m[2];
+        }
+        if (str_starts_with($val, '[') || str_starts_with($val, 'array(')) return '[…]';
+        return null;
     }
 
     private function extractSignature(string $call): string

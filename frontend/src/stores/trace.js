@@ -296,6 +296,18 @@ export const useTraceStore = defineStore('trace', () => {
     } catch { /* ignore corrupt storage */ }
   }
 
+  // Active code node for split view — set when user clicks any node with file_abs
+  const activeCodeNode = ref(null)
+  function setCodeNode(node) { activeCodeNode.value = node }
+
+  // The actual file path shown in CodeView (may differ from activeCodeNode.file_abs)
+  const activeCodeFile = ref(null)
+  function setActiveCodeFile(path) { activeCodeFile.value = path }
+
+  // Hovered line for bidirectional tree↔code highlight
+  const hoveredCodeLine = ref(null)  // absolute file path + line, e.g. "/src/Foo.php:42"
+  function setHoveredCodeLine(fileAbsWithLine) { hoveredCodeLine.value = fileAbsWithLine }
+
   return {
     files, openTabs, activeTabFileId, currentTab, currentFile, toc, totalLines, annotations, favourites,
     listenerFilters, appNamespaces,
@@ -306,5 +318,8 @@ export const useTraceStore = defineStore('trace', () => {
     loadSettings, saveSettings, addListenerFilter, isListenerFiltered,
     selection, toggleSelection, clearSelection, isSelected,
     persistSession, restoreSession,
+    activeCodeNode, setCodeNode,
+    activeCodeFile, setActiveCodeFile,
+    hoveredCodeLine, setHoveredCodeLine,
   }
 })
