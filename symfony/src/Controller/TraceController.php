@@ -547,7 +547,6 @@ class TraceController extends AbstractController
         // app_namespaces: [{namespace: "App\\", label: "app"}, ...]
         $appNamespaces = array_values(array_filter((array)($body['app_namespaces'] ?? []), fn($e) => !empty($e['namespace'])));
 
-        // Preserve xdebug_* fields that are stored separately (written by /api/xdebug/config)
         $existing = file_exists($this->getSettingsPath()) ? (json_decode(file_get_contents($this->getSettingsPath()), true) ?? []) : [];
         $settings = [
             'traces_host_path' => $tracesPath,
@@ -651,13 +650,14 @@ class TraceController extends AbstractController
     {
         $s = file_exists($this->getSettingsPath()) ? json_decode(file_get_contents($this->getSettingsPath()), true) : [];
         return [
-            'container'     => (getenv('XDEBUG_CONTAINER')   ?: null) ?? $s['xdebug_container']   ?? '',
-            'compose_dir'   => (getenv('XDEBUG_COMPOSE_DIR') ?: null) ?? $s['xdebug_compose_dir'] ?? '',
-            'ini_path'      => '/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini',
-            'trace_dir_ctr' => (getenv('XDEBUG_TRACE_DIR_CTR') ?: null) ?? $s['xdebug_trace_dir_ctr'] ?? '/traces',
-            'client_host'   => 'host.docker.internal',
-            'client_port'   => '9003',
-            'idekey'        => 'PHPSTORM',
+            'container'        => (getenv('XDEBUG_CONTAINER')     ?: null) ?? $s['xdebug_container']        ?? '',
+            'compose_dir'      => (getenv('XDEBUG_COMPOSE_DIR')   ?: null) ?? $s['xdebug_compose_dir']      ?? '',
+            'ini_path'         => '/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini',
+            'trace_dir_ctr'    => (getenv('XDEBUG_TRACE_DIR_CTR') ?: null) ?? $s['xdebug_trace_dir_ctr']    ?? '/traces',
+            'traces_host_path' => $s['traces_host_path'] ?? '',
+            'client_host'      => 'host.docker.internal',
+            'client_port'      => '9003',
+            'idekey'           => 'PHPSTORM',
         ];
     }
 
@@ -715,6 +715,10 @@ class TraceController extends AbstractController
         $output = [];
         exec($cmd, $output, $code);
         unlink($tmp);
+        if ($code === 0) {
+            // docker cp creates files with mode 600 owned by root — make readable by php-fpm worker
+            exec('docker exec -u root ' . escapeshellarg($id) . ' chmod 644 ' . escapeshellarg($xd['ini_path']) . ' 2>&1', $chmodOut, $chmodCode);
+        }
         return ['ok' => $code === 0, 'output' => implode("\n", $output), 'code' => $code];
     }
 
@@ -766,6 +770,46 @@ class TraceController extends AbstractController
         return $this->json(['configured' => true, 'running' => true, 'mode' => $mode]);
     }
 
+    private function dockerComposeRestart(array $xd): array
+    {
+        if (!file_exists('/var/run/docker.sock')) {
+            return ['ok' => false, 'error' => 'docker socket not available'];
+        }
+        $output = [];
+        $composeDir = $xd['compose_dir'] ?: null;
+        if ($composeDir && is_dir($composeDir)) {
+            $cmd = 'cd ' . escapeshellarg($composeDir) . ' && docker compose restart ' . escapeshellarg($xd['container']) . ' 2>&1';
+        } else {
+            $cmd = 'docker restart ' . escapeshellarg($xd['container']) . ' 2>&1';
+        }
+        exec($cmd, $output, $code);
+        return ['ok' => $code === 0, 'output' => implode("\n", $output), 'code' => $code];
+    }
+
+    private function getSessionFile(): string
+    {
+        return sys_get_temp_dir() . '/xdebug-session-start';
+    }
+
+    private function saveSessionStart(): void
+    {
+        file_put_contents($this->getSessionFile(), (string) microtime(true));
+    }
+
+    private function loadSessionStart(): ?float
+    {
+        $f = $this->getSessionFile();
+        if (!file_exists($f)) return null;
+        $v = trim(file_get_contents($f));
+        return is_numeric($v) ? (float) $v : null;
+    }
+
+    private function clearSessionStart(): void
+    {
+        $f = $this->getSessionFile();
+        if (file_exists($f)) unlink($f);
+    }
+
     #[Route('/xdebug/set', methods: ['POST'])]
     public function xdebugSet(Request $request): JsonResponse
     {
@@ -779,7 +823,6 @@ class TraceController extends AbstractController
         if (!$xd['container']) {
             return $this->json(['ok' => false, 'error' => 'xdebug container not configured in Settings → Xdebug']);
         }
-
         // Create trace dir if switching to trace mode
         if ($mode === 'debug+trace') {
             $this->dockerExec($xd, 'mkdir -p ' . escapeshellarg($xd['trace_dir_ctr']));
@@ -791,13 +834,65 @@ class TraceController extends AbstractController
             return $this->json(['ok' => false, 'error' => $cp['output'] ?? $cp['error']]);
         }
 
-        // Graceful FPM reload via USR2 to master process (no downtime)
-        $this->dockerExec($xd, 'kill -USR2 $(cat /var/run/php-fpm.pid 2>/dev/null || pgrep -f "php-fpm: master") 2>&1');
+        // Save/clear session start (same as Python _save_session_start / trace_organize)
+        if ($mode === 'debug+trace') {
+            $this->saveSessionStart();
+        } else {
+            // turning off — session ends, organize happens client-side or via /xdebug/organize
+            $this->clearSessionStart();
+        }
 
-        return $this->json([
-            'ok'  => true,
-            'mode' => $mode,
-        ]);
+        // Full container restart — required for php-fpm to re-read the ini (same as Python _restart_container)
+        $restart = $this->dockerComposeRestart($xd);
+        if (!$restart['ok']) {
+            return $this->json(['ok' => false, 'error' => 'ini written but restart failed: ' . ($restart['output'] ?? $restart['error'])]);
+        }
+
+        return $this->json(['ok' => true, 'mode' => $mode]);
+    }
+
+    #[Route('/xdebug/organize', methods: ['POST'])]
+    public function xdebugOrganize(): JsonResponse
+    {
+        // Use the mounted traces dir inside the container (same volume as host TRACES_DIR)
+        $tracesHostPath = rtrim(getenv('TRACES_SOURCE_DIR') ?: '/traces', '/');
+        if (!is_dir($tracesHostPath)) {
+            return $this->json(['ok' => false, 'error' => "traces dir not found: $tracesHostPath"]);
+        }
+
+        $sessionStart = $this->loadSessionStart();
+        $files = glob(rtrim($tracesHostPath, '/') . '/trace_*.xt') ?: [];
+
+        if ($sessionStart !== null) {
+            $files = array_filter($files, fn($f) => filemtime($f) >= $sessionStart - 1);
+        }
+
+        if (!$files) {
+            $this->clearSessionStart();
+            return $this->json(['ok' => true, 'message' => 'no trace files', 'folder' => null]);
+        }
+
+        usort($files, fn($a, $b) => filemtime($a) <=> filemtime($b));
+        $startTs  = $sessionStart ?? filemtime($files[0]);
+        $startDt  = date('Y-m-d_H-i-s', (int) $startTs);
+
+        // Extract URL slug from first filename: trace__api_security_login.xt → api_security_login
+        $firstName = pathinfo(basename($files[0]), PATHINFO_FILENAME);
+        $urlPart   = substr($firstName, strlen('trace'));
+        $urlSlug   = substr(str_replace('/', '_', ltrim($urlPart, '_')), 0, 40) ?: 'unknown';
+
+        $folderName = "{$startDt}_{$urlSlug}";
+        $folderPath = rtrim($tracesHostPath, '/') . '/' . $folderName;
+        if (!is_dir($folderPath)) mkdir($folderPath, 0755, true);
+
+        $moved = 0;
+        foreach ($files as $f) {
+            rename($f, $folderPath . '/' . basename($f));
+            $moved++;
+        }
+
+        $this->clearSessionStart();
+        return $this->json(['ok' => true, 'message' => "organized {$moved} file" . ($moved !== 1 ? 's' : ''), 'folder' => $folderName]);
     }
 
     #[Route('/xdebug/clear', methods: ['POST'])]
@@ -808,6 +903,8 @@ class TraceController extends AbstractController
             return $this->json(['ok' => false, 'error' => 'xdebug not configured']);
         }
         $res = $this->dockerExec($xd, 'rm -f ' . escapeshellarg($xd['trace_dir_ctr']) . '/trace_*.xt 2>/dev/null; echo done');
+        // also clear session start
+        $this->clearSessionStart();
         return $this->json(['ok' => $res['ok'], 'output' => $res['output'] ?? '']);
     }
 }

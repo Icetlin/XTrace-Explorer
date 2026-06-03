@@ -12,7 +12,7 @@
         :key="tab.fileId"
         class="trace-tab"
         :class="{
-          'trace-tab--active': activeSection === 'trace' && store.activeTabFileId === tab.fileId,
+          'trace-tab--active': store.activeTabFileId === tab.fileId,
           'trace-tab--parsing': tab.status === 'parsing',
           'trace-tab--pending': tab.status === 'pending',
           'trace-tab--error': tab.status === 'error',
@@ -32,16 +32,6 @@
       </button>
 
       <div class="tabs-bar__spacer" />
-
-      <!-- Right-side nav -->
-      <button
-        class="nav-btn"
-        :class="{ 'nav-btn--active': activeSection === 'settings' }"
-        @click="activeSection = 'settings'"
-      >
-        ⚙ Settings
-        <span v-if="store.favourites.length" class="nav-badge">{{ store.favourites.length }}</span>
-      </button>
     </div>
 
     <!-- ── File browser dropdown ── -->
@@ -85,7 +75,7 @@
     <!-- ── Parsing status bar (for active tab) ── -->
     <transition name="fade">
       <div
-        v-if="activeSection === 'trace' && store.currentFile?.status === 'parsing'"
+        v-if="store.currentFile?.status === 'parsing'"
         class="status-bar status-bar--parsing"
       >
         <div class="status-bar__fill" :style="{ width: (store.currentFile.progress || 0) + '%' }" />
@@ -97,7 +87,7 @@
         </div>
       </div>
       <div
-        v-else-if="activeSection === 'trace' && store.currentFile?.status === 'pending'"
+        v-else-if="store.currentFile?.status === 'pending'"
         class="status-bar status-bar--pending"
       >
         <div class="status-bar__content">
@@ -106,7 +96,7 @@
         </div>
       </div>
       <div
-        v-else-if="activeSection === 'trace' && store.currentFile?.status === 'error'"
+        v-else-if="store.currentFile?.status === 'error'"
         class="status-bar status-bar--error"
       >
         <div class="status-bar__content">
@@ -118,7 +108,7 @@
     <!-- ── Fav scan indicator ── -->
     <transition name="fade">
       <div
-        v-if="activeSection === 'trace' && store.currentTab?.scanning"
+        v-if="store.currentTab?.scanning"
         class="status-bar status-bar--scanning"
       >
         <div class="status-bar__content">
@@ -130,33 +120,30 @@
 
     <!-- ── Request info bar ── -->
     <RequestInfo
-      v-if="activeSection === 'trace' && store.currentTab?.request"
+      v-if="store.currentTab?.request"
       :req="store.currentTab.request"
     />
 
     <!-- ── Response info bar ── -->
     <ResponseInfo
-      v-if="activeSection === 'trace' && store.currentTab?.response"
+      v-if="store.currentTab?.response"
       :res="store.currentTab.response"
     />
 
     <!-- ── Main content ── -->
     <div class="main">
 
-      <!-- Settings (includes Favourites + Filters tabs) -->
-      <SettingsPage v-show="activeSection === 'settings'" />
-
       <!-- Trace views -->
       <template v-for="tab in store.openTabs" :key="tab.fileId">
         <div
-          v-show="activeSection === 'trace' && store.activeTabFileId === tab.fileId && tab.status === 'ready'"
+          v-show="store.activeTabFileId === tab.fileId && tab.status === 'ready'"
           class="trace-view"
           :style="store.activeCodeNode ? { gridTemplateColumns: splitWidth + 'px 4px 1fr' } : { gridTemplateColumns: '1fr' }"
         >
           <!-- Left: TOC -->
           <TocTree
             v-if="tab.toc.length"
-            :ref="el => { if (el) tocTreeRefs[tab.fileId] = el }"
+            :ref="el => { if (el) { tocTreeRefs[tab.fileId] = el; if (tab.fileId === store.activeTabFileId) activeTocRef.value = el } }"
             :toc="tab.toc"
             :file-id="tab.fileId"
             @jump="onJump"
@@ -177,7 +164,7 @@
 
       <!-- Empty state -->
       <div
-        v-if="activeSection === 'trace' && !store.openTabs.length"
+        v-if="!store.openTabs.length"
         class="empty-state"
       >
         <div class="empty-state__icon">⟁</div>
@@ -194,6 +181,9 @@
     <!-- ── Selection preview (floating, right side) ── -->
     <SelectionPreview />
 
+    <!-- ── Float control bar (bottom-right) ── -->
+    <FloatCtrl :toc-ref="activeTocRef" />
+
     <!-- ── Jump toast ── -->
     <transition name="toast">
       <div v-if="jumpToast" class="jump-toast">
@@ -205,21 +195,20 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, nextTick, shallowRef } from 'vue'
 import { useTraceStore } from './stores/trace'
 import TocTree from './components/TocTree.vue'
 import DesertBackground from './components/DesertBackground.vue'
 import RequestInfo from './components/RequestInfo.vue'
 import ResponseInfo from './components/ResponseInfo.vue'
 import ExportPanel from './components/ExportPanel.vue'
-import SettingsPage from './components/SettingsPage.vue'
 import Breadcrumbs from './components/Breadcrumbs.vue'
 import SelectionPreview from './components/SelectionPreview.vue'
 import CodeView from './components/CodeView.vue'
+import FloatCtrl from './components/FloatCtrl.vue'
 import axios from 'axios'
 
 const store = useTraceStore()
-const activeSection = ref('trace')
 const splitWidth = ref(560)
 
 let splitResizeStart = null
@@ -247,6 +236,7 @@ const breadcrumbLine = ref(null)
 const searchInput = ref(null)
 let jumpToastTimer = null
 const tocTreeRefs = {}
+const activeTocRef = shallowRef(null)
 
 
 const filteredBrowseFiles = computed(() => {
@@ -274,6 +264,16 @@ watch(
   { deep: true }
 )
 
+watch(
+  () => {
+    const tab = store.openTabs.find(t => t.fileId === store.activeTabFileId)
+    return tab?.toc?.length ?? 0
+  },
+  () => nextTick(() => {
+    activeTocRef.value = tocTreeRefs[store.activeTabFileId] ?? null
+  })
+)
+
 function toggleBrowser() {
   showBrowser.value = !showBrowser.value
   if (showBrowser.value) {
@@ -296,14 +296,13 @@ async function openFile(relPath) {
   const displayName = relPath.includes('/') ? relPath.split('/').pop() : relPath
   await store.selectFile(data.file_id, displayName)
   await store.loadFiles()
-  activeSection.value = 'trace'
   if (store.currentFile?.status !== 'ready') startPolling(data.file_id)
 }
 
 function switchToTrace(fileId) {
   store.switchToTab(fileId)
-  activeSection.value = 'trace'
   showBrowser.value = false
+  nextTick(() => { activeTocRef.value = tocTreeRefs[fileId] ?? null })
 }
 
 function startPolling(fileId) {

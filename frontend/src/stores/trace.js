@@ -146,6 +146,7 @@ export const useTraceStore = defineStore('trace', () => {
   async function loadFavourites() {
     const { data } = await axios.get('/api/favourites')
     favourites.value = data
+    if (data.length) await rescanAllTabs()
   }
 
   async function addFavourite(pattern, label = null) {
