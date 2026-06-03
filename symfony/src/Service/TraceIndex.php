@@ -873,6 +873,173 @@ class TraceIndex
         return ['class' => $shortClass, 'full_class' => $fullClass, 'fields' => $fields];
     }
 
+    /**
+     * Scans the trace from the start up to $untilLine looking for the last
+     * setToken($token = class Foo\Bar {...}) call. Returns short class name or null.
+     * Used to infer the runtime type of $token inside security listeners.
+     */
+    private function inferTokenType(int $fileId, string $xtPath, int $untilLine): ?string
+    {
+        $indexPath = $this->tracesDir . '/' . $fileId . '/line_index.json';
+        $index = json_decode(file_get_contents($indexPath), true);
+
+        // Start from the beginning (offset 0) — token is set very early
+        $fh = fopen($xtPath, 'rb');
+        $currentLine = 0;
+        $lastTokenClass = null;
+
+        while (($line = fgets($fh, 1048576)) !== false) {
+            $currentLine++;
+            if ($currentLine >= $untilLine) break;
+
+            // Only check lines that look like setToken calls (fast string check first)
+            if (!str_contains($line, 'setToken')) continue;
+            if (!preg_match(TraceRegex::CallLineStrict->value, $line, $m)) continue;
+
+            $sig = $this->extractSig($m[2]);
+            if (!str_ends_with($sig, '->setToken')) continue;
+
+            // Extract $token arg value
+            $rawArgs = $this->splitRawArgs($m[2]);
+            foreach ($rawArgs as $arg) {
+                if (!str_contains($arg, '$token')) continue;
+                if (!preg_match(TraceRegex::ArgRawValue->value, $arg, $am)) continue;
+                $rawVal = trim($am[1]);
+                if (preg_match(TraceRegex::ClassDump->value, $rawVal, $cm)) {
+                    $parts = explode('\\', $cm[1]);
+                    $lastTokenClass = end($parts);
+                } elseif (trim($rawVal) === 'NULL') {
+                    $lastTokenClass = null; // token cleared
+                }
+            }
+        }
+        fclose($fh);
+        return $lastTokenClass;
+    }
+
+    /**
+     * Returns runtime variable context for the call at $lineNo/$callDepth:
+     *   - vars: map of "$name" → parsed object fields (or scalar) from the call's own args
+     *   - child_types: map of child line_no → class name inferred from child's first grandchild's receiver type
+     *
+     * Used by the frontend to annotate instanceof / null-check lines with real values.
+     */
+    public function getVarContext(int $fileId, string $xtPath, int $lineNo, int $callDepth): array
+    {
+        $indexPath = $this->tracesDir . '/' . $fileId . '/line_index.json';
+        $index = json_decode(file_get_contents($indexPath), true);
+
+        $startOffset = 0; $startLine = 0;
+        foreach ($index as $il => $off) {
+            $il = (int)$il;
+            if ($il <= $lineNo) { $startOffset = $off; $startLine = $il; }
+        }
+
+        $fh = fopen($xtPath, 'rb');
+        fseek($fh, $startOffset);
+        $currentLine = $startLine - 1;
+        $rawLine = null;
+        while (($line = fgets($fh, 1048576)) !== false) {
+            $currentLine++;
+            if ($currentLine === $lineNo) { $rawLine = $line; break; }
+        }
+
+        $vars = [];
+        if ($rawLine !== null && preg_match(TraceRegex::CallLineStrict->value, $rawLine, $m)) {
+            $rawArgs = $this->splitRawArgs($m[2]);
+            foreach ($rawArgs as $arg) {
+                if (!preg_match(TraceRegex::ArgRawValue->value, $arg, $am)) continue;
+                // Extract var name from "$name = value" prefix
+                if (!preg_match('/^\$(\w+)\s*=\s*/', $arg, $nm)) continue;
+                $varName = $nm[1];
+                $rawVal = trim($am[1]);
+                // Strip trailing " /path.php:N" file suffix and any residual closing parens
+                $rawVal = (string)preg_replace('/ \/[^ ]+\.php:\d+\s*$/', '', $rawVal);
+                $rawVal = rtrim($rawVal, " \t\n\r)");
+                // If it looks like a class dump, ensure we don't have extra content after last }
+                if (str_starts_with($rawVal, 'class ')) {
+                    // Trim everything after the balanced closing brace of the class body
+                    $depth2 = 0; $lastClose = -1;
+                    for ($ci = 0; $ci < strlen($rawVal); $ci++) {
+                        if ($rawVal[$ci] === '{') $depth2++;
+                        elseif ($rawVal[$ci] === '}') { $depth2--; if ($depth2 === 0) { $lastClose = $ci; break; } }
+                    }
+                    if ($lastClose > 0) $rawVal = substr($rawVal, 0, $lastClose + 1);
+                }
+                $parsed = $this->parseObjectFields($rawVal);
+                if ($parsed !== null) {
+                    $vars['$' . $varName] = $parsed;
+                } else {
+                    $simplified = $this->simplifyValue($rawVal);
+                    if ($simplified !== null) $vars['$' . $varName] = ['scalar' => $simplified];
+                }
+            }
+        }
+
+        // Infer $token type by scanning backwards for the last setToken($token = class Foo\Bar{})
+        // before this line. Token is set in an earlier listener, not inside this method.
+        if (!isset($vars['$token'])) {
+            $tokenClass = $this->inferTokenType($fileId, $xtPath, $lineNo);
+            if ($tokenClass !== null) {
+                $vars['$token'] = ['class' => $tokenClass, 'full_class' => $tokenClass, 'fields' => []];
+            }
+        }
+
+        // For each direct child, try to infer the runtime type of its return value
+        $childDepth = $callDepth + 1;
+        $grandDepth = $callDepth + 2;
+        $childTypes = [];   // line_no → inferred class string
+        $foundParent = true; // we already read rawLine (lineNo) above; fh is positioned after it
+        $lastChildLineNo = null;
+        $lastChildHasReturn = false;
+        $lastGrandLineNo = null; // last grandchild seen under current child
+
+        while (($line = fgets($fh, 1048576)) !== false) {
+            $currentLine++;
+
+            if (preg_match(TraceRegex::ReturnLine->value, $line, $rm)) {
+                $retDepth = (int)(strlen($rm[1]) / 2);
+                if ($retDepth === $callDepth) break; // parent's own return → done
+                if ($lastChildLineNo !== null && !$lastChildHasReturn) {
+                    $val = trim($rm[2]);
+                    if ($retDepth === $childDepth) {
+                        // Child's explicit return value
+                        if (preg_match(TraceRegex::ClassDump->value, $val, $cm)) {
+                            $parts = explode('\\', $cm[1]); $childTypes[$lastChildLineNo] = end($parts);
+                        } elseif (preg_match(TraceRegex::ScalarLiteral->value, $val)) {
+                            $childTypes[$lastChildLineNo] = $val;
+                        }
+                        $lastChildHasReturn = true;
+                    } elseif ($retDepth === $grandDepth && $lastGrandLineNo !== null && !isset($childTypes[$lastChildLineNo])) {
+                        // Last grandchild's return — use as fallback type for parent child
+                        if (preg_match(TraceRegex::ClassDump->value, $val, $cm)) {
+                            $parts = explode('\\', $cm[1]); $childTypes[$lastChildLineNo] = end($parts);
+                        } elseif (preg_match(TraceRegex::ScalarLiteral->value, $val)) {
+                            $childTypes[$lastChildLineNo] = $val;
+                        }
+                    }
+                }
+                continue;
+            }
+
+            if (!preg_match(TraceRegex::CallLineStrict->value, $line, $m)) continue;
+            $depth = (int)(strlen($m[1]) / 2);
+
+            if ($depth <= $callDepth) break;
+
+            if ($depth === $childDepth) {
+                $lastChildLineNo = $currentLine;
+                $lastChildHasReturn = false;
+                $lastGrandLineNo = null;
+            } elseif ($depth === $grandDepth) {
+                $lastGrandLineNo = $currentLine;
+            }
+        }
+        fclose($fh);
+
+        return ['vars' => $vars, 'child_types' => $childTypes];
+    }
+
     private function truncateRaw(string $val): string
     {
         $short = (string) preg_replace('/\s+/', ' ', $val);

@@ -375,6 +375,25 @@ class TraceController extends AbstractController
         return $this->json($result);
     }
 
+    #[Route('/var-context/{id}', methods: ['GET'])]
+    public function varContext(int $id, Request $request): JsonResponse
+    {
+        $traceFile = $this->traceRepo->find($id);
+        if (!$traceFile || $traceFile->getStatus() !== 'ready') {
+            return $this->json(['error' => 'Not ready'], 404);
+        }
+
+        $lineNo    = (int)$request->query->get('line_no', 0);
+        $callDepth = (int)$request->query->get('depth', 0);
+
+        if ($lineNo <= 0) return $this->json(['error' => 'line_no required'], 400);
+
+        $xtPath = $this->tracesDir . '/' . $id . '/trace.xt';
+        $result = $this->traceIndex->getVarContext($id, $xtPath, $lineNo, $callDepth);
+
+        return $this->json($result);
+    }
+
     #[Route('/search/{id}', methods: ['GET'])]
     public function search(int $id, Request $request): JsonResponse
     {
