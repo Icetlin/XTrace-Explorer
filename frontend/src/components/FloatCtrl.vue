@@ -115,6 +115,23 @@
           <path d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M2.93 2.93l1.06 1.06M12.01 12.01l1.06 1.06M2.93 13.07l1.06-1.06M12.01 3.99l1.06-1.06" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
         </svg>
       </button>
+
+      <!-- Theme toggle -->
+      <button
+        class="float-ctrl__item float-ctrl__item--theme"
+        :title="store.theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'"
+        @click="store.toggleTheme()"
+      >
+        <!-- Moon icon for dark mode (click to switch to light) -->
+        <svg v-if="store.theme === 'dark'" width="15" height="15" viewBox="0 0 15 15" fill="none">
+          <path d="M13 9.5A6 6 0 1 1 5.5 2a4.5 4.5 0 0 0 7.5 7.5z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+        </svg>
+        <!-- Sun icon for light mode (click to switch to dark) -->
+        <svg v-else width="15" height="15" viewBox="0 0 15 15" fill="none">
+          <circle cx="7.5" cy="7.5" r="2.5" stroke="currentColor" stroke-width="1.3"/>
+          <path d="M7.5 1v1.5M7.5 12.5V14M1 7.5h1.5M12.5 7.5H14M2.93 2.93l1.06 1.06M11.01 11.01l1.06 1.06M2.93 12.07l1.06-1.06M11.01 3.99l1.06-1.06" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+        </svg>
+      </button>
     </div>
   </div>
 
@@ -269,6 +286,11 @@ async function selectXdMode(mode) {
   filter: drop-shadow(0 4px 24px rgba(0, 0, 0, 0.55));
   animation: float-bob 4s ease-in-out infinite;
 }
+html[data-theme="light"] .float-ctrl {
+  background: rgba(232, 238, 252, 0.90);
+  border-color: rgba(140, 165, 220, 0.5);
+  filter: drop-shadow(0 4px 24px rgba(80, 100, 180, 0.18));
+}
 .float-ctrl:hover,
 .float-ctrl--open {
   animation: none;
@@ -307,6 +329,17 @@ async function selectXdMode(mode) {
   color: rgba(120, 185, 255, 1);
   background: rgba(40, 80, 160, 0.22);
 }
+html[data-theme="light"] .float-ctrl__item {
+  color: rgba(50, 80, 160, 0.6);
+}
+html[data-theme="light"] .float-ctrl__item:hover {
+  color: rgba(20, 50, 140, 0.95);
+  background: rgba(80, 110, 200, 0.12);
+}
+html[data-theme="light"] .float-ctrl__item--active {
+  color: rgba(20, 60, 180, 1);
+  background: rgba(80, 120, 220, 0.18);
+}
 .float-ctrl__item--dim {
   opacity: 0.3;
   pointer-events: none;
@@ -340,6 +373,15 @@ async function selectXdMode(mode) {
 .float-ctrl__item--loading {
   opacity: 0.5;
   cursor: wait;
+}
+.float-ctrl__item--theme {
+  color: rgba(100, 140, 200, 0.6);
+}
+html[data-theme="light"] .float-ctrl__item--theme {
+  color: rgba(180, 130, 30, 0.75);
+}
+html[data-theme="light"] .float-ctrl__item--theme:hover {
+  color: rgba(160, 100, 10, 0.95);
 }
 
 /* ── Xdebug inline options ── */
@@ -457,6 +499,11 @@ async function selectXdMode(mode) {
   flex-direction: column;
   overflow: hidden;
 }
+html[data-theme="light"] .float-modal {
+  background: rgba(240, 244, 255, 0.96);
+  border-color: rgba(140, 160, 220, 0.5);
+  box-shadow: 0 8px 60px rgba(80, 100, 200, 0.18), 0 0 0 1px rgba(80,100,200,0.06);
+}
 
 .float-modal__header {
   display: flex;
@@ -466,6 +513,9 @@ async function selectXdMode(mode) {
   border-bottom: 1px solid rgba(40, 50, 90, 0.4);
   flex-shrink: 0;
 }
+html[data-theme="light"] .float-modal__header {
+  border-bottom-color: rgba(140, 160, 210, 0.35);
+}
 
 .float-modal__title {
   font-family: 'JetBrains Mono', monospace;
@@ -474,6 +524,9 @@ async function selectXdMode(mode) {
   color: rgba(140, 165, 215, 0.75);
   text-transform: uppercase;
   letter-spacing: 0.1em;
+}
+html[data-theme="light"] .float-modal__title {
+  color: rgba(30, 60, 140, 0.7);
 }
 
 .float-modal__close {
@@ -490,6 +543,13 @@ async function selectXdMode(mode) {
 .float-modal__close:hover {
   color: rgba(210, 90, 90, 0.9);
   background: rgba(120, 20, 20, 0.2);
+}
+html[data-theme="light"] .float-modal__close {
+  color: rgba(60, 80, 150, 0.65);
+}
+html[data-theme="light"] .float-modal__close:hover {
+  color: rgba(200, 40, 40, 0.9);
+  background: rgba(200, 40, 40, 0.1);
 }
 
 .float-modal__body {

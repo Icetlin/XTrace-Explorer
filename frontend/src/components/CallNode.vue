@@ -657,3 +657,63 @@ function renderSig(sig) {
 .loading, .leaf { color: #6070a0; font-size: 12.5px; padding: 4px 10px; font-style: italic; }
 
 </style>
+
+<style>
+/* ── CallNode light theme overrides ── */
+html[data-theme="light"] .call-node .call-row:hover { background: rgba(60, 100, 200, 0.05); }
+html[data-theme="light"] .call-node .call-row--selected { border-left-color: rgba(40, 100, 200, 0.6) !important; }
+
+html[data-theme="light"] .call-node .chevron-sm { color: #2a4070; }
+html[data-theme="light"] .call-node .chevron-sm--leaf { color: #7090b0; }
+
+html[data-theme="light"] .call-node .call-sig { color: #1a2848 !important; }
+html[data-theme="light"] .call-node .sig-op  { opacity: 0.6; }
+html[data-theme="light"] .call-node .sig-sep { opacity: 0.4; }
+html[data-theme="light"] .call-node .sig-app      { color: #0a6888 !important; }
+html[data-theme="light"] .call-node .sig-ctrl     { color: #7a4800 !important; }
+html[data-theme="light"] .call-node .sig-listener { color: #6a5800 !important; }
+html[data-theme="light"] .call-node .sig-vendor   { color: #384068 !important; }
+
+html[data-theme="light"] .call-node .call-arg {
+  color: #1a3870 !important;
+  background: rgba(60, 100, 180, 0.07) !important;
+  border-color: rgba(60, 100, 180, 0.25) !important;
+}
+html[data-theme="light"] .call-node .call-arg--obj:hover { border-color: rgba(40, 120, 180, 0.5) !important; color: #0d3060 !important; }
+html[data-theme="light"] .call-node .call-arg--expanded  { border-color: rgba(30, 120, 160, 0.55) !important; color: #0d3060 !important; }
+html[data-theme="light"] .call-node .arg-name { color: #2a5070 !important; }
+html[data-theme="light"] .call-node .arg-sep  { color: #4a6070 !important; }
+html[data-theme="light"] .call-node .arg-val  { color: #0d2c58 !important; }
+
+html[data-theme="light"] .call-node .arg-fields { background: rgba(60, 100, 180, 0.04) !important; border-left-color: rgba(60, 100, 180, 0.2) !important; }
+html[data-theme="light"] .call-node .arg-obj-header,
+html[data-theme="light"] .call-node .arg-obj-close  { color: #2a4870 !important; }
+html[data-theme="light"] .call-node .arg-field-name { color: #1a5070 !important; }
+html[data-theme="light"] .call-node .arg-field-eq   { color: #4a5870 !important; }
+html[data-theme="light"] .call-node .arg-field-val  { color: #0d2848 !important; }
+
+html[data-theme="light"] .call-node .call-return {
+  color: #6a2800 !important;
+  background: rgba(180, 80, 10, 0.08) !important;
+  border-color: rgba(160, 70, 10, 0.25) !important;
+}
+html[data-theme="light"] .call-node .call-return--parent {
+  color: #8a4000 !important;
+  background: rgba(200, 90, 10, 0.10) !important;
+  border-color: rgba(180, 80, 10, 0.35) !important;
+}
+
+html[data-theme="light"] .call-node .call-file { color: #3a5878 !important; }
+html[data-theme="light"] .call-node .call-line { color: #3a5070 !important; }
+html[data-theme="light"] .call-node .call-line:hover { color: #0d2050 !important; background: rgba(60, 100, 180, 0.08) !important; }
+
+html[data-theme="light"] .call-node .call-children { border-left-color: rgba(80, 120, 200, 0.15) !important; }
+
+html[data-theme="light"] .call-node .child-source-header { color: #2a4060 !important; }
+html[data-theme="light"] .call-node .child-source-header::after { background: rgba(60, 90, 150, 0.3) !important; }
+html[data-theme="light"] .call-node .child-source-header[data-src="sf"] { color: #1a5070 !important; }
+html[data-theme="light"] .call-node .child-source-header:not([data-src="sf"]) { color: #504010 !important; }
+
+html[data-theme="light"] .call-node .loading,
+html[data-theme="light"] .call-node .leaf { color: #3a5070 !important; }
+</style>
