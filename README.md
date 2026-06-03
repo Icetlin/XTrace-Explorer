@@ -9,8 +9,11 @@ A browser-based viewer for [Xdebug](https://xdebug.org/) function trace files (`
 ## Features
 
 - **Event TOC** — shows Symfony events (`kernel.request`, `kernel.controller`, …) and their listeners at a glance
-- **Lazy call tree** — expand any listener to drill into its call stack on demand; noise-filtered by default
+- **App call tree** — each event and listener shows the `App\` method calls it triggered, as a collapsible tree with arguments and return values
+- **Split-panel code view** — click any call node to open the PHP source side-by-side with a draggable resizer; the target line is highlighted and call sites are annotated inline
+- **Lazy call tree** — expand any listener to drill into its full call stack on demand; noise-filtered by default
 - **Deep dive** — click into any call node to recurse as deep as needed
+- **Nested events** — authorization votes and other nested dispatches are shown inline, with repeated vote groups collapsed to `× N`
 - **Schema panel** — select multiple nodes and copy a structured Markdown schema to clipboard
 - **Annotations** — attach notes to trace lines; export the whole trace as Markdown
 - **Search** — find any method signature across millions of lines instantly
@@ -21,13 +24,17 @@ A browser-based viewer for [Xdebug](https://xdebug.org/) function trace files (`
 
 ## Screenshots
 
-| Empty state | TOC — events & listeners |
+| Empty state | File picker |
 |---|---|
-| ![Empty](docs/screenshots/01-empty.png) | ![TOC](docs/screenshots/03-toc.png) |
+| ![Empty](docs/screenshots/01-empty.png) | ![Picker](docs/screenshots/02-picker.png) |
 
-| Expanded listener with call tree | Deep dive |
+| TOC — events & listeners | Expanded listener with app call tree |
 |---|---|
-| ![Expanded](docs/screenshots/04-expanded.png) | ![Deep dive](docs/screenshots/05-calltree.png) |
+| ![TOC](docs/screenshots/03-toc.png) | ![Expanded](docs/screenshots/04-expanded.png) |
+
+| Call tree | Split-panel code view |
+|---|---|
+| ![Call tree](docs/screenshots/05-calltree.png) | ![Code view](docs/screenshots/05b-calltree-deep.png) |
 
 | Schema export panel | Settings |
 |---|---|
@@ -105,9 +112,10 @@ Backend lives in `symfony/`, frontend in `frontend/`. The async trace parser run
 ## How it works
 
 1. You open a `.xt` file → the backend enqueues a parse job via Symfony Messenger
-2. `TraceParser` builds a sparse byte-offset index (`line_index.json`) and a Table of Contents (`toc.json`) that identifies every `TraceableEventDispatcher->dispatch` call and its listeners
+2. `TraceParser` builds a sparse byte-offset index (`line_index.json`) and a Table of Contents (`toc.json`) that identifies every `TraceableEventDispatcher->dispatch` call, its listeners, and the `App\` method calls each block triggers
 3. The frontend fetches the TOC and renders events lazily; clicking a node calls `/api/children` which seeks directly to the right position in the file using the index
-4. Noise filtering removes Symfony internals (Container, Stopwatch, Reflection, …) by default; toggle "show all calls" to see everything
+4. Clicking a call node with a known source file opens the PHP source in a split panel — syntax-highlighted with `highlight.js`, scrolled to the target line, with child call sites annotated inline
+5. Noise filtering removes Symfony internals (Container, Stopwatch, Reflection, …) by default; toggle "show all calls" to see everything
 
 Trace files with 3 million+ lines parse in seconds and navigate without loading the full file into memory.
 
