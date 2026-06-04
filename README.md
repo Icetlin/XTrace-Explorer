@@ -8,17 +8,21 @@ A browser-based viewer for [Xdebug](https://xdebug.org/) function trace files (`
 
 ## Features
 
-- **Event TOC** — shows Symfony events (`kernel.request`, `kernel.controller`, …) and their listeners at a glance
-- **App call tree** — each event and listener shows the `App\` method calls it triggered, as a collapsible tree with arguments and return values
-- **Split-panel code view** — click any call node to open the PHP source side-by-side with a draggable resizer; the target line is highlighted and call sites are annotated inline
-- **Lazy call tree** — expand any listener to drill into its full call stack on demand; noise-filtered by default
-- **Deep dive** — click into any call node to recurse as deep as needed
-- **Nested events** — authorization votes and other nested dispatches are shown inline, with repeated vote groups collapsed to `× N`
-- **Schema panel** — select multiple nodes and copy a structured Markdown schema to clipboard
-- **Annotations** — attach notes to trace lines; export the whole trace as Markdown
+- **Event TOC** — shows Symfony events (`kernel.request`, `kernel.controller`, …) and their listeners at a glance; listeners grouped by source namespace (SF / ACME / …)
+- **Lazy call tree** — click any listener to expand its full call stack on demand; noise-filtered by default, "show all" toggle to see everything
+- **Split-panel code view** — click any call node to open the PHP source side-by-side with a draggable resizer; target line is highlighted, call sites are annotated inline with runtime values
+- **Runtime value annotations** — source lines are annotated with actual runtime values from the trace: argument values, return values, object fields — even without `collect_return`
+- **Deep drill-down** — expand any call node to recurse as deep as needed, one level at a time
+- **Nested events** — authorization votes and sub-dispatches shown inline, repeated vote groups collapsed to `× N`
+- **Xdebug mode control** — switch between `off` / `debug` / `debug+trace` directly from the UI without touching `php.ini` by hand; "organize" button moves session trace files into a dated folder
+- **Dark and light theme** — toggle with one click from the float bar
+- **Schema panel** — select multiple nodes (Ctrl+click) and copy a structured Markdown call schema to clipboard
+- **Annotations** — attach notes to trace lines; export the whole annotated trace as Markdown
 - **Search** — find any method signature across millions of lines instantly
 - **Multi-tab** — open several trace files side by side
-- **Settings** — configure traces directory, project namespaces, listener filters, Xdebug integration, and AI/MCP connection from the UI
+- **Favourites** — track specific method patterns with custom labels; matched listeners are highlighted in the TOC
+- **Listener filters** — hide noisy listeners (e.g. Stopwatch, Monolog) from the TOC permanently
+- **Settings** — configure traces directory, project source path, app namespaces, listener filters, and MCP connection from the UI
 
 ---
 
@@ -28,22 +32,21 @@ A browser-based viewer for [Xdebug](https://xdebug.org/) function trace files (`
 |---|---|
 | ![Empty](docs/screenshots/01-empty.png) | ![Picker](docs/screenshots/02-picker.png) |
 
-| TOC — events & listeners | Expanded listener with app call tree |
+| TOC — events & listeners | Expanded listener with call tree |
 |---|---|
-| ![TOC](docs/screenshots/03-toc.png) | ![Expanded](docs/screenshots/04-expanded.png) |
+| ![TOC](docs/screenshots/03-toc.png) | ![Expanded](docs/screenshots/05-calltree.png) |
 
-| Call tree | Split-panel code view |
+| Split-panel code view with runtime value annotations | Light theme |
 |---|---|
-| ![Call tree](docs/screenshots/05-calltree.png) | ![Code view](docs/screenshots/05b-calltree-deep.png) |
+| ![Code view](docs/screenshots/07-code-view.png) | ![Light theme](docs/screenshots/08-light-theme.png) |
 
-| Schema export panel | Settings |
+| Xdebug mode switcher | Settings |
 |---|---|
-| ![Export](docs/screenshots/06-export.png) | ![Settings](docs/screenshots/09-settings.png) |
+| ![Xdebug panel](docs/screenshots/10-xdebug-panel.png) | ![Settings](docs/screenshots/09-settings.png) |
 
-**Animated demos:**
+**Opening a trace and drilling down:**
 
 ![Drilldown demo](docs/screenshots/demo-drilldown.gif)
-![Deep dive demo](docs/screenshots/demo-deep-dive.gif)
 
 ---
 
@@ -70,13 +73,12 @@ xdebug.trace_output_name = trace.%t.%p
 git clone https://github.com/youruser/xtrace-explorer.git
 cd xtrace-explorer
 
-# Set the path to your traces directory
-export TRACES_DIR=/path/to/xdebug_traces
-
 docker compose up -d app
 ```
 
-Open **http://localhost:8765**, click **+**, and select a trace file.
+Open **http://localhost:8765**, click **Settings** (gear icon, bottom-right), set **Traces directory** to the path where your `.xt` files land, then click **Save** → **Restart container**.
+
+After the container restarts, click **+** to open a trace file.
 
 ### 3. (Optional) MCP server for AI assistants
 
@@ -102,7 +104,7 @@ docker compose build app && docker compose up -d app
 cd frontend && npm run build
 
 # Run backend tests
-docker compose exec xtrace-explorer-app-1 php vendor/bin/phpunit
+docker compose exec app php vendor/bin/phpunit
 ```
 
 Backend lives in `symfony/`, frontend in `frontend/`. The async trace parser runs as a Symfony Messenger worker inside the container (see `docker/supervisord.conf`).
@@ -113,9 +115,11 @@ Backend lives in `symfony/`, frontend in `frontend/`. The async trace parser run
 
 1. You open a `.xt` file → the backend enqueues a parse job via Symfony Messenger
 2. `TraceParser` builds a sparse byte-offset index (`line_index.json`) and a Table of Contents (`toc.json`) that identifies every `TraceableEventDispatcher->dispatch` call, its listeners, and the `App\` method calls each block triggers
-3. The frontend fetches the TOC and renders events lazily; clicking a node calls `/api/children` which seeks directly to the right position in the file using the index
-4. Clicking a call node with a known source file opens the PHP source in a split panel — syntax-highlighted with `highlight.js`, scrolled to the target line, with child call sites annotated inline
-5. Noise filtering removes Symfony internals (Container, Stopwatch, Reflection, …) by default; toggle "show all calls" to see everything
+3. The frontend fetches the TOC and renders events lazily; clicking a listener calls `/api/children` which seeks directly to the right byte position in the file using the index — no full file load
+4. Clicking a call node with a known source file opens the PHP source in a split panel — syntax-highlighted, scrolled to the target line, with child call sites annotated inline
+5. `/api/var-context` parses raw object arguments from the trace to produce actual runtime values (field values, return values, inferred types) shown as inline annotations on source lines
+6. Noise filtering removes Symfony internals (Container, Stopwatch, Reflection, …) by default; toggle "show all calls" per listener to see everything
+7. The floating control bar lets you switch Xdebug modes directly from the UI and manage starred trace patterns
 
 Trace files with 3 million+ lines parse in seconds and navigate without loading the full file into memory.
 
