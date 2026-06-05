@@ -313,9 +313,19 @@ class TraceController extends AbstractController
 
         $lineNo    = (int)$request->query->get('line_no', 0);
         $callDepth = (int)$request->query->get('depth', 0);
-        $filter    = !$request->query->getBoolean('raw', false);
+        $raw       = $request->query->getBoolean('raw', false);
+        $filter    = !$raw;
 
         if ($lineNo <= 0) return $this->json(['error' => 'line_no required'], 400);
+
+        // Disk cache for filtered (non-raw) results — trace files never change after parsing
+        if ($filter) {
+            $cacheDir  = $this->tracesDir . '/' . $id . '/children_cache';
+            $cacheFile = $cacheDir . '/' . $lineNo . '_' . $callDepth . '.json';
+            if (file_exists($cacheFile)) {
+                return new JsonResponse(file_get_contents($cacheFile), 200, [], true);
+            }
+        }
 
         $xtPath = $this->tracesDir . '/' . $id . '/trace.xt';
         $result = $this->traceIndex->getChildren($id, $xtPath, $lineNo, $callDepth, $filter);
@@ -340,7 +350,14 @@ class TraceController extends AbstractController
             unset($child);
         }
 
-        return $this->json(['children' => $children, 'parent_return' => $parentReturn, 'raw_count' => $result['raw_count'] ?? 0]);
+        $payload = json_encode(['children' => $children, 'parent_return' => $parentReturn, 'raw_count' => $result['raw_count'] ?? 0]);
+
+        if ($filter) {
+            if (!is_dir($cacheDir)) @mkdir($cacheDir, 0755, true);
+            @file_put_contents($cacheFile, $payload);
+        }
+
+        return new JsonResponse($payload, 200, [], true);
     }
 
     #[Route('/schema/{id}', methods: ['POST'])]
