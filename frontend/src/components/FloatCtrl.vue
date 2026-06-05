@@ -110,9 +110,22 @@
         title="Settings"
         @click="openModal('settings')"
       >
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-          <circle cx="8" cy="8" r="2.5" stroke="currentColor" stroke-width="1.4"/>
-          <path d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M2.93 2.93l1.06 1.06M12.01 12.01l1.06 1.06M2.93 13.07l1.06-1.06M12.01 3.99l1.06-1.06" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+          <path d="M11.42 15.17L17.25 21A2.652 2.652 0 0021 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 11-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 004.486-6.336l-3.276 3.277a3.004 3.004 0 01-2.25-2.25l3.276-3.276a4.5 4.5 0 00-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085m-1.745 1.437L5.909 7.5H4.5L2.25 3.75l1.5-1.5L7.5 4.5v1.409l4.26 4.26m-1.745 1.437l1.745-1.437m6.615 8.206L15.75 15.75M4.867 19.125h.008v.008h-.008v-.008z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+
+      <!-- Click logger toggle -->
+      <button
+        class="float-ctrl__item"
+        :class="{ 'float-ctrl__item--active float-ctrl__item--log': clickLogEnabled }"
+        title="Toggle click logger"
+        @click="toggleClickLog"
+      >
+        <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+          <rect x="1.5" y="3" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/>
+          <path d="M4 6.5h7M4 9h4.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+          <circle v-if="clickLogEnabled" cx="12" cy="3" r="2.5" fill="#e05050"/>
         </svg>
       </button>
 
@@ -175,6 +188,32 @@ function onDocClick(e) {
 }
 onMounted(() => document.addEventListener('mousedown', onDocClick))
 onUnmounted(() => document.removeEventListener('mousedown', onDocClick))
+
+// ── Click logger ──
+const clickLogEnabled = ref(false)
+function clickLogHandler(e) {
+  const el = e.target
+  const lineNo = el.closest('[data-line-no]')?.dataset?.lineNo
+    ?? el.closest('[data-listener-line]')?.dataset?.listenerLine
+    ?? null
+  console.log('[CLICK]',
+    el.tagName,
+    el.className?.slice?.(0, 80),
+    lineNo ? `line=${lineNo}` : '',
+    el.textContent?.slice?.(0, 50).trim(),
+  )
+}
+function toggleClickLog() {
+  clickLogEnabled.value = !clickLogEnabled.value
+  if (clickLogEnabled.value) {
+    document.addEventListener('click', clickLogHandler, true)
+    console.log('[ClickLog] enabled')
+  } else {
+    document.removeEventListener('click', clickLogHandler, true)
+    console.log('[ClickLog] disabled')
+  }
+}
+onUnmounted(() => document.removeEventListener('click', clickLogHandler, true))
 
 const hasTrace = computed(() => store.openTabs.some(t => t.status === 'ready'))
 

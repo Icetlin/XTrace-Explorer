@@ -16,6 +16,11 @@ enum TraceRegex: string
     // Group 1 = indent spaces, group 2 = call body
     case CallLineStrict = '/^\s+[\d.]+\s+\d+([ ]*)->\s+(.+)$/';
 
+    // Extracts time and memory from the start of any xdebug call line
+    // Group 1 = time in seconds (float), group 2 = memory in bytes (int)
+    case CallLineTimeMem = '/^\s+([\d.]+)\s+(\d+)\s+->/';
+
+
     // Return-value line: "   >=> someValue"
     // Group 1 = indent spaces (same count as the originating call), group 2 = the returned value
     case ReturnLine = '/^([ ]*)>=>\s*(.+)$/';

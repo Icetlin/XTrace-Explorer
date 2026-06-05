@@ -11,6 +11,7 @@
           'app-call-row--selected': store.isSelected(node.line_no),
           'app-call-row--expandable': node.children?.length,
           'app-call-row--has-source': !!node.file_abs,
+          'app-call-row--code-active': store.isCodeActive(node.line_no),
           'app-call-row--code-hover': node.file_abs && store.hoveredCodeLine === node.file_abs
             && node.file_abs.replace(/:\d+$/, '') === store.activeCodeFile,
           'app-call-row--inherited': store.activeCodeNode && isInherited(node, store.activeCodeNode),
@@ -42,12 +43,15 @@
           <span v-if="node.args.length > 2" class="app-call-arg app-call-arg--more">+{{ node.args.length - 2 }}</span>
         </span>
         <span v-if="node.return != null" class="app-call-return">⇒ {{ node.return }}</span>
+        <span v-if="node.duration_ms != null" class="app-call-duration" :class="durationClass(node.duration_ms)">{{ formatDuration(node.duration_ms) }}</span>
+        <span v-if="node.mem_delta_kb != null && node.mem_delta_kb > 0" class="app-call-mem">+{{ formatMem(node.mem_delta_kb) }}</span>
         <span v-if="node.file && isAppFile(node.file_abs)" class="app-call-file">{{ shortFile(node.file) }}</span>
       </div>
       <AppCallTree
         v-if="node.children?.length && expanded.has(node.line_no)"
         :calls="node.children"
         :expanded="expanded"
+        :parent-crumbs="[...parentCrumbs, { sig: node.sig, line_no: node.line_no }]"
         @toggle="$emit('toggle', $event)"
       />
     </div>
@@ -55,11 +59,13 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import { useTraceStore } from '../stores/trace'
 
 const props = defineProps({
-  calls:    { type: Array,  default: () => [] },
-  expanded: { type: Object, required: true },
+  calls:        { type: Array,  default: () => [] },
+  expanded:     { type: Object, required: true },
+  parentCrumbs: { type: Array,  default: () => [] },
 })
 
 const emit = defineEmits(['toggle'])
@@ -70,7 +76,7 @@ function onNodeClick(node) {
     emit('toggle', node.line_no)
   }
   if (node.file_abs) {
-    store.setCodeNode(node)
+    store.setCodeNode(node, props.parentCrumbs)
   }
 }
 
@@ -100,16 +106,19 @@ function simplifyArg(arg) {
   return val
 }
 
-// Class: first word bright white, fades to steel blue
-const CLASS_COLORS = ['#e8eef4', '#c0cfe0', '#98afc8', '#7898b8', '#5880a0']
-// Method: starts at muted blue, fades darker
-const METHOD_COLORS = ['#8aaac8', '#6888a8', '#507090', '#3a5878', '#2a4060']
+const CLASS_COLORS_DARK  = ['#e8eef4', '#c0cfe0', '#98afc8', '#7898b8', '#5880a0']
+const METHOD_COLORS_DARK  = ['#8aaac8', '#6888a8', '#507090', '#3a5878', '#2a4060']
+const CLASS_COLORS_LIGHT = ['#0d1e3a', '#1a3460', '#2a4e80', '#3a6090', '#4a70a0']
+const METHOD_COLORS_LIGHT = ['#0d3060', '#1a4878', '#2a5888', '#185098', '#103080']
+
+const classColors  = computed(() => store.theme === 'light' ? CLASS_COLORS_LIGHT  : CLASS_COLORS_DARK)
+const methodColors = computed(() => store.theme === 'light' ? METHOD_COLORS_LIGHT : METHOD_COLORS_DARK)
 
 function classPartStyle(i) {
-  return { color: CLASS_COLORS[Math.min(i, CLASS_COLORS.length - 1)] }
+  return { color: classColors.value[Math.min(i, classColors.value.length - 1)] }
 }
 function methodPartStyle(i) {
-  return { color: METHOD_COLORS[Math.min(i, METHOD_COLORS.length - 1)] }
+  return { color: methodColors.value[Math.min(i, methodColors.value.length - 1)] }
 }
 
 // Split camelCase/PascalCase into parts for gradient coloring.
@@ -149,6 +158,24 @@ function isInherited(node, activeNode) {
   return nodeClass !== sigClass(activeNode.sig)
 }
 
+function formatDuration(ms) {
+  if (ms >= 1000) return (ms / 1000).toFixed(2) + 's'
+  if (ms >= 1)    return ms + 'ms'
+  return '<1ms'
+}
+
+function durationClass(ms) {
+  if (ms >= 500) return 'app-call-duration--critical'
+  if (ms >= 100) return 'app-call-duration--slow'
+  if (ms >= 20)  return 'app-call-duration--warn'
+  return 'app-call-duration--ok'
+}
+
+function formatMem(kb) {
+  if (kb >= 1024) return (kb / 1024).toFixed(1) + 'MB'
+  return kb + 'KB'
+}
+
 function shortFile(file) {
   if (!file) return ''
   const m = file.match(/\/(src|vendor)\/.+$/)
@@ -175,15 +202,21 @@ function shortFile(file) {
 
 .app-call-row {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 5px;
   padding: 2px 6px;
   border-radius: 2px;
   cursor: pointer;
   transition: background 0.1s;
+  overflow: hidden;
 }
 .app-call-row:hover { background: rgba(100, 140, 200, 0.06); }
 .app-call-row--selected { background: rgba(100, 140, 200, 0.1); }
+.app-call-row--code-active {
+  background: rgba(180, 140, 40, 0.12) !important;
+  outline: 1px solid rgba(210, 170, 50, 0.4);
+  border-radius: 2px;
+}
 
 .app-call-chevron {
   color: rgba(140, 160, 180, 0.4);
@@ -195,10 +228,14 @@ function shortFile(file) {
 .app-call-class {
   font-size: 12.5px;
   font-weight: 500;
+  white-space: nowrap;
+  line-height: 1;
 }
 
 .app-call-method {
-  font-size: 12px;
+  font-size: 12.5px;
+  white-space: nowrap;
+  line-height: 1;
 }
 
 .app-call-row--has-source {
@@ -272,6 +309,31 @@ function shortFile(file) {
   font-size: 10px;
   color: #506878;
   margin-left: auto;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.app-call-duration {
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  border-radius: 3px;
+  padding: 0 5px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.app-call-duration--ok       { color: #5a8a60; background: rgba(50,100,60,0.12); border-color: rgba(60,120,70,0.2); }
+.app-call-duration--warn     { color: #a09040; background: rgba(120,100,20,0.15); border-color: rgba(150,120,30,0.3); }
+.app-call-duration--slow     { color: #c07030; background: rgba(140,70,20,0.18); border-color: rgba(170,90,30,0.35); }
+.app-call-duration--critical { color: #d04030; background: rgba(160,40,20,0.2); border-color: rgba(200,50,30,0.4); }
+
+.app-call-mem {
+  font-size: 10px;
+  color: #7888b0;
+  background: rgba(60,70,120,0.12);
+  border: 1px solid rgba(80,90,150,0.2);
+  border-radius: 3px;
+  padding: 0 4px;
   flex-shrink: 0;
   white-space: nowrap;
 }

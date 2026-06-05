@@ -37,11 +37,19 @@
         </div>
 
         <div class="field-group">
-          <label class="field-label">Project source path</label>
+          <label class="field-label">Project source path (local)</label>
           <div class="field-desc">
-            Host path to your PHP project root — used to resolve relative file paths in trace nodes.
+            Host path to your PHP project root — used to open files in IDE.
           </div>
           <input v-model="form.project_path" class="field-input" placeholder="/home/me/projects/my-app" spellcheck="false" />
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">Project path inside container</label>
+          <div class="field-desc">
+            Path to the project root inside Docker (e.g. /var/www/my-app). Used to map trace file paths to local paths for IDE integration.
+          </div>
+          <input v-model="form.docker_project_path" class="field-input" placeholder="/var/www/my-app" spellcheck="false" />
         </div>
 
         <div class="field-group">
@@ -167,6 +175,34 @@ xdebug.trace_output_name = trace.%t.%p</pre>
             <span class="ex-desc">{{ ex.desc }}</span>
           </div>
         </div>
+
+        <!-- Event filters subsection -->
+        <div class="section-title" style="margin-top: 28px;">Event filters</div>
+        <div class="section-desc">
+          Events whose name contains any of these patterns will be hidden from the TOC entirely.
+          Useful to suppress noisy infrastructure events (vich_uploader, console.*, etc.).
+        </div>
+
+        <div class="filter-add">
+          <input
+            v-model="newEventFilter"
+            class="field-input"
+            placeholder="substring to match  (e.g. vich_uploader, console.)"
+            spellcheck="false"
+            @keydown.enter="addEventFilterFromInput"
+          />
+          <button class="btn btn--add" @click="addEventFilterFromInput">+ Add</button>
+        </div>
+
+        <div v-if="!store.eventFilters.length" class="empty-msg">
+          No event filters yet — all events are shown.
+        </div>
+
+        <div v-for="f in store.eventFilters" :key="f" class="filter-row">
+          <span class="filter-icon">⊘</span>
+          <span class="filter-text">{{ f }}</span>
+          <button class="fav-del" @click="removeEventFilter(f)">✕</button>
+        </div>
       </template>
 
       <!-- ── AI / MCP ── -->
@@ -242,7 +278,7 @@ const sections = [
 ]
 const activeSection = ref('general')
 
-const form = ref({ traces_host_path: '', project_path: '', project_name: '', app_namespaces: [] })
+const form = ref({ traces_host_path: '', project_path: '', docker_project_path: '', project_name: '', app_namespaces: [] })
 const saving = ref(false)
 const restarting = ref(false)
 const savedOnce = ref(false)
@@ -273,10 +309,11 @@ onMounted(async () => {
   try {
     const data = await store.loadSettings()
     form.value = {
-      traces_host_path: data.traces_host_path || '',
-      project_path:     data.project_path     || '',
-      project_name:     data.project_name     || '',
-      app_namespaces:   data.app_namespaces ? JSON.parse(JSON.stringify(data.app_namespaces)) : [],
+      traces_host_path:    data.traces_host_path    || '',
+      project_path:        data.project_path        || '',
+      docker_project_path: data.docker_project_path || '',
+      project_name:        data.project_name        || '',
+      app_namespaces:      data.app_namespaces ? JSON.parse(JSON.stringify(data.app_namespaces)) : [],
     }
     savedOnce.value = !!(data.traces_host_path || data.project_path)
   } catch {}
@@ -343,17 +380,32 @@ async function addFilterValue(v) {
 
 function formPayload(overrides = {}) {
   return {
-    traces_host_path: form.value.traces_host_path,
-    project_path:     form.value.project_path,
-    project_name:     form.value.project_name,
-    app_namespaces:   form.value.app_namespaces,
-    listener_filters: store.listenerFilters,
+    traces_host_path:    form.value.traces_host_path,
+    project_path:        form.value.project_path,
+    docker_project_path: form.value.docker_project_path,
+    project_name:        form.value.project_name,
+    app_namespaces:      form.value.app_namespaces,
+    listener_filters:    store.listenerFilters,
+    event_filters:       store.eventFilters,
     ...overrides,
   }
 }
 
 async function removeFilter(pattern) {
   await store.saveSettings(formPayload({ listener_filters: store.listenerFilters.filter(f => f !== pattern) }))
+}
+
+const newEventFilter = ref('')
+
+async function addEventFilterFromInput() {
+  const v = newEventFilter.value.trim()
+  if (!v) return
+  newEventFilter.value = ''
+  await store.addEventFilter(v)
+}
+
+async function removeEventFilter(pattern) {
+  await store.saveSettings(formPayload({ event_filters: store.eventFilters.filter(f => f !== pattern) }))
 }
 
 // ── MCP ──

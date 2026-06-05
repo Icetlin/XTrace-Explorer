@@ -595,12 +595,44 @@ class TraceController extends AbstractController
         }
 
         $settings['traces_host_path'] = $settings['traces_host_path'] ?? '';
-        $settings['project_path']     = $settings['project_path']     ?? '';
+        $settings['project_path']        = ($settings['project_path']        ?? '') ?: (getenv('SOURCE_HOST_DIR')      ?: '');
+        $settings['docker_project_path'] = ($settings['docker_project_path'] ?? '') ?: (getenv('SOURCE_CONTAINER_DIR') ?: '');
+        $settings['ide_project_name']    = ($settings['ide_project_name']    ?? '') ?: (getenv('IDE_PROJECT_NAME')     ?: '');
         $settings['project_name']     = $settings['project_name']     ?? '';
         $settings['listener_filters'] = $settings['listener_filters'] ?? [];
+        $settings['event_filters']    = $settings['event_filters']    ?? [];
         $settings['app_namespaces']   = $settings['app_namespaces']   ?? [];
 
         return $this->json($settings);
+    }
+
+    #[Route('/open-in-ide', methods: ['POST'])]
+    public function openInIde(Request $request): JsonResponse
+    {
+        $body = json_decode($request->getContent(), true);
+        $containerPath = trim($body['path'] ?? '');
+        $line = (int)($body['line'] ?? 0);
+
+        if (!$containerPath) {
+            return $this->json(['error' => 'path required'], 400);
+        }
+
+        $localPath = $containerPath;
+        $dockerDir = getenv('SOURCE_CONTAINER_DIR') ?: '';
+        $hostDir   = getenv('SOURCE_HOST_DIR') ?: '';
+        if ($dockerDir && $hostDir && str_starts_with($containerPath, $dockerDir)) {
+            $localPath = $hostDir . substr($containerPath, strlen($dockerDir));
+        }
+
+        if (!file_exists($localPath)) {
+            return $this->json(['error' => 'file not found: ' . $localPath], 404);
+        }
+
+        $ideCmd = trim(getenv('IDE_CMD') ?: 'phpstorm');
+        $cmd = escapeshellcmd($ideCmd) . ' --line ' . (int)$line . ' ' . escapeshellarg($localPath);
+        exec($cmd . ' > /dev/null 2>&1 &');
+
+        return $this->json(['ok' => true, 'path' => $localPath, 'line' => $line]);
     }
 
     #[Route('/settings', methods: ['POST'])]
@@ -609,17 +641,21 @@ class TraceController extends AbstractController
         $body = json_decode($request->getContent(), true);
         $tracesPath = trim($body['traces_host_path'] ?? '');
         $projectPath = trim($body['project_path'] ?? '');
+        $dockerProjectPath = trim($body['docker_project_path'] ?? '');
         $projectName = trim($body['project_name'] ?? '');
         $listenerFilters = array_values(array_filter(array_map('trim', (array)($body['listener_filters'] ?? [])), fn($s) => $s !== ''));
+        $eventFilters = array_values(array_filter(array_map('trim', (array)($body['event_filters'] ?? [])), fn($s) => $s !== ''));
         // app_namespaces: [{namespace: "App\\", label: "app"}, ...]
         $appNamespaces = array_values(array_filter((array)($body['app_namespaces'] ?? []), fn($e) => !empty($e['namespace'])));
 
         $existing = file_exists($this->getSettingsPath()) ? (json_decode(file_get_contents($this->getSettingsPath()), true) ?? []) : [];
         $settings = [
             'traces_host_path' => $tracesPath,
-            'project_path'     => $projectPath,
+            'project_path'        => $projectPath,
+            'docker_project_path' => $dockerProjectPath,
             'project_name'     => $projectName,
             'listener_filters' => $listenerFilters,
+            'event_filters'    => $eventFilters,
             'app_namespaces'   => $appNamespaces,
         ] + array_filter($existing, fn($k) => str_starts_with($k, 'xdebug_'), ARRAY_FILTER_USE_KEY);
 

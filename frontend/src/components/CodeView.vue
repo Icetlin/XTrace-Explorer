@@ -28,7 +28,7 @@
         @mouseenter="store.setHoveredCodeLine(currentFile + ':' + no)"
       >
         <div class="code-line__main">
-          <span class="code-line__no">{{ no }}</span>
+          <span class="code-line__no" @click.stop="openInStorm(no)" title="Open in PhpStorm">{{ no }}</span>
           <span class="code-line__code" v-html="html" />
         </div>
         <div v-if="annotations.has(no)" class="code-line__ann">
@@ -454,6 +454,15 @@ function buildAnnotations(node, shownFile, allCalls, sourceData, varCtx) {
 
 
 
+function openInStorm(lineNo) {
+  if (!currentFile.value) return
+  fetch('http://localhost:63343', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: currentFile.value, line: lineNo }),
+  }).catch(() => {})
+}
+
 function scrollToLine(lineNo) {
   if (!lineNo || !scrollEl.value) return
   nextTick(() => {
@@ -601,6 +610,10 @@ function extractLineNo(fileStr) {
   user-select: none;
   font-size: 11px;
   line-height: inherit;
+  cursor: pointer;
+}
+.code-line__no:hover {
+  color: #4a90c0;
 }
 
 .code-line__code {
