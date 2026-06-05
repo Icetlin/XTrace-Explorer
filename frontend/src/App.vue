@@ -34,40 +34,64 @@
       <div class="tabs-bar__spacer" />
     </div>
 
-    <!-- ── File browser dropdown ── -->
-    <transition name="slide-down">
-      <div v-if="showBrowser" class="file-browser">
-        <div class="file-browser__header">
-          <span>Select .xt trace file</span>
-          <span v-if="loadingBrowse" class="file-browser__loading">
-            <span class="spinner-inline" /> scanning…
-          </span>
-          <span v-else class="file-browser__count">{{ filteredBrowseFiles.length }} / {{ browseFiles.length }} files</span>
-          <button class="file-browser__close" @click="showBrowser = false">✕</button>
-        </div>
-        <div class="file-browser__search">
-          <input
-            ref="searchInput"
-            v-model="browseQuery"
-            class="file-browser__search-input"
-            placeholder="filter by name…"
-            @keydown.escape="showBrowser = false"
-          />
-        </div>
-        <div v-if="!filteredBrowseFiles.length && !loadingBrowse" class="file-browser__empty">
-          {{ browseQuery ? 'No files match "' + browseQuery + '"' : 'No .xt files found in traces directory' }}
-        </div>
-        <div
-          v-for="f in filteredBrowseFiles"
-          :key="f.rel_path"
-          class="file-row"
-          @click="openFile(f.rel_path)"
-        >
-          <span class="file-row__info">
-            <span class="file-row__name">{{ f.name }}</span>
-            <span v-if="f.dir" class="file-row__dir">{{ f.dir }}</span>
-          </span>
-          <span class="file-row__size">{{ formatSize(f.size) }}</span>
+    <!-- ── File browser modal ── -->
+    <transition name="modal-fade">
+      <div v-if="showBrowser" class="fb-overlay" @click.self="showBrowser = false">
+        <div class="fb-modal">
+          <div class="fb-modal__header">
+            <span class="fb-modal__title">Open trace</span>
+            <input
+              ref="searchInput"
+              v-model="browseQuery"
+              class="fb-modal__search"
+              placeholder="filter…"
+              @keydown.escape="showBrowser = false"
+            />
+            <span v-if="loadingBrowse" class="fb-modal__loading">scanning…</span>
+            <button class="fb-modal__close" @click="showBrowser = false">✕</button>
+          </div>
+          <div class="fb-modal__body">
+            <!-- Left: folders -->
+            <div class="fb-dirs">
+              <div
+                v-for="dir in browseDirs"
+                :key="dir ?? '__root__'"
+                class="fb-dir"
+                :class="{ 'fb-dir--active': selectedDir === dir }"
+                @click="selectedDir = dir"
+              >
+                <template v-if="dir">
+                  <div class="fb-dir__parsed">
+                    <span class="fb-dir__label">{{ parseDirName(dir)?.label ?? dir }}</span>
+                    <span v-if="parseDirName(dir)?.time" class="fb-dir__time">{{ parseDirName(dir).time }}</span>
+                  </div>
+                </template>
+                <template v-else>
+                  <span class="fb-dir__label fb-dir__label--root">root</span>
+                </template>
+                <span class="fb-dir__count">{{ browseFiles.filter(f => (f.dir || null) === dir).length }}</span>
+              </div>
+              <div v-if="!browseDirs.length && !loadingBrowse" class="fb-dirs__empty">no dirs</div>
+            </div>
+            <!-- Right: files -->
+            <div class="fb-files">
+              <div v-if="!filesInDir.length && !loadingBrowse" class="fb-files__empty">
+                {{ browseQuery ? 'no matches' : 'empty' }}
+              </div>
+              <div
+                v-for="f in filesInDir"
+                :key="f.rel_path"
+                class="fb-file"
+                @click="openFile(f.rel_path)"
+              >
+                <div class="fb-file__parsed">
+                  <span class="fb-file__label">{{ parseFileName(f.name).label }}</span>
+                  <span v-if="parseFileName(f.name).time" class="fb-file__time">{{ parseFileName(f.name).time }}</span>
+                </div>
+                <span class="fb-file__size">{{ formatSize(f.size) }}</span>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </transition>
@@ -234,6 +258,7 @@ const showBrowser = ref(false)
 const browseFiles = ref([])
 const browseQuery = ref('')
 const loadingBrowse = ref(false)
+const selectedDir = ref(null)
 const jumpToast = ref(null)
 const breadcrumbPath = ref([])
 const breadcrumbLine = ref(null)
@@ -242,6 +267,26 @@ let jumpToastTimer = null
 const tocTreeRefs = {}
 const activeTocRef = shallowRef(null)
 
+// All unique dirs (null = root)
+const browseDirs = computed(() => {
+  const dirs = new Set()
+  browseFiles.value.forEach(f => dirs.add(f.dir || null))
+  const sorted = [...dirs].sort((a, b) => {
+    if (a === null) return -1
+    if (b === null) return 1
+    return a.localeCompare(b)
+  })
+  return sorted
+})
+
+const filesInDir = computed(() => {
+  const q = browseQuery.value.trim().toLowerCase()
+  return browseFiles.value.filter(f => {
+    const dirMatch = f.dir === selectedDir.value || (selectedDir.value === null && !f.dir)
+    const qMatch = !q || f.name.toLowerCase().includes(q) || (f.dir && f.dir.toLowerCase().includes(q))
+    return dirMatch && qMatch
+  })
+})
 
 const filteredBrowseFiles = computed(() => {
   const q = browseQuery.value.trim().toLowerCase()
@@ -286,8 +331,9 @@ function toggleBrowser() {
   showBrowser.value = !showBrowser.value
   if (showBrowser.value) {
     browseQuery.value = ''
-    loadBrowse()
-    nextTick(() => searchInput.value?.focus())
+    loadBrowse().then(() => {
+      selectedDir.value = browseDirs.value[0] ?? null
+    })
   }
 }
 
@@ -343,6 +389,41 @@ function formatSize(bytes) {
   if (bytes > 1e9) return (bytes / 1e9).toFixed(1) + ' GB'
   if (bytes > 1e6) return (bytes / 1e6).toFixed(0) + ' MB'
   return (bytes / 1e3).toFixed(0) + ' KB'
+}
+
+// "2026-06-05_11-02-14_inner-api_user_user-data_7094798_..." → { time: "2026-06-05 11:02:14", label: "inner-api / user / user-data" }
+function parseDirName(dir) {
+  if (!dir) return null
+  // Match leading datetime: YYYY-MM-DD_HH-MM-SS
+  const m = dir.match(/^(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})_(.+)$/)
+  if (!m) return { time: null, label: dir }
+  const time = `${m[1]} ${m[2]}:${m[3]}:${m[4]}`
+  // Remaining: strip trailing timestamp (long number at end)
+  const rest = m[5].replace(/_\d{7,}$/, '').replace(/_/g, ' / ')
+  return { time, label: rest }
+}
+
+// "trace__inner-api_user-user-data_161_1780642982.xt" → { label: "inner-api / user-user-data / 161", time: "2026-06-05 11:02" }
+function parseFileName(name) {
+  // Strip .xt
+  let base = name.replace(/\.xt$/, '')
+  // Strip leading "trace__" or "trace_"
+  base = base.replace(/^trace__?/, '')
+  // Extract trailing unix timestamp (_XXXXXXXXXX at end, 9-11 digits)
+  const tsMatch = base.match(/_(\d{9,11})$/)
+  let timeStr = null
+  if (tsMatch) {
+    const ts = parseInt(tsMatch[1])
+    // Sanity: unix timestamps from ~2020 to ~2040
+    if (ts > 1580000000 && ts < 2200000000) {
+      const d = new Date(ts * 1000)
+      timeStr = d.toLocaleString('sv').replace('T', ' ').slice(0, 16) // "YYYY-MM-DD HH:MM"
+    }
+    base = base.slice(0, -tsMatch[0].length)
+  }
+  // Convert underscores to " / ", collapse multiple
+  const label = base.replace(/_+/g, ' / ').replace(/\s*\/\s*\/\s*/g, ' / ').replace(/^\s*\/\s*/, '').replace(/\s*\/\s*$/, '')
+  return { label, time: timeStr }
 }
 </script>
 
@@ -649,87 +730,203 @@ html, body, #app {
   text-align: center;
 }
 
-/* ── File browser ── */
-.file-browser {
-  background: var(--bg-panel);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border-bottom: 1px solid var(--border-panel);
-  max-height: 280px;
-  overflow-y: auto;
-  flex-shrink: 0;
+/* ── File browser modal ── */
+.fb-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.file-browser__header {
+.fb-modal {
+  background: var(--bg-panel-solid);
+  border: 1px solid var(--border-panel);
+  border-radius: 10px;
+  width: min(820px, 90vw);
+  height: min(520px, 80vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 24px 64px rgba(0,0,0,0.55);
+}
+
+.fb-modal__header {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 28px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border-panel-hd);
+  flex-shrink: 0;
+}
+
+.fb-modal__title {
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
+  font-weight: 700;
   color: var(--text-hd);
-  border-bottom: 1px solid var(--border-panel-hd);
-  position: sticky;
-  top: 0;
-  background: var(--bg-panel-solid);
-  z-index: 1;
+  white-space: nowrap;
 }
-.file-browser__count { color: var(--text-count); }
-.file-browser__loading { display: flex; align-items: center; gap: 6px; color: var(--text-load); }
-.file-browser__close {
-  margin-left: auto;
-  background: none;
-  border: none;
-  color: var(--text-close-btn);
-  cursor: pointer;
-  font-size: 12px;
-  padding: 2px 6px;
-  border-radius: 3px;
-}
-.file-browser__close:hover { color: var(--close-hover); }
-.file-browser__search {
-  padding: 6px 14px;
-  border-bottom: 1px solid var(--border-panel-hd);
-  background: var(--bg-panel-solid);
-}
-.file-browser__search-input {
-  width: 100%;
+
+.fb-modal__search {
+  flex: 1;
   background: var(--bg-input);
   border: 1px solid var(--border-input);
   border-radius: 4px;
   color: var(--text-input);
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
-  padding: 5px 10px;
+  padding: 4px 10px;
   outline: none;
+  max-width: 260px;
 }
-.file-browser__search-input::placeholder { color: var(--text-ph); }
-.file-browser__search-input:focus { border-color: var(--border-input-fo); }
+.fb-modal__search::placeholder { color: var(--text-ph); }
+.fb-modal__search:focus { border-color: var(--border-input-fo); }
 
-.file-browser__empty {
-  padding: 16px 24px;
-  font-size: 12px;
+.fb-modal__loading {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text-load);
+}
+
+.fb-modal__close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--text-close-btn);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+.fb-modal__close:hover { color: var(--close-hover); }
+
+.fb-modal__body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* Left column: dirs */
+.fb-dirs {
+  width: 200px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border-panel-hd);
+  overflow-y: auto;
+  padding: 6px 0;
+}
+
+.fb-dir {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 7px 14px;
+  cursor: pointer;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-row-name);
+  transition: background 0.1s;
+  border-radius: 0;
+}
+.fb-dir:hover { background: var(--bg-row-hover); }
+.fb-dir--active {
+  background: rgba(60, 100, 200, 0.15);
+  color: var(--text-nav-active);
+  border-left: 2px solid var(--border-nav);
+  padding-left: 12px;
+}
+
+.fb-dir__parsed {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+}
+.fb-dir__label {
+  font-size: 11px;
+  color: var(--text-row-name);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fb-dir__label--root {
+  color: var(--text-row-dir);
+  font-style: italic;
+}
+.fb-dir__time {
+  font-size: 10px;
+  color: var(--text-count);
+}
+.fb-dir__count {
+  font-size: 10px;
+  color: var(--text-count);
+  background: var(--nav-badge-bg);
+  border-radius: 8px;
+  padding: 0 5px;
+  flex-shrink: 0;
+  align-self: flex-start;
+  margin-top: 1px;
+}
+
+.fb-dirs__empty {
+  padding: 16px;
+  font-size: 11px;
   color: var(--text-empty-file);
   font-family: monospace;
   font-style: italic;
 }
 
-.file-row {
+/* Right column: files */
+.fb-files {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 0;
+}
+
+.fb-file {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  padding: 7px 28px;
+  padding: 8px 20px;
   cursor: pointer;
   font-family: 'JetBrains Mono', monospace;
   font-size: 11px;
   border-bottom: 1px solid var(--border-row);
   transition: background 0.1s;
 }
-.file-row:hover { background: var(--bg-row-hover); }
-.file-row__info { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.file-row__name { color: var(--text-row-name); }
-.file-row__dir  { color: var(--text-row-dir); font-size: 10px; }
-.file-row__size { color: var(--text-row-dir); font-size: 10px; flex-shrink: 0; margin-left: 12px; }
+.fb-file:hover { background: var(--bg-row-hover); }
+.fb-file__parsed {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+}
+.fb-file__label {
+  color: var(--text-row-name);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fb-file__time {
+  font-size: 10px;
+  color: var(--text-count);
+}
+.fb-file__size { color: var(--text-row-dir); font-size: 10px; flex-shrink: 0; margin-left: 12px; align-self: flex-start; margin-top: 2px; }
+
+.fb-files__empty {
+  padding: 24px;
+  font-size: 11px;
+  color: var(--text-empty-file);
+  font-family: monospace;
+  font-style: italic;
+}
 
 /* ── Status bar ── */
 .status-bar {
@@ -889,6 +1086,11 @@ html, body, #app {
   opacity: 0;
   transform: translateY(-8px);
 }
+
+.modal-fade-enter-active { transition: opacity 0.15s ease, transform 0.15s ease; }
+.modal-fade-leave-active { transition: opacity 0.1s ease; }
+.modal-fade-enter-from { opacity: 0; transform: scale(0.97); }
+.modal-fade-leave-to { opacity: 0; }
 
 .fade-enter-active, .fade-leave-active { transition: opacity 0.2s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }

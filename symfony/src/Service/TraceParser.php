@@ -382,6 +382,7 @@ class TraceParser
             ['nodes' => $nodes, 'roots' => $skeleton],
             JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE
         ));
+        $this->inferReturnsInToc($toc);
         file_put_contents($dir . '/toc.json', json_encode($toc, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE));
         $responseInfo = $this->extractResponseInfo($xtFilePath);
         file_put_contents($dir . '/meta.json', json_encode(
@@ -466,6 +467,45 @@ class TraceParser
             }
         }
         return [];
+    }
+
+    /**
+     * For each list of sibling app_calls, infer the return value of call[i] from
+     * the first argument of call[i+1] that matches the pattern "$varName = <value>".
+     * This works because xdebug traces don't include >=> return lines by default,
+     * but the return value of a call is passed as an argument to the next sibling.
+     */
+    private function inferReturnsInAppCalls(array &$calls): void
+    {
+        for ($i = 0; $i < count($calls); $i++) {
+            if ($calls[$i]['return'] === null && isset($calls[$i + 1])) {
+                $nextArgs = $calls[$i + 1]['args'] ?? [];
+                if (!empty($nextArgs)) {
+                    // First arg: "$varName = SomeValue" or just "SomeValue"
+                    $raw = $nextArgs[0];
+                    $val = preg_replace('/^\$\w+\s*=\s*/', '', $raw);
+                    if ($val !== '' && $val !== 'null' && $val !== 'NULL') {
+                        $calls[$i]['return'] = $val;
+                    }
+                }
+            }
+            if (!empty($calls[$i]['children'])) {
+                $this->inferReturnsInAppCalls($calls[$i]['children']);
+            }
+        }
+    }
+
+    private function inferReturnsInToc(array &$toc): void
+    {
+        foreach ($toc as &$entry) {
+            if (!empty($entry['app_calls'])) {
+                $this->inferReturnsInAppCalls($entry['app_calls']);
+            }
+            if (!empty($entry['children'])) {
+                $this->inferReturnsInToc($entry['children']);
+            }
+        }
+        unset($entry);
     }
 
     private function extractFile(string $raw): ?string

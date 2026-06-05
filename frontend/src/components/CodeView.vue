@@ -33,7 +33,13 @@
         </div>
         <div v-if="annotations.has(no)" class="code-line__ann">
           <span class="code-line__ann-no" />
-          <span v-for="(ann, i) in annotations.get(no)" :key="i" class="code-line__ann-item">
+          <span
+            v-for="(ann, i) in annotations.get(no)"
+            :key="i"
+            class="code-line__ann-item"
+            :class="{ 'code-line__ann-item--clickable': ann.objCall || ann.arrCall || ann.inferredClass || ann.call }"
+            @click.stop="(ann.objCall || ann.arrCall || ann.inferredClass) ? openObjPopup($event, ann) : (ann.call && store.setCodeNode(ann.call))"
+          >
             <span class="ann-arrow">⇒</span>
             <span class="ann-val" :class="ann.type">{{ ann.value }}</span>
           </span>
@@ -46,10 +52,46 @@
   <div v-else class="code-view code-view--empty">
     <span>Click any node to view source</span>
   </div>
+
+  <!-- Object/array inspector popup -->
+  <teleport to="body">
+    <div
+      v-if="popup"
+      ref="popupEl"
+      class="obj-popup"
+      :style="{ left: popup.x + 'px', top: popup.y + 'px' }"
+      @click.stop
+    >
+      <div class="obj-popup__header">{{ popup.title }}</div>
+      <div v-if="popup.rows.length === 0" class="obj-popup__empty">empty</div>
+      <div v-else class="obj-popup__fields">
+        <template v-for="(row, ri) in popup.rows" :key="ri">
+          <div
+            class="obj-popup__field"
+            :class="{ 'obj-popup__field--expandable': row.expandable, 'obj-popup__field--open': popupExpanded.has(ri) }"
+            @click="row.expandable && expandPopupRow(ri, row)"
+          >
+            <span class="obj-popup__chevron">{{ row.expandable ? (popupExpanded.has(ri) ? '▾' : '▸') : '' }}</span>
+            <span class="obj-popup__fname">{{ row.label }}</span>
+            <span class="obj-popup__fval">{{ row.value }}</span>
+          </div>
+          <div v-if="popupExpanded.has(ri)" class="obj-popup__nested">
+            <div class="obj-popup__nested-header">{{ popupExpanded.get(ri).title }}</div>
+            <div v-if="popupExpanded.get(ri).rows.length === 0" class="obj-popup__empty obj-popup__empty--nested">empty</div>
+            <div v-for="(nr, nri) in popupExpanded.get(ri).rows" :key="nri" class="obj-popup__field obj-popup__field--nested">
+              <span class="obj-popup__chevron" />
+              <span class="obj-popup__fname">{{ nr.label }}</span>
+              <span class="obj-popup__fval">{{ nr.value }}</span>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+  </teleport>
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { useTraceStore } from '../stores/trace'
 import hljs from 'highlight.js/lib/core'
 import phpLang from 'highlight.js/lib/languages/php'
@@ -65,6 +107,98 @@ const currentFile = ref(null)
 const currentHint = ref(null)
 const scrollEl = ref(null)
 const annotations = ref(new Map())
+
+// Object inspector popup
+// popup: { x, y, title, type: 'object'|'array', rows: [{label, value, expandable, raw}] }
+const popup = ref(null)
+const popupEl = ref(null)
+const popupExpanded = ref(new Map()) // rowIdx → { title, type, rows }
+
+function makeObjRows(fields) {
+  return fields.map(f => ({ label: f.name, value: f.value, expandable: f.expandable, raw: f.raw ?? null }))
+}
+function makeArrRows(items) {
+  return items.map(it => ({ label: it.key, value: it.value, expandable: it.expandable, raw: it.raw ?? null }))
+}
+
+async function openObjPopup(event, ann) {
+  if (!ann.objCall && !ann.arrCall && !ann.inferredClass) return
+  const fileId = store.currentFile?.file_id
+  if (!fileId) return
+  const rect = event.currentTarget.getBoundingClientRect()
+  try {
+    popupExpanded.value = new Map()
+    if (ann.arrCall) {
+      const data = await store.fetchArray(fileId, ann.arrCall.line_no, ann.arrArgIdx ?? 0)
+      if (!data) return
+      popup.value = { x: rect.left, y: rect.bottom + 4, title: `[${data.count}]`, rows: makeArrRows(data.items) }
+    } else if (ann.inferredClass) {
+      const data = await store.fetchFindObject(fileId, ann.call.line_no, ann.inferredClass)
+      if (!data?.fields) return
+      popup.value = { x: rect.left, y: rect.bottom + 4, title: data.class, rows: makeObjRows(data.fields) }
+    } else {
+      const data = await store.fetchObject(fileId, ann.objCall.line_no, ann.objArgIdx ?? 0)
+      if (!data?.fields) return
+      popup.value = { x: rect.left, y: rect.bottom + 4, title: data.class, rows: makeObjRows(data.fields) }
+    }
+    await nextTick()
+    clampPopup(rect)
+  } catch (e) { /* not inspectable */ }
+}
+
+function clampPopup(anchorRect) {
+  const el = popupEl.value
+  if (!el) return
+  const pw = el.offsetWidth || 300
+  const ph = el.offsetHeight || 200
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  const margin = 8
+  let x = anchorRect ? anchorRect.left : popup.value.x
+  let y = anchorRect ? anchorRect.bottom + 4 : popup.value.y
+  // Prefer below anchor; if not enough room flip above
+  if (y + ph + margin > vh) y = (anchorRect ? anchorRect.top - ph - 4 : y - ph - 8)
+  // Clamp horizontal
+  x = Math.max(margin, Math.min(x, vw - pw - margin))
+  // Clamp vertical
+  y = Math.max(margin, Math.min(y, vh - ph - margin))
+  popup.value = { ...popup.value, x, y }
+}
+
+async function expandPopupRow(rowIdx, row) {
+  if (!row.expandable || !row.raw) return
+  if (popupExpanded.value.has(rowIdx)) {
+    const m = new Map(popupExpanded.value)
+    m.delete(rowIdx)
+    popupExpanded.value = m
+    return
+  }
+  const fileId = store.currentFile?.file_id
+  if (!fileId) return
+  try {
+    const data = await store.expandItem(fileId, row.raw)
+    if (!data) return
+    let expanded
+    if (data.type === 'object' && data.data?.fields) {
+      expanded = { title: data.data.class, rows: makeObjRows(data.data.fields) }
+    } else if (data.type === 'array' && data.data) {
+      expanded = { title: `[${data.data.length}]`, rows: makeArrRows(data.data) }
+    }
+    if (expanded) {
+      const m = new Map(popupExpanded.value)
+      m.set(rowIdx, expanded)
+      popupExpanded.value = m
+    }
+  } catch (e) { /* ignore */ }
+}
+
+function closePopup() { popup.value = null }
+
+function onDocClick(e) {
+  if (popupEl.value && !popupEl.value.contains(e.target)) closePopup()
+}
+onMounted(() => document.addEventListener('click', onDocClick, true))
+onUnmounted(() => document.removeEventListener('click', onDocClick, true))
 
 watch(() => store.activeCodeNode, (node) => {
   if (!node?.file_abs) {
@@ -171,6 +305,9 @@ function buildAnnotations(node, shownFile, allCalls, sourceData, varCtx) {
   const map = new Map()
   const lines = sourceData?.lines || {}
 
+  // Sorted siblings for next-sibling lookup (to find obj arg for inferred returns)
+  const sortedCalls = [...(allCalls || [])].sort((a, b) => a.line_no - b.line_no)
+
   // ── varMap: variable name → display string ────────────────────────────────
   // Priority: varCtx.vars (full object fields from raw trace) > node.args (simplified)
   const varMap = new Map()       // $name → display string like "User {…}"
@@ -240,12 +377,22 @@ function buildAnnotations(node, shownFile, allCalls, sourceData, varCtx) {
 
     const callsHere = callsByLine.get(lineNo) || []
 
-    // 1. Calls with explicit return value → show the return
+    // 1. Calls with explicit return value (or inferred via child_types) → show the return
     for (const call of callsHere) {
-      if (call.return != null) {
-        const retStr = String(call.return)
-        entries.push({ type: 'ret', value: retStr.length > 48 ? retStr.slice(0, 48) + '…' : retStr })
-      }
+      const inferredType = childTypes[String(call.line_no)]
+      const isInferred = call.return == null && inferredType != null
+      const retRaw = call.return != null ? String(call.return) : (inferredType ? inferredType + ' {…}' : null)
+      if (retRaw == null) continue
+      const retStr = retRaw.length > 48 ? retRaw.slice(0, 48) + '…' : retRaw
+      const callIdx = sortedCalls.findIndex(c => c.line_no === call.line_no)
+      const nextSibling = callIdx >= 0 ? sortedCalls[callIdx + 1] : null
+      const isObj = retStr.includes('{…}') && !retStr.startsWith('[')
+      const isArr = !isObj && (retStr === '[…]' || retStr.startsWith('['))
+      const objCall = (isObj && !isInferred && nextSibling) ? nextSibling : null
+      const arrCall = (isArr && !isInferred && nextSibling) ? nextSibling : null
+      // For inferred types: store class name so popup can use /api/find-object
+      const inferredClass = isInferred && isObj ? inferredType : null
+      entries.push({ type: 'ret', value: retStr, call, objCall, objArgIdx: 0, arrCall, arrArgIdx: 0, inferredClass })
     }
 
     // 2. Calls without return → try to show field value from varCtx, else method name
@@ -265,7 +412,7 @@ function buildAnnotations(node, shownFile, allCalls, sourceData, varCtx) {
             .replace(/^([A-Z])/, c => c.toLowerCase())
           const val = fields.get(fieldName) ?? fields.get(methodName)
           if (val != null) {
-            entries.push({ type: 'field', value: `$${varName}.${fieldName} = ${val}` })
+            entries.push({ type: 'field', value: `$${varName}.${fieldName} = ${val}`, call })
             break
           }
         }
@@ -274,7 +421,7 @@ function buildAnnotations(node, shownFile, allCalls, sourceData, varCtx) {
         // Fallback: show method name
         const sep = Math.max(sig.lastIndexOf('->'), sig.lastIndexOf('::'))
         const label = sep >= 0 ? sig.slice(sep) : sig.split('\\').pop()
-        entries.push({ type: 'sig', value: label })
+        entries.push({ type: 'sig', value: label, call })
       }
     }
 
@@ -482,6 +629,15 @@ function extractLineNo(fileStr) {
   gap: 4px;
   font-size: 11px;
 }
+.code-line__ann-item--clickable {
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background 0.1s;
+}
+.code-line__ann-item--clickable:hover {
+  background: rgba(80, 130, 200, 0.12);
+}
+.code-line__ann-item--clickable:hover .ann-arrow { color: #6090b8; }
 
 .ann-arrow { color: #3a5060; font-size: 10px; }
 
@@ -542,4 +698,95 @@ function extractLineNo(fileStr) {
   flex-shrink: 0;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+.obj-popup {
+  position: fixed;
+  z-index: 9999;
+  background: #0f1825;
+  border: 1px solid rgba(50, 80, 130, 0.55);
+  border-radius: 7px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.65), 0 2px 8px rgba(0,0,0,0.4);
+  min-width: 260px;
+  max-width: 460px;
+  max-height: 400px;
+  overflow-y: auto;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(50,80,130,0.4) transparent;
+}
+.obj-popup__header {
+  position: sticky;
+  top: 0;
+  padding: 5px 10px 5px 12px;
+  color: #90b8e0;
+  font-weight: 700;
+  font-size: 11.5px;
+  background: #131e30;
+  border-bottom: 1px solid rgba(50, 80, 130, 0.4);
+  border-radius: 7px 7px 0 0;
+  letter-spacing: 0.02em;
+}
+.obj-popup__fields { padding: 3px 0 4px; }
+.obj-popup__field {
+  display: flex;
+  align-items: baseline;
+  gap: 0;
+  padding: 2px 10px 2px 4px;
+  border-radius: 3px;
+  transition: background 0.08s;
+}
+.obj-popup__field:hover { background: rgba(50, 80, 140, 0.1); }
+.obj-popup__field--expandable { cursor: pointer; }
+.obj-popup__field--expandable:hover { background: rgba(60, 100, 180, 0.15); }
+.obj-popup__field--open { background: rgba(40, 70, 130, 0.12); }
+.obj-popup__chevron {
+  width: 14px;
+  flex-shrink: 0;
+  color: #4a6898;
+  font-size: 9px;
+  text-align: center;
+}
+.obj-popup__fname {
+  color: #6888b0;
+  flex-shrink: 0;
+  min-width: 90px;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+}
+.obj-popup__fval {
+  color: #c0d4ec;
+  word-break: break-all;
+  font-size: 11.5px;
+  padding-left: 6px;
+}
+.obj-popup__empty {
+  padding: 5px 14px;
+  color: #3a5070;
+  font-style: italic;
+  font-size: 11px;
+}
+.obj-popup__empty--nested { padding: 2px 8px; }
+.obj-popup__nested {
+  margin: 1px 8px 4px 18px;
+  border-radius: 4px;
+  background: rgba(20, 35, 60, 0.5);
+  border: 1px solid rgba(40, 65, 110, 0.35);
+  padding: 2px 0;
+}
+.obj-popup__nested-header {
+  font-size: 10px;
+  font-weight: 600;
+  color: #4a6888;
+  padding: 2px 8px 2px 10px;
+  border-bottom: 1px solid rgba(40, 65, 110, 0.25);
+  margin-bottom: 1px;
+  letter-spacing: 0.02em;
+}
+.obj-popup__field--nested { padding: 1px 8px 1px 4px; }
+.obj-popup__field--nested .obj-popup__fname { min-width: 70px; color: #5878a0; font-size: 11px; }
+.obj-popup__field--nested .obj-popup__fval { font-size: 11px; }
 </style>
