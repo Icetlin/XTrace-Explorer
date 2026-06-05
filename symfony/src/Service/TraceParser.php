@@ -30,7 +30,10 @@ class TraceParser
             throw new \RuntimeException("Cannot create directory: $dir");
         }
 
-        $totalLines = $this->countLines($xtFilePath);
+        $fileSize = filesize($xtFilePath) ?: 1;
+        $progressFile = sys_get_temp_dir() . '/parse-progress-' . $traceFile->getId() . '.txt';
+        $cancelFile   = sys_get_temp_dir() . '/parse-cancel-'   . $traceFile->getId() . '.txt';
+        @unlink($cancelFile);
         $sparseIndex = [];
         $skeleton = [];
         $seenSigs = [];
@@ -354,9 +357,17 @@ class TraceParser
 
             $offset = ftell($fh);
 
-            if ($lineNo % 50000 === 0 && $totalLines > 0) {
-                $progress = (int)(($lineNo / $totalLines) * 100);
-                $traceFile->setProgress(min($progress, 99));
+            if ($lineNo % 1000 === 0) {
+                if (file_exists($cancelFile)) {
+                    @unlink($cancelFile);
+                    fclose($fh);
+                    return;
+                }
+                $progress = min(99, (int)($offset / $fileSize * 100));
+                file_put_contents($progressFile, $progress);
+            }
+            if ($lineNo % 50000 === 0) {
+                $traceFile->setProgress($progress ?? 0);
                 $this->em->flush();
             }
         }
@@ -399,8 +410,16 @@ class TraceParser
         ));
         $this->inferReturnsInToc($toc);
         $this->cleanupAppCallNodes($toc);
-        file_put_contents($dir . '/toc.json', json_encode($toc, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE));
+        $tocJson = json_encode($toc, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        file_put_contents($dir . '/toc.json', $tocJson);
+
+        // Launch SQL extraction in parallel with extractResponseInfo (both do a full file scan).
+        $sqlOutFile = $dir . '/sql.json.tmp';
+        $sqlProcess = $this->startSqlWorker($xtFilePath, $sqlOutFile, $dir . '/toc.json');
+
         $responseInfo = $this->extractResponseInfo($xtFilePath);
+
+        $this->waitSqlWorker($sqlProcess, $sqlOutFile, $dir);
         file_put_contents($dir . '/meta.json', json_encode(
             ['total_lines' => $lineNo, 'request' => $requestInfo, 'response' => $responseInfo],
             JSON_UNESCAPED_UNICODE
@@ -408,6 +427,182 @@ class TraceParser
 
         $traceFile->setStatus('ready')->setProgress(100);
         $this->em->flush();
+        @unlink($progressFile);
+    }
+
+    private function startSqlWorker(string $xtFilePath, string $outFile, string $tocFile): mixed
+    {
+        $consoleBin = dirname(__DIR__, 2) . '/bin/console';
+        $cmd = sprintf(
+            'php %s trace:parse-sql %s %s %s',
+            escapeshellarg($consoleBin),
+            escapeshellarg($xtFilePath),
+            escapeshellarg($outFile),
+            escapeshellarg($tocFile),
+        );
+        $proc = proc_open($cmd, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        if (!is_resource($proc)) return null;
+        fclose($pipes[0]);
+        // Store pipes so we can close them later
+        return ['proc' => $proc, 'pipes' => $pipes];
+    }
+
+    private function waitSqlWorker(mixed $worker, string $outFile, string $dir): void
+    {
+        if ($worker === null) return;
+        ['proc' => $proc, 'pipes' => $pipes] = $worker;
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        proc_close($proc);
+        if (file_exists($outFile)) {
+            rename($outFile, $dir . '/sql.json');
+        }
+    }
+
+    public function extractSqlQueriesPublic(string $xtFilePath, array $toc): array
+    {
+        return $this->extractSqlQueries($xtFilePath, $toc);
+    }
+
+    private function extractSqlQueries(string $xtFilePath, array $toc): array
+    {
+        // Build a flat sorted list of TOC event line ranges for lookup
+        $tocRanges = [];
+        $this->collectTocRanges($toc, $tocRanges);
+        usort($tocRanges, fn($a, $b) => $a['line_no'] <=> $b['line_no']);
+
+        $queries = [];
+        $fh = fopen($xtFilePath, 'rb');
+        $lineNo = 0;
+
+        // Rolling window — fixed-size ring buffer, O(1) insert, no array_shift
+        $windowSize = 300;
+        $window     = array_fill(0, $windowSize, null);
+        $windowHead = 0; // next write position
+        $windowFull = false;
+
+        while (($line = fgets($fh, 1048576)) !== false) {
+            $lineNo++;
+
+            // Track App\src calls in rolling window (cheap pre-filter first)
+            if (str_contains($line, '/src/') && str_contains($line, 'App\\')
+                && preg_match('#^\s+[\d.]+\s+\d+([ ]*)->\s+(App\\\\[^\(]+)\(.*?(/var/www/[^\s]*src/[^\s]+:\d+)#', $line, $wm)
+            ) {
+                $wDepth = (int)(strlen($wm[1]) / 2);
+                $wSig   = trim($wm[2]);
+                $wFile  = preg_replace('#.*/src/#', 'src/', $wm[3]);
+                $window[$windowHead] = [$lineNo, $wDepth, $wSig, $wFile];
+                $windowHead = ($windowHead + 1) % $windowSize;
+                if ($windowHead === 0) $windowFull = true;
+            }
+
+            // Fast pre-filter for executeQuery lines
+            if (!str_contains($line, 'executeQuery')) continue;
+            if (!preg_match('/^\s+[\d.]+\s+(\d+)([ ]*)->\s+(?:[\w\\\\]+\\\\)*Connection->executeQuery\((.+)/', $line, $m)) continue;
+
+            $depth = (int)(strlen($m[2]) / 2);
+            $args  = $m[3];
+
+            $time = 0.0;
+            if (preg_match('/^\s+([\d.]+)/', $line, $tm)) $time = (float)$tm[1];
+
+            // Extract SQL string (may be xdebug-truncated)
+            $sql = null;
+            if (preg_match("/\\\$sql\s*=\s*'((?:[^'\\\\]|\\\\.)*)('?\.\.\.)?/s", $args, $sm)) {
+                $sql = $sm[1];
+                if (!empty($sm[2])) $sql .= '...';
+            }
+
+            // Extract params
+            $params = [];
+            if (preg_match('/\$params\s*=\s*\[([^\]]*)\]/', $args, $pm)) {
+                preg_match_all("/'([^']*)'/", $pm[1], $strings);
+                preg_match_all('/\b(\d+)\b/', $pm[1], $ints);
+                $params = array_merge($strings[1], $ints[1]);
+            } elseif (preg_match('/\$params\s*=\s*\[…\]/', $args)) {
+                $params = ['…'];
+            }
+
+            // TOC label
+            $tocLabel = null;
+            foreach ($tocRanges as $range) {
+                if ($lineNo >= $range['line_no'] && $lineNo <= $range['end_line']) {
+                    $tocLabel = $range['label'];
+                    break;
+                }
+            }
+
+            $caller = $this->findQueryCaller($window, $windowHead, $windowFull, $windowSize, $depth);
+
+            $queries[] = [
+                'n'      => count($queries) + 1,
+                'line_no' => $lineNo,
+                'time'   => $time,
+                'depth'  => $depth,
+                'sql'    => $sql,
+                'params' => $params,
+                'toc'    => $tocLabel,
+                'caller' => $caller,
+            ];
+        }
+
+        fclose($fh);
+        return $queries;
+    }
+
+    private function collectTocRanges(array $toc, array &$ranges, int $parentEnd = PHP_INT_MAX): void
+    {
+        $count = count($toc);
+        foreach ($toc as $i => $entry) {
+            $start = $entry['line_no'];
+            // End = start of next sibling, or parent's end
+            $end = ($i + 1 < $count) ? ($toc[$i + 1]['line_no'] - 1) : $parentEnd;
+
+            $label = $entry['event'] ?? $entry['sig'] ?? '?';
+            $ranges[] = ['line_no' => $start, 'end_line' => $end, 'label' => $label];
+
+            if (!empty($entry['children'])) {
+                $this->collectTocRanges($entry['children'], $ranges, $end);
+            }
+        }
+    }
+
+    private function findQueryCaller(array $window, int $head, bool $full, int $size, int $executeDepth): ?array
+    {
+        $best = null;
+        $bestScore = -1;
+
+        // Iterate ring buffer from newest to oldest
+        $count = $full ? $size : $head;
+        for ($j = 0; $j < $count; $j++) {
+            $i = ($head - 1 - $j + $size) % $size;
+            $slot = $window[$i];
+            if ($slot === null) continue;
+            [$wLine, $wDepth, $wSig, $wFile] = $slot;
+
+            // Stop when we've gone past reasonable caller depth
+            if ($wDepth < $executeDepth - 10) break;
+
+            // Score: Repository > Service > Controller, prefer shallower depth (closer to App code)
+            $score = 0;
+            if (str_contains($wSig, 'Repository')) $score = 30;
+            elseif (str_contains($wSig, 'Service'))  $score = 20;
+            elseif (str_contains($wSig, 'Controller')) $score = 10;
+            else $score = 5;
+
+            // Prefer methods that clearly initiate a query
+            $method = substr($wSig, strrpos($wSig, '->') + 2);
+            if (preg_match('/^(find|get|fetch|load|create|build|select|count|paginate)/i', $method)) {
+                $score += 5;
+            }
+
+            if ($score > $bestScore) {
+                $bestScore = $score;
+                $best = ['sig' => $wSig, 'file' => $wFile, 'line_no' => $wLine];
+            }
+        }
+
+        return $best;
     }
 
     private function cleanupAppCallNodes(array &$toc): void
@@ -699,15 +894,4 @@ class TraceParser
         return $info;
     }
 
-    private function countLines(string $path): int
-    {
-        $count = 0;
-        $fh = fopen($path, 'rb');
-        while (!feof($fh)) {
-            $chunk = fread($fh, 65536);
-            $count += substr_count($chunk, "\n");
-        }
-        fclose($fh);
-        return $count;
-    }
 }

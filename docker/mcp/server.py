@@ -109,7 +109,7 @@ async def reparse(file_id: int, wait: bool = True, timeout_sec: int = 120) -> st
 async def get_files() -> str:
     """List all trace files in the database (id, name, status)."""
     files = await _api("GET", "/api/files")
-    rows = [f"{f['id']:>4}  {f['status']:<10}  {f['name']}" for f in files]
+    rows = [f"{f['file_id']:>4}  {f['status']:<10}  {f['name']}" for f in files]
     return "\n".join(rows) if rows else "No files."
 
 
@@ -138,7 +138,8 @@ async def get_children(file_id: int, line_no: int, depth: int, raw: bool = False
     max_items caps output to avoid flooding context (default 50).
     """
     params = {"line_no": line_no, "depth": depth, "raw": 1 if raw else 0}
-    children = await _api("GET", f"/api/children/{file_id}", params=params)
+    resp = await _api("GET", f"/api/children/{file_id}", params=params)
+    children = resp["children"] if isinstance(resp, dict) else resp
     if not children:
         return "No children."
     out = []
@@ -167,6 +168,51 @@ async def search_trace(file_id: int, query: str) -> str:
     out = []
     for r in results:
         out.append(f"[line {r.get('line_no')}] depth={r.get('depth')}  {r.get('sig')}")
+    return "\n".join(out)
+
+
+@mcp.tool()
+async def get_sql(file_id: int) -> str:
+    """
+    Return all SQL queries executed in a trace file.
+    Shows query number, line_no, SQL, params, and which TOC event triggered it.
+    Groups duplicate queries and flags N+1 patterns.
+    """
+    queries = await _api("GET", f"/api/sql/{file_id}")
+    if not queries:
+        return "No SQL queries found (reparse if file was parsed before this feature was added)."
+
+    # Count duplicates by normalized SQL (strip aliases like u0_, p1_ for grouping)
+    import re as _re
+    def normalize(sql):
+        if not sql: return ""
+        s = _re.sub(r'\b[a-z]\d+_', '', sql)
+        s = _re.sub(r'\s+', ' ', s).strip()
+        return s[:120]
+
+    counts: dict[str, int] = {}
+    for q in queries:
+        k = normalize(q.get("sql"))
+        counts[k] = counts.get(k, 0) + 1
+
+    out = [f"Total queries: {len(queries)}", ""]
+    dupes = {k: v for k, v in counts.items() if v > 1}
+    if dupes:
+        out.append(f"⚠ N+1 candidates ({len(dupes)} distinct SQLs executed multiple times):")
+        for sql_norm, cnt in sorted(dupes.items(), key=lambda x: -x[1])[:10]:
+            out.append(f"  ×{cnt}  {sql_norm[:100]}")
+        out.append("")
+
+    out.append("— All queries —")
+    for q in queries:
+        sql = (q.get("sql") or "?")[:200]
+        params = q.get("params") or []
+        params_str = f"  params={params}" if params and params != ["…"] else ""
+        toc = q.get("toc") or ""
+        dupe_mark = f" ×{counts[normalize(q.get('sql'))]}" if counts.get(normalize(q.get("sql")), 1) > 1 else ""
+        out.append(f"[{q['n']:>3}] line={q['line_no']} depth={q['depth']}{dupe_mark}  {sql}{params_str}")
+        if toc:
+            out.append(f"       ↳ {toc}")
     return "\n".join(out)
 
 

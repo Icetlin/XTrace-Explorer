@@ -146,11 +146,22 @@ class TraceController extends AbstractController
         $traceFile = $this->traceRepo->find($id);
         if (!$traceFile) return $this->json(['error' => 'Not found'], 404);
 
+        $progress = $traceFile->getProgress();
+        $status = $traceFile->getStatus();
+        if ($status === 'parsing' || $status === 'pending') {
+            $progressFile = sys_get_temp_dir() . '/parse-progress-' . $traceFile->getId() . '.txt';
+            $raw = @file_get_contents($progressFile);
+            if ($raw !== false && is_numeric(trim($raw))) {
+                $progress = (int)trim($raw);
+                $status = 'parsing';
+            }
+        }
+
         return $this->json([
             'file_id'  => $traceFile->getId(),
             'name'     => $traceFile->getOriginalName(),
-            'status'   => $traceFile->getStatus(),
-            'progress' => $traceFile->getProgress(),
+            'status'   => $status,
+            'progress' => $progress,
             'error'    => $traceFile->getErrorMessage(),
         ]);
     }
@@ -186,8 +197,15 @@ class TraceController extends AbstractController
         $traceFile = $this->traceRepo->find($id);
         if (!$traceFile) return $this->json(['error' => 'Not found'], 404);
 
+        // Signal any running parser for this file to stop
+        touch(sys_get_temp_dir() . '/parse-cancel-' . $id . '.txt');
         $traceFile->setStatus('pending')->setProgress(0);
         $this->em->flush();
+        // Remove any queued duplicates for this file before dispatching
+        $this->em->getConnection()->executeStatement(
+            "DELETE FROM messenger_messages WHERE body LIKE :pattern",
+            ['pattern' => '%traceFileId%i:' . $id . '%']
+        );
         $this->bus->dispatch(new ParseTraceMessage($traceFile->getId()));
 
         return $this->json(['ok' => true, 'file_id' => $id]);
@@ -284,6 +302,22 @@ class TraceController extends AbstractController
         $index = json_decode(file_get_contents($indexPath), true);
         $lastIndexedLine = (int)array_key_last($index);
         return $this->json(['total_lines' => $lastIndexedLine]);
+    }
+
+    #[Route('/sql/{id}', methods: ['GET'])]
+    public function sql(int $id): JsonResponse
+    {
+        $traceFile = $this->traceRepo->find($id);
+        if (!$traceFile || $traceFile->getStatus() !== 'ready') {
+            return $this->json(['error' => 'Not ready'], 404);
+        }
+
+        $path = $this->tracesDir . '/' . $id . '/sql.json';
+        if (!file_exists($path)) {
+            return $this->json(['error' => 'sql.json not found — reparse the file'], 404);
+        }
+
+        return new JsonResponse(file_get_contents($path), 200, [], true);
     }
 
     #[Route('/lines/{id}', methods: ['GET'])]

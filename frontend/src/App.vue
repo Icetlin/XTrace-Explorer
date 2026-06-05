@@ -350,20 +350,13 @@ async function openFile(relPath) {
   const displayName = relPath.includes('/') ? relPath.split('/').pop() : relPath
   await store.selectFile(data.file_id, displayName)
   await store.loadFiles()
-  if (store.currentFile?.status !== 'ready') startPolling(data.file_id)
+  if (store.currentFile?.status !== 'ready') store.startPolling(data.file_id)
 }
 
 function switchToTrace(fileId) {
   store.switchToTab(fileId)
   showBrowser.value = false
   nextTick(() => { activeTocRef.value = tocTreeRefs[fileId] ?? null })
-}
-
-function startPolling(fileId) {
-  const interval = setInterval(async () => {
-    const done = await store.pollStatus(fileId)
-    if (done) clearInterval(interval)
-  }, 2000)
 }
 
 function onJump(lineNo) {

@@ -103,6 +103,22 @@
         <span class="xd-dot" />
       </button>
 
+      <!-- SQL queries -->
+      <button
+        v-if="hasTrace"
+        class="float-ctrl__item"
+        :class="{ 'float-ctrl__item--active': activeModal === 'sql' }"
+        title="SQL Queries"
+        @click="openModal('sql')"
+      >
+        <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+          <rect x="1.5" y="2" width="12" height="3" rx="1" stroke="currentColor" stroke-width="1.2"/>
+          <rect x="1.5" y="6.5" width="12" height="3" rx="1" stroke="currentColor" stroke-width="1.2"/>
+          <rect x="1.5" y="11" width="7" height="2.5" rx="1" stroke="currentColor" stroke-width="1.2"/>
+          <circle cx="12.5" cy="12.2" r="1.8" fill="currentColor" opacity="0.7"/>
+        </svg>
+      </button>
+
       <!-- Settings gear -->
       <button
         class="float-ctrl__item"
@@ -126,6 +142,21 @@
           <rect x="1.5" y="3" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/>
           <path d="M4 6.5h7M4 9h4.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
           <circle v-if="clickLogEnabled" cx="12" cy="3" r="2.5" fill="#e05050"/>
+        </svg>
+      </button>
+
+      <!-- Reparse -->
+      <button
+        v-if="store.currentFile"
+        class="float-ctrl__item float-ctrl__item--reparse"
+        :class="{ 'float-ctrl__item--loading': reparsing }"
+        :disabled="reparsing"
+        title="Reparse (drops parsed data)"
+        @click="doReparse"
+      >
+        <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+          <path d="M2 7.5a5.5 5.5 0 1 0 1.1-3.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+          <path d="M2 3v4.5h4.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
       </button>
 
@@ -158,6 +189,7 @@
         </div>
         <div class="float-modal__body">
           <SettingsPage v-if="activeModal === 'settings'" />
+          <SqlPage v-else-if="activeModal === 'sql'" />
         </div>
       </div>
     </div>
@@ -168,6 +200,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
 import SettingsPage from './SettingsPage.vue'
+import SqlPage from './SqlPage.vue'
 import { useTraceStore } from '../stores/trace'
 import { favColor } from '../favColor.js'
 
@@ -217,6 +250,19 @@ onUnmounted(() => document.removeEventListener('click', clickLogHandler, true))
 
 const hasTrace = computed(() => store.openTabs.some(t => t.status === 'ready'))
 
+const reparsing = ref(false)
+async function doReparse() {
+  const f = store.currentFile
+  if (!f) return
+  if (!confirm(`Reparse "${f.name}"?\nAll parsed data will be dropped and re-built from scratch.`)) return
+  reparsing.value = true
+  try {
+    await store.reparse(f.file_id)
+  } finally {
+    reparsing.value = false
+  }
+}
+
 function openModal(id) {
   activeModal.value = activeModal.value === id ? null : id
 }
@@ -238,6 +284,7 @@ function toggleCollapse() {
 
 const modalTitle = computed(() => {
   if (activeModal.value === 'settings') return 'Settings'
+  if (activeModal.value === 'sql') return 'SQL Queries'
   return ''
 })
 
@@ -412,6 +459,19 @@ html[data-theme="light"] .float-ctrl__item--active {
 .float-ctrl__item--loading {
   opacity: 0.5;
   cursor: wait;
+}
+.float-ctrl__item--reparse {
+  color: rgba(180, 120, 80, 0.65);
+}
+.float-ctrl__item--reparse:hover {
+  color: rgba(240, 160, 80, 0.95);
+  background: rgba(120, 60, 20, 0.18);
+}
+html[data-theme="light"] .float-ctrl__item--reparse {
+  color: rgba(160, 90, 30, 0.65);
+}
+html[data-theme="light"] .float-ctrl__item--reparse:hover {
+  color: rgba(180, 80, 10, 0.95);
 }
 .float-ctrl__item--theme {
   color: rgba(100, 140, 200, 0.6);
