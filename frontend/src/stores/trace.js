@@ -11,6 +11,7 @@ export const useTraceStore = defineStore('trace', () => {
   const activeTabFileId = ref(null)
 
   const favourites = ref([])
+  const pollingIds = new Set() // fileIds currently being polled
   const listenerFilters = ref([])
   const eventFilters = ref([])
   const appNamespaces = ref([]) // [{namespace, label}]
@@ -54,6 +55,8 @@ export const useTraceStore = defineStore('trace', () => {
         loadAnnotations(fileId),
         scanFavourites(fileId),
       ])
+    } else if (data.status === 'parsing' || data.status === 'pending') {
+      startPolling(fileId)
     }
   }
 
@@ -83,10 +86,31 @@ export const useTraceStore = defineStore('trace', () => {
       tab.progress = data.progress || 0
     }
     if (data.status === 'ready') {
+      pollingIds.delete(fileId)
       await Promise.all([loadToc(fileId), loadMeta(fileId), loadAnnotations(fileId), scanFavourites(fileId)])
       return true
     }
+    if (data.status === 'error') {
+      pollingIds.delete(fileId)
+      return true
+    }
     return false
+  }
+
+  async function reparse(fileId) {
+    const tab = openTabs.value.find(t => t.fileId === fileId)
+    if (tab) { tab.status = 'pending'; tab.progress = 0; tab.toc = []; tab.totalLines = 0 }
+    await axios.post(`/api/reparse/${fileId}`)
+    startPolling(fileId)
+  }
+
+  function startPolling(fileId) {
+    if (pollingIds.has(fileId)) return
+    pollingIds.add(fileId)
+    const interval = setInterval(async () => {
+      const done = await pollStatus(fileId)
+      if (done) clearInterval(interval)
+    }, 2000)
   }
 
   async function loadToc(fileId) {
@@ -409,7 +433,7 @@ export const useTraceStore = defineStore('trace', () => {
   return {
     files, openTabs, activeTabFileId, currentTab, currentFile, toc, totalLines, annotations, favourites,
     listenerFilters, eventFilters, appNamespaces, pathMapping,
-    loadFiles, selectFile, switchToTab, closeTab, pollStatus,
+    loadFiles, selectFile, switchToTab, closeTab, pollStatus, startPolling, reparse,
     fetchChildren, fetchPath, fetchObject, fetchFindObject, fetchArray, expandItem, fetchSource, fetchVarContext, fetchAppCalls, getListenerFileAbs, search,
     addAnnotation, deleteAnnotation,
     loadFavourites, addFavourite, deleteFavourite, matchFavourites, favMatchesInRange, scanFavourites,
