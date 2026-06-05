@@ -12,7 +12,9 @@ export const useTraceStore = defineStore('trace', () => {
 
   const favourites = ref([])
   const listenerFilters = ref([])
+  const eventFilters = ref([])
   const appNamespaces = ref([]) // [{namespace, label}]
+  const pathMapping = ref({ local: '', docker: '', project: '' }) // local↔docker path mapping for IDE integration
 
   const currentTab = computed(() =>
     openTabs.value.find(t => t.fileId === activeTabFileId.value) ?? null
@@ -230,7 +232,9 @@ export const useTraceStore = defineStore('trace', () => {
     try {
       const { data } = await axios.get('/api/settings')
       listenerFilters.value = data.listener_filters || []
+      eventFilters.value = data.event_filters || []
       appNamespaces.value = data.app_namespaces || []
+      pathMapping.value = { local: data.project_path || '', docker: data.docker_project_path || '', project: data.ide_project_name || '' }
       _settingsCache.value = data
       return data
     } catch { return {} }
@@ -239,7 +243,9 @@ export const useTraceStore = defineStore('trace', () => {
   async function saveSettings(payload) {
     const { data } = await axios.post('/api/settings', payload)
     listenerFilters.value = payload.listener_filters || []
+    eventFilters.value = payload.event_filters || []
     appNamespaces.value = payload.app_namespaces || []
+    pathMapping.value = { local: payload.project_path || '', docker: payload.docker_project_path || '', project: payload.ide_project_name || '' }
     _settingsCache.value = { ..._settingsCache.value, ...payload }
     return data
   }
@@ -252,12 +258,30 @@ export const useTraceStore = defineStore('trace', () => {
       project_path: current.project_path || '',
       project_name: current.project_name || '',
       listener_filters: [...listenerFilters.value, pattern],
+      event_filters: eventFilters.value,
     })
   }
 
   function isListenerFiltered(sig) {
     if (!listenerFilters.value.length || !sig) return false
     return listenerFilters.value.some(f => sig.includes(f))
+  }
+
+  async function addEventFilter(pattern) {
+    if (eventFilters.value.includes(pattern)) return
+    const current = _settingsCache.value
+    await saveSettings({
+      traces_host_path: current.traces_host_path || '',
+      project_path: current.project_path || '',
+      project_name: current.project_name || '',
+      listener_filters: listenerFilters.value,
+      event_filters: [...eventFilters.value, pattern],
+    })
+  }
+
+  function isEventFiltered(name) {
+    if (!eventFilters.value.length || !name) return false
+    return eventFilters.value.some(f => name.includes(f))
   }
 
   async function addAnnotation(fileId, lineNo, text) {
@@ -323,7 +347,16 @@ export const useTraceStore = defineStore('trace', () => {
 
   // Active code node for split view — set when user clicks any node with file_abs
   const activeCodeNode = ref(null)
-  function setCodeNode(node) { activeCodeNode.value = node }
+  const activeCodeAncestorLineNos = ref(new Set())
+  function setCodeNode(node, ancestorCrumbs = []) {
+    activeCodeNode.value = node
+    const nos = new Set(ancestorCrumbs.map(c => c.line_no))
+    if (node?.line_no != null) nos.add(node.line_no)
+    activeCodeAncestorLineNos.value = nos
+  }
+  function isCodeActive(lineNo) {
+    return activeCodeAncestorLineNos.value.has(lineNo)
+  }
 
   // The actual file path shown in CodeView (may differ from activeCodeNode.file_abs)
   const activeCodeFile = ref(null)
@@ -342,15 +375,15 @@ export const useTraceStore = defineStore('trace', () => {
 
   return {
     files, openTabs, activeTabFileId, currentTab, currentFile, toc, totalLines, annotations, favourites,
-    listenerFilters, appNamespaces,
+    listenerFilters, eventFilters, appNamespaces, pathMapping,
     loadFiles, selectFile, switchToTab, closeTab, pollStatus,
     fetchChildren, fetchPath, fetchObject, fetchFindObject, fetchArray, expandItem, fetchSource, fetchVarContext, search,
     addAnnotation, deleteAnnotation,
     loadFavourites, addFavourite, deleteFavourite, matchFavourites, favMatchesInRange, scanFavourites,
-    loadSettings, saveSettings, addListenerFilter, isListenerFiltered,
+    loadSettings, saveSettings, addListenerFilter, isListenerFiltered, addEventFilter, isEventFiltered,
     selection, toggleSelection, clearSelection, isSelected,
     persistSession, restoreSession,
-    activeCodeNode, setCodeNode,
+    activeCodeNode, activeCodeAncestorLineNos, setCodeNode, isCodeActive,
     activeCodeFile, setActiveCodeFile,
     hoveredCodeLine, setHoveredCodeLine,
     theme, toggleTheme,

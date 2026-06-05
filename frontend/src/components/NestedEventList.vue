@@ -101,6 +101,8 @@ const groups = computed(() => {
   let i = 0
   while (i < props.events.length) {
     const key = groupKey(props.events[i])
+    const name = props.events[i].event
+    if (store.isEventFiltered(name)) { i++; while (i < props.events.length && groupKey(props.events[i]) === key) i++; continue }
     let j = i + 1
     while (j < props.events.length && groupKey(props.events[j]) === key) j++
     const indices = []

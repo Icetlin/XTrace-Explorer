@@ -24,7 +24,7 @@
       </div>
       <div v-if="!favItems.length" class="ctx-empty">nothing to track here</div>
 
-      <!-- Filter section (only shown when there are filter items) -->
+      <!-- Filter listener section -->
       <template v-if="filterItems.length">
         <div class="ctx-title ctx-title--filter">Hide listener (add to filters)</div>
         <div
@@ -34,6 +34,20 @@
           @click="pickFilter(item)"
         >
           <span class="ctx-kind ctx-kind--filter">⊘ filter</span>
+          <span class="ctx-val">{{ item.value }}</span>
+        </div>
+      </template>
+
+      <!-- Filter event section -->
+      <template v-if="filterEventItems.length">
+        <div class="ctx-title ctx-title--filter">Hide event (add to filters)</div>
+        <div
+          v-for="(item, i) in filterEventItems"
+          :key="'e' + i"
+          class="ctx-item ctx-item--filter"
+          @click="pickFilterEvent(item)"
+        >
+          <span class="ctx-kind ctx-kind--filter">⊘ hide</span>
           <span class="ctx-val">{{ item.value }}</span>
         </div>
       </template>
@@ -52,8 +66,9 @@ const x = ref(0)
 const y = ref(0)
 const items = ref([])
 
-const favItems = computed(() => items.value.filter(i => i.action !== 'filter'))
+const favItems = computed(() => items.value.filter(i => i.action !== 'filter' && i.action !== 'filter-event'))
 const filterItems = computed(() => items.value.filter(i => i.action === 'filter'))
+const filterEventItems = computed(() => items.value.filter(i => i.action === 'filter-event'))
 
 function open(event, nodeItems) {
   event.preventDefault()
@@ -62,7 +77,7 @@ function open(event, nodeItems) {
   const vh = window.innerHeight
   let nx = event.clientX + 4
   let ny = event.clientY + 4
-  const estimatedH = 32 + nodeItems.length * 32 + (filterItems.value.length ? 28 : 0)
+  const estimatedH = 32 + nodeItems.length * 32 + (filterItems.value.length ? 28 : 0) + (filterEventItems.value.length ? 28 : 0)
   if (nx + 260 > vw) nx = vw - 264
   if (ny + estimatedH > vh) ny = vh - estimatedH - 8
   x.value = nx
@@ -83,6 +98,11 @@ async function pickFilter(item) {
   close()
   if (store.listenerFilters.includes(item.value)) return
   await store.addListenerFilter(item.value)
+}
+
+async function pickFilterEvent(item) {
+  close()
+  await store.addEventFilter(item.value)
 }
 
 defineExpose({ open, close })

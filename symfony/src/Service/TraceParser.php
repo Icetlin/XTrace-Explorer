@@ -98,6 +98,9 @@ class TraceParser
             }
 
             if (preg_match(TraceRegex::CallLine->value, $line, $m)) {
+                preg_match(TraceRegex::CallLineTimeMem->value, $line, $tm);
+                $lineTime = isset($tm[1]) ? (float)$tm[1] : 0.0;
+                $lineMem  = isset($tm[2]) ? (int)$tm[2] : 0;
                 $depth = (int)(strlen($m[1]) / 2);
                 $sig = $this->extractSignature($m[2]);
 
@@ -284,19 +287,29 @@ class TraceParser
 
                     // Pop depth-stack entries that are at same or deeper depth
                     while (!empty($acStack) && $acStack[count($acStack)-1]['depth'] >= $depth) {
+                        $closing = &$acStack[count($acStack)-1];
+                        if (isset($closing['time_start'])) {
+                            $closing['duration_ms'] = (int)(($lineTime - $closing['time_start']) * 1000);
+                            $closing['mem_delta_kb'] = (int)(($lineMem - $closing['mem_start']) / 1024);
+                        }
+                        unset($closing);
                         array_pop($acStack);
                     }
 
                     $rawFile = $this->extractFile($m[2]);
                     $node = [
-                        'sig'      => $sig,
-                        'depth'    => $depth,
-                        'line_no'  => $lineNo,
-                        'file'     => $rawFile ? $this->shortFile($rawFile) : null,
-                        'file_abs' => $rawFile,
-                        'args'     => $this->extractArgs($m[2]),
-                        'return'   => null,
-                        'children' => [],
+                        'sig'        => $sig,
+                        'depth'      => $depth,
+                        'line_no'    => $lineNo,
+                        'file'       => $rawFile ? $this->shortFile($rawFile) : null,
+                        'file_abs'   => $rawFile,
+                        'args'       => $this->extractArgs($m[2]),
+                        'return'     => null,
+                        'children'   => [],
+                        'time_start' => $lineTime,
+                        'mem_start'  => $lineMem,
+                        'duration_ms'  => null,
+                        'mem_delta_kb' => null,
                     ];
 
                     if (!empty($acStack)) {
@@ -383,6 +396,7 @@ class TraceParser
             JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE
         ));
         $this->inferReturnsInToc($toc);
+        $this->cleanupAppCallNodes($toc);
         file_put_contents($dir . '/toc.json', json_encode($toc, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE));
         $responseInfo = $this->extractResponseInfo($xtFilePath);
         file_put_contents($dir . '/meta.json', json_encode(
@@ -392,6 +406,30 @@ class TraceParser
 
         $traceFile->setStatus('ready')->setProgress(100);
         $this->em->flush();
+    }
+
+    private function cleanupAppCallNodes(array &$toc): void
+    {
+        foreach ($toc as &$entry) {
+            if (isset($entry['app_calls'])) {
+                $this->cleanupAppCallsTree($entry['app_calls']);
+            }
+            if (!empty($entry['children'])) {
+                $this->cleanupAppCallNodes($entry['children']);
+            }
+        }
+        unset($entry);
+    }
+
+    private function cleanupAppCallsTree(array &$calls): void
+    {
+        foreach ($calls as &$node) {
+            unset($node['time_start'], $node['mem_start'], $node['depth']);
+            if (!empty($node['children'])) {
+                $this->cleanupAppCallsTree($node['children']);
+            }
+        }
+        unset($node);
     }
 
     private function extractResponseInfo(string $xtFilePath): array
@@ -484,7 +522,11 @@ class TraceParser
                     // First arg: "$varName = SomeValue" or just "SomeValue"
                     $raw = $nextArgs[0];
                     $val = preg_replace('/^\$\w+\s*=\s*/', '', $raw);
-                    if ($val !== '' && $val !== 'null' && $val !== 'NULL') {
+                    // Only use scalar values — objects ({…}) and arrays ([…]) are almost always
+                    // just the same input parameter passed along, not the actual return value.
+                    if ($val !== '' && $val !== 'null' && $val !== 'NULL'
+                        && !str_contains($val, '{…}') && !str_contains($val, '[…]')
+                    ) {
                         $calls[$i]['return'] = $val;
                     }
                 }
