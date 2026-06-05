@@ -205,7 +205,65 @@ class TraceController extends AbstractController
         if (!file_exists($path)) {
             return $this->json([]);
         }
-        return new JsonResponse(file_get_contents($path), 200, [], true);
+
+        // Strip app_calls trees from the TOC response — they can be 100k+ nodes (38MB+).
+        // Frontend loads them lazily via /api/app-calls/{id}/{event_idx}.
+        $toc = json_decode(file_get_contents($path), true);
+        foreach ($toc as &$entry) {
+            if (isset($entry['app_calls'])) {
+                $entry['app_calls_count'] = $this->countAppCallNodes($entry['app_calls']);
+                $entry['app_calls'] = null; // signal to frontend: use lazy load
+            }
+            // Also strip app_calls from nested controller children
+            if (!empty($entry['children'])) {
+                foreach ($entry['children'] as &$child) {
+                    if (isset($child['app_calls'])) {
+                        $child['app_calls_count'] = $this->countAppCallNodes($child['app_calls']);
+                        $child['app_calls'] = null;
+                    }
+                }
+                unset($child);
+            }
+        }
+        unset($entry);
+
+        return $this->json($toc);
+    }
+
+    private function countAppCallNodes(array $nodes): int
+    {
+        $total = 0;
+        foreach ($nodes as $node) {
+            $total++;
+            if (!empty($node['children'])) {
+                $total += $this->countAppCallNodes($node['children']);
+            }
+        }
+        return $total;
+    }
+
+    #[Route('/app-calls/{id}/{eventIdx}', methods: ['GET'])]
+    public function appCalls(int $id, int $eventIdx): JsonResponse
+    {
+        $traceFile = $this->traceRepo->find($id);
+        if (!$traceFile || $traceFile->getStatus() !== 'ready') {
+            return $this->json(['error' => 'Not ready'], 404);
+        }
+
+        $path = $this->tracesDir . '/' . $id . '/toc.json';
+        if (!file_exists($path)) {
+            return $this->json([]);
+        }
+
+        $toc = json_decode(file_get_contents($path), true);
+
+        // Support nested event idx like "3.2" for children
+        $entry = $toc[$eventIdx] ?? null;
+        if (!$entry) {
+            return $this->json(['error' => 'Event not found'], 404);
+        }
+
+        return $this->json($entry['app_calls'] ?? []);
     }
 
     #[Route('/meta/{id}', methods: ['GET'])]
