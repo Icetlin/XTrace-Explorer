@@ -375,6 +375,54 @@ class TraceController extends AbstractController
         return $this->json($result);
     }
 
+    #[Route('/find-object/{id}', methods: ['GET'])]
+    public function findObject(int $id, Request $request): JsonResponse
+    {
+        $traceFile = $this->traceRepo->find($id);
+        if (!$traceFile || $traceFile->getStatus() !== 'ready') {
+            return $this->json(['error' => 'Not ready'], 404);
+        }
+        $lineNo    = (int)$request->query->get('line_no', 0);
+        $className = trim($request->query->get('class', ''));
+        if ($lineNo <= 0 || $className === '') return $this->json(['error' => 'line_no and class required'], 400);
+
+        $xtPath = $this->tracesDir . '/' . $id . '/trace.xt';
+        $result = $this->traceIndex->findObjectByClass($id, $xtPath, $lineNo, $className);
+        if ($result === null) return $this->json(['error' => 'Not found'], 404);
+        return $this->json($result);
+    }
+
+    #[Route('/array/{id}', methods: ['GET'])]
+    public function array(int $id, Request $request): JsonResponse
+    {
+        $traceFile = $this->traceRepo->find($id);
+        if (!$traceFile || $traceFile->getStatus() !== 'ready') {
+            return $this->json(['error' => 'Not ready'], 404);
+        }
+        $lineNo = (int)$request->query->get('line_no', 0);
+        $argIdx = (int)$request->query->get('arg_idx', 0);
+        if ($lineNo <= 0) return $this->json(['error' => 'line_no required'], 400);
+
+        $xtPath = $this->tracesDir . '/' . $id . '/trace.xt';
+        $result = $this->traceIndex->getArrayArg($id, $xtPath, $lineNo, $argIdx);
+        if ($result === null) return $this->json(['error' => 'Not an array or not found'], 404);
+        return $this->json($result);
+    }
+
+    #[Route('/expand-item/{id}', methods: ['POST'])]
+    public function expandItem(int $id, Request $request): JsonResponse
+    {
+        $traceFile = $this->traceRepo->find($id);
+        if (!$traceFile || $traceFile->getStatus() !== 'ready') {
+            return $this->json(['error' => 'Not ready'], 404);
+        }
+        $raw = $request->toArray()['raw'] ?? null;
+        if (!$raw) return $this->json(['error' => 'raw required'], 400);
+        $result = $this->traceIndex->expandItem($raw);
+        if ($result === null) return $this->json(['error' => 'Not expandable'], 404);
+        return $this->json($result);
+    }
+
     #[Route('/var-context/{id}', methods: ['GET'])]
     public function varContext(int $id, Request $request): JsonResponse
     {

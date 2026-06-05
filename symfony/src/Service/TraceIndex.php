@@ -652,6 +652,19 @@ class TraceIndex
         unset($child);
 
         fclose($fh);
+
+        // Infer return values from next sibling's first arg when >=> lines are absent.
+        for ($i = 0; $i < count($children) - 1; $i++) {
+            if ($children[$i]['return'] !== null) continue;
+            $nextArgs = $children[$i + 1]['args'] ?? [];
+            if (!$nextArgs) continue;
+            $raw = $nextArgs[0];
+            $val = preg_replace('/^\$\w+\s*=\s*/', '', $raw);
+            if ($val !== '' && $val !== 'null' && $val !== 'NULL') {
+                $children[$i]['return'] = $val;
+            }
+        }
+
         return ['children' => $children, 'parent_return' => $parentReturn, 'raw_count' => $rawChildCount];
     }
 
@@ -793,6 +806,50 @@ class TraceIndex
     }
 
     /**
+     * Scan the trace starting from lineNo and find the first argument dump of the given class name.
+     * Searches within a window of maxLines lines to avoid full-file scans.
+     */
+    public function findObjectByClass(int $fileId, string $xtPath, int $fromLineNo, string $className, int $maxLines = 500): ?array
+    {
+        $indexPath = $this->tracesDir . '/' . $fileId . '/line_index.json';
+        $index = json_decode(file_get_contents($indexPath), true);
+
+        $startOffset = 0;
+        $startLine = 0;
+        foreach ($index as $indexedLine => $offset) {
+            $il = (int)$indexedLine;
+            if ($il <= $fromLineNo) { $startOffset = $offset; $startLine = $il; }
+        }
+
+        $fh = fopen($xtPath, 'rb');
+        fseek($fh, $startOffset);
+        $currentLine = $startLine - 1;
+        $scanned = 0;
+
+        while (($line = fgets($fh, 1048576)) !== false) {
+            $currentLine++;
+            if ($currentLine < $fromLineNo) continue;
+            if ($scanned++ > $maxLines) break;
+
+            if (!preg_match(TraceRegex::CallLineStrict->value, $line, $m)) continue;
+
+            $rawArgs = $this->splitRawArgs($m[2]);
+            foreach ($rawArgs as $arg) {
+                if (!preg_match(TraceRegex::ArgRawValue->value, $arg, $am)) continue;
+                $val = trim($am[1]);
+                if (!str_contains($val, 'class ')) continue;
+                // Match "class Some\Ns\ClassName {" or short class name
+                if (preg_match('/class\s+(?:\S+\\\\)?(' . preg_quote($className, '/') . ')\s*\{/i', $val)) {
+                    $result = $this->parseObjectFields($val);
+                    if ($result !== null) { fclose($fh); return $result; }
+                }
+            }
+        }
+        fclose($fh);
+        return null;
+    }
+
+    /**
      * Splits raw args string into individual args (top-level comma split).
      */
     private function splitRawArgs(string $call): array
@@ -800,6 +857,8 @@ class TraceIndex
         $paren = strpos($call, '(');
         if ($paren === false) return [];
         $argsStr = substr($call, $paren + 1);
+        // Strip trailing ") /path/to/file.php:N" that xdebug appends after the closing paren.
+        $argsStr = preg_replace('/\)\s+\/[^\s].+$/s', '', $argsStr);
         $argsStr = preg_replace(TraceRegex::TrailingParen->value, '', $argsStr);
         if (trim($argsStr) === '' || $argsStr === '???') return [];
 
@@ -863,14 +922,143 @@ class TraceIndex
             $name = $sm[1];
             $rawVal = trim($sm[2]);
             $simplified = $this->simplifyValue($rawVal);
+            $expandable = str_starts_with($rawVal, 'class ') || str_starts_with($rawVal, '[') || str_starts_with($rawVal, 'array(');
             $fields[] = [
                 'name'       => $name,
                 'value'      => $simplified ?? $this->truncateRaw($rawVal),
-                'expandable' => str_starts_with($rawVal, 'class ') || str_starts_with($rawVal, '['),
+                'expandable' => $expandable,
+                'raw'        => $expandable ? $rawVal : null,
             ];
         }
 
         return ['class' => $shortClass, 'full_class' => $fullClass, 'fields' => $fields];
+    }
+
+    /**
+     * Parses "[0 => val, 1 => val, ...]" or "array(...)" → list of {key, value, expandable}
+     * Returns null if val is not an array literal.
+     */
+    public function parseArrayItems(string $val): ?array
+    {
+        $val = trim($val);
+        if (str_starts_with($val, 'array(')) {
+            $inner = substr($val, 6);
+            $inner = preg_replace('/\)\s*$/', '', $inner);
+        } elseif (str_starts_with($val, '[')) {
+            $inner = substr($val, 1);
+            $inner = preg_replace('/\]\s*$/', '', $inner);
+        } else {
+            return null;
+        }
+
+        // Top-level comma split
+        $segments = [];
+        $depth = 0;
+        $current = '';
+        for ($i = 0; $i < strlen($inner); $i++) {
+            $ch = $inner[$i];
+            if ($ch === '{' || $ch === '[' || $ch === '(' || $ch === "'") {
+                if ($ch === "'") {
+                    // skip string literal
+                    $current .= $ch;
+                    $i++;
+                    while ($i < strlen($inner) && $inner[$i] !== "'") {
+                        if ($inner[$i] === '\\') { $current .= $inner[$i]; $i++; }
+                        $current .= $inner[$i] ?? '';
+                        $i++;
+                    }
+                    $current .= "'";
+                    continue;
+                }
+                $depth++;
+            } elseif ($ch === '}' || $ch === ']' || $ch === ')') {
+                $depth--;
+            } elseif ($ch === ',' && $depth === 0) {
+                $segments[] = trim($current);
+                $current = '';
+                continue;
+            }
+            $current .= $ch;
+        }
+        if (trim($current) !== '') $segments[] = trim($current);
+
+        $items = [];
+        foreach ($segments as $seg) {
+            $seg = trim($seg);
+            if ($seg === '') continue;
+            // Format: "key => value"
+            $arrowPos = strpos($seg, ' => ');
+            if ($arrowPos !== false) {
+                $key = trim(substr($seg, 0, $arrowPos));
+                $rawVal = trim(substr($seg, $arrowPos + 4));
+            } else {
+                $key = (string)count($items);
+                $rawVal = $seg;
+            }
+            $simplified = $this->simplifyValue($rawVal);
+            $items[] = [
+                'key'        => $key,
+                'value'      => $simplified ?? $this->truncateRaw($rawVal),
+                'expandable' => str_starts_with($rawVal, 'class ') || str_starts_with($rawVal, '[') || str_starts_with($rawVal, 'array('),
+                'raw'        => $rawVal,
+            ];
+        }
+
+        return $items;
+    }
+
+    public function getArrayArg(int $fileId, string $xtPath, int $lineNo, int $argIdx): ?array
+    {
+        $indexPath = $this->tracesDir . '/' . $fileId . '/line_index.json';
+        $index = json_decode(file_get_contents($indexPath), true);
+
+        $startOffset = 0;
+        $startLine = 0;
+        foreach ($index as $indexedLine => $offset) {
+            $il = (int)$indexedLine;
+            if ($il <= $lineNo) { $startOffset = $offset; $startLine = $il; }
+        }
+
+        $fh = fopen($xtPath, 'rb');
+        fseek($fh, $startOffset);
+        $currentLine = $startLine - 1;
+        $rawLine = null;
+
+        while (($line = fgets($fh, 1048576)) !== false) {
+            $currentLine++;
+            if ($currentLine === $lineNo) { $rawLine = $line; break; }
+        }
+        fclose($fh);
+
+        if ($rawLine === null || !preg_match(TraceRegex::CallLineStrict->value, $rawLine, $m)) return null;
+
+        $rawArgs = $this->splitRawArgs($m[2]);
+        if (!isset($rawArgs[$argIdx])) return null;
+
+        $arg = $rawArgs[$argIdx];
+        if (!preg_match(TraceRegex::ArgRawValue->value, $arg, $am)) return null;
+        $val = trim($am[1]);
+
+        $items = $this->parseArrayItems($val);
+        if ($items === null) return null;
+
+        return ['count' => count($items), 'items' => $items];
+    }
+
+    /**
+     * Expands a single expandable item (object or nested array) by raw value string.
+     * Used by the frontend popup "expand" button.
+     */
+    public function expandItem(string $rawVal): ?array
+    {
+        $rawVal = trim($rawVal);
+        if (str_starts_with($rawVal, 'class ')) {
+            return ['type' => 'object', 'data' => $this->parseObjectFields($rawVal)];
+        }
+        if (str_starts_with($rawVal, '[') || str_starts_with($rawVal, 'array(')) {
+            return ['type' => 'array', 'data' => $this->parseArrayItems($rawVal)];
+        }
+        return null;
     }
 
     /**
@@ -993,6 +1181,25 @@ class TraceIndex
         $lastChildLineNo = null;
         $lastChildHasReturn = false;
         $lastGrandLineNo = null; // last grandchild seen under current child
+        $lastChildFirstGrandReceiver = null; // receiver class of FIRST grandchild (fallback for last child)
+        $lastChildLineAfterOpen = null; // line number right after child opens (for adjacency check)
+        $seenChildReceivers = []; // all receiver short-classes seen so far among siblings
+        $lastChildReceiverShort = null; // receiver short-class of the previous child
+        $lastChildReceiverIsApp = false; // whether the previous child was called on an App\ class
+
+        // Extract the receiver class of the parent method itself (e.g. "UserController" for getUserData).
+        // Used to reject sibling-inference when the next child is called on $this (same receiver class),
+        // which means both calls are independent methods on the same object, not a chain.
+        $parentReceiverClass = null;
+        if ($rawLine !== null && preg_match(TraceRegex::CallLineStrict->value, $rawLine, $pm)) {
+            $pSig = $this->extractSig($pm[2]);
+            $pArrow = strrpos($pSig, '->');
+            if ($pArrow !== false) {
+                $pReceiver = substr($pSig, 0, $pArrow);
+                $pParts = explode('\\', $pReceiver);
+                $parentReceiverClass = end($pParts);
+            }
+        }
 
         while (($line = fgets($fh, 1048576)) !== false) {
             $currentLine++;
@@ -1028,14 +1235,91 @@ class TraceIndex
             if ($depth <= $callDepth) break;
 
             if ($depth === $childDepth) {
+                // When we see a new child, check if the previous child's return type can be inferred
+                // from this child's receiver class (e.g. $user->getCurrentWorkspaceOwner → prev returned User).
+                // Rules for valid inference:
+                //   1. No args — called as $prevResult->method(), not method($prevResult)
+                //   2. Receiver is an App\ class (or unnamespaced)
+                //   3. Receiver has NOT been seen before as a sibling receiver — if it has,
+                //      it's likely $this (same object making multiple calls), not a chained result.
+                // Extract this child's receiver for use in inference and tracking
+                $curSig = $this->extractSig($m[2]);
+                $curArrow = strrpos($curSig, '->');
+                $curShort = null;
+                $curReceiverClass = null;
+                if ($curArrow !== false) {
+                    $curReceiverClass = substr($curSig, 0, $curArrow);
+                    $curParts = explode('\\', $curReceiverClass);
+                    $curShort = end($curParts);
+                }
+
+                if ($lastChildLineNo !== null && !isset($childTypes[$lastChildLineNo])) {
+                    if ($curShort !== null && $curReceiverClass !== null) {
+                        $rawArgs = $this->splitRawArgs($m[2]);
+                        $isAppClass = str_starts_with($curReceiverClass, 'App\\') || !str_contains($curReceiverClass, '\\');
+                        $isNewReceiver = !in_array($curShort, $seenChildReceivers, true);
+                        // The chain A->foo() → B->bar() is valid only if:
+                        // - B is a new receiver (not seen before as a sibling receiver, i.e. not $this)
+                        // - B is an App class
+                        // - B->bar() has no args (method called on return value of A->foo())
+                        // - A itself was also called on a "fresh" receiver (lastChildReceiverShort ≠ curShort)
+                        //   This prevents: Security->getToken() → ApiController->getUser() where both
+                        //   are called on $this (property and self), not chained.
+                        $prevWasDifferentReceiver = $lastChildReceiverShort === null || $lastChildReceiverShort !== $curShort;
+                        // Also require that the previous child was itself called on an App\ class.
+                        // If it was called on a non-App class (e.g. Security->getToken()), we can't
+                        // know its return type, so the next sibling can't be chained from it.
+                        if (empty($rawArgs) && $isAppClass && $isNewReceiver && $prevWasDifferentReceiver && $lastChildReceiverIsApp) {
+                            $childTypes[$lastChildLineNo] = $curShort;
+                        }
+                    }
+                }
+
+                // Track this child's receiver in the seen list
+                if ($curShort !== null && !in_array($curShort, $seenChildReceivers, true)) {
+                    $seenChildReceivers[] = $curShort;
+                }
+                $lastChildReceiverShort = $curShort;
+                $lastChildReceiverIsApp = $curReceiverClass !== null &&
+                    (str_starts_with($curReceiverClass, 'App\\') || !str_contains($curReceiverClass, '\\'));
                 $lastChildLineNo = $currentLine;
+                $lastChildLineAfterOpen = $currentLine + 1;
                 $lastChildHasReturn = false;
                 $lastGrandLineNo = null;
+                $lastChildFirstGrandReceiver = null;
             } elseif ($depth === $grandDepth) {
                 $lastGrandLineNo = $currentLine;
+                // Remember the first grandchild's receiver class — fallback for last child's return type
+                // Only record the first grandchild's receiver if this grandchild is adjacent to the child
+                // (i.e., this grandchild line immediately follows the child's opening line).
+                // This ensures we're reading the first call inside the method body, not a deeply nested
+                // callback that happens to run at grandDepth much later.
+                if ($lastChildFirstGrandReceiver === null && $lastChildLineNo !== null
+                    && !isset($childTypes[$lastChildLineNo])
+                    && $currentLine === $lastChildLineAfterOpen
+                ) {
+                    $sig = $this->extractSig($m[2]);
+                    $arrow = strrpos($sig, '->');
+                    if ($arrow !== false) {
+                        $receiverClass = substr($sig, 0, $arrow);
+                        if (str_starts_with($receiverClass, 'App\\') || !str_contains($receiverClass, '\\')) {
+                            $parts = explode('\\', $receiverClass);
+                            $lastChildFirstGrandReceiver = end($parts);
+                        }
+                    }
+                }
             }
         }
         fclose($fh);
+
+        // Last child had no next sibling to infer from — use first grandchild's receiver class as fallback.
+        // Same constraint: only if the grandchild receiver differs from the parent's own receiver.
+        if ($lastChildLineNo !== null && !isset($childTypes[$lastChildLineNo]) && $lastChildFirstGrandReceiver !== null) {
+            $isDifferentFromParent = $parentReceiverClass === null || $lastChildFirstGrandReceiver !== $parentReceiverClass;
+            if ($isDifferentFromParent) {
+                $childTypes[$lastChildLineNo] = $lastChildFirstGrandReceiver;
+            }
+        }
 
         return ['vars' => $vars, 'child_types' => $childTypes];
     }

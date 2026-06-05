@@ -203,6 +203,21 @@ export const useTraceStore = defineStore('trace', () => {
     return data
   }
 
+  async function fetchFindObject(fileId, lineNo, className) {
+    const { data } = await axios.get(`/api/find-object/${fileId}`, { params: { line_no: lineNo, class: className } })
+    return data
+  }
+
+  async function fetchArray(fileId, lineNo, argIdx) {
+    const { data } = await axios.get(`/api/array/${fileId}`, { params: { line_no: lineNo, arg_idx: argIdx } })
+    return data
+  }
+
+  async function expandItem(fileId, raw) {
+    const { data } = await axios.post(`/api/expand-item/${fileId}`, { raw })
+    return data
+  }
+
   async function search(fileId, query) {
     if (query.length < 2) return []
     const { data } = await axios.get(`/api/search/${fileId}`, { params: { q: query } })
@@ -329,7 +344,7 @@ export const useTraceStore = defineStore('trace', () => {
     files, openTabs, activeTabFileId, currentTab, currentFile, toc, totalLines, annotations, favourites,
     listenerFilters, appNamespaces,
     loadFiles, selectFile, switchToTab, closeTab, pollStatus,
-    fetchChildren, fetchPath, fetchObject, fetchSource, fetchVarContext, search,
+    fetchChildren, fetchPath, fetchObject, fetchFindObject, fetchArray, expandItem, fetchSource, fetchVarContext, search,
     addAnnotation, deleteAnnotation,
     loadFavourites, addFavourite, deleteFavourite, matchFavourites, favMatchesInRange, scanFavourites,
     loadSettings, saveSettings, addListenerFilter, isListenerFiltered,

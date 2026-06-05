@@ -432,12 +432,26 @@ function toggleEvent(ei) {
   expandedEvents.value = s
 }
 
+function controllerSrcNode(event) {
+  // Root app_call file_abs points to the HttpKernel caller, not the controller file.
+  // First child's file_abs = controller file:line (the line that makes the first call inside the method).
+  const root = event.app_calls?.[0]
+  if (!root) return null
+  const firstChild = root.children?.find(c => c.file_abs?.includes('/src/'))
+  if (!firstChild) return null
+  return { ...root, file_abs: firstChild.file_abs, file: firstChild.file }
+}
+
 function onEventClick(e, ei, event) {
   if (e.ctrlKey || e.metaKey) {
     store.toggleSelection({ type: 'event', sig: event.event, line_no: event.line_no, breadcrumb: [] })
     return
   }
   toggleEvent(ei)
+  if (event.type === 'controller_execution') {
+    const srcNode = controllerSrcNode(event)
+    if (srcNode) store.setCodeNode(srcNode)
+  }
 }
 
 function onListenerClick(e, ei, li, listener, event) {
