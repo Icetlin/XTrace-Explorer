@@ -1,11 +1,14 @@
 <template>
-  <div class="code-view" v-if="source || error">
+  <div class="code-view" v-if="source || loading || error">
     <!-- Header -->
     <div class="code-view__header">
       <span class="code-view__filename" :title="currentFile">{{ shortFilename }}</span>
       <span class="code-view__range" v-if="source">lines {{ source.fn_from }}–{{ source.fn_to }}</span>
       <button class="code-view__close" @click="store.setCodeNode(null)">✕</button>
     </div>
+
+    <!-- Loading bar (thin, non-intrusive) -->
+    <div v-if="loading" class="code-view__loadbar" />
 
     <!-- Error -->
     <div v-if="error" class="code-view__error">{{ error }}</div>
@@ -95,6 +98,7 @@ hljs.registerLanguage('php', phpLang)
 
 const store = useTraceStore()
 
+const loading = ref(false)
 const error = ref(null)
 const source = ref(null)
 const currentFile = ref(null)
@@ -202,9 +206,10 @@ onUnmounted(() => document.removeEventListener('click', onDocClick, true))
 watch(() => store.activeCodeNode, (node) => {
   _highlightedCache.value = null
   _highlightPending = false
-  if (!node?.file_abs) {
+  if (!node) {
     source.value = null
     error.value = null
+    loading.value = false
     currentFile.value = null
     store.setActiveCodeFile(null)
     return
@@ -213,8 +218,9 @@ watch(() => store.activeCodeNode, (node) => {
 }, { immediate: true })
 
 // Load source for a node.
-// Critical path: fetchSource only (uses node.file_abs directly).
-// fetchChildren + fetchVarContext run concurrently in background for annotations.
+// If node.file_abs is known — fetchSource is the only blocking call (~5ms, often cached).
+// If file_abs is null (listener without cached children) — fetch children first to resolve file.
+// fetchVarContext always runs in background for annotations.
 async function loadNodeSource(node) {
   const seq = ++_loadSeq
   error.value = null
@@ -223,47 +229,72 @@ async function loadNodeSource(node) {
   _highlightPending = false
 
   const fileId = store.currentFile?.file_id
-  const absPath = node.file_abs.replace(/:\d+$/, '')
-  const hint = extractLineNo(node.file_abs)
 
-  // If same file already shown — just update hint/scroll, no reload
+  // Resolve file_abs — may require fetching children first
+  let fileAbs = node.file_abs
+  let prefetchedChildren = null
+
+  if (!fileAbs && fileId && node.line_no != null) {
+    // No file_abs yet — need children to know which file to show.
+    // Show loading bar while we resolve.
+    loading.value = true
+    const result = await store.fetchChildren(fileId, node.line_no, node.depth ?? 0).catch(() => null)
+    if (seq !== _loadSeq) return
+    prefetchedChildren = result
+    const firstChild = (result?.children || []).find(c => c.file_abs)
+    fileAbs = firstChild?.file_abs ?? null
+  }
+
+  if (!fileAbs) {
+    loading.value = false
+    return // nothing to show
+  }
+
+  const absPath = fileAbs.replace(/:\d+$/, '')
+  const hint = extractLineNo(fileAbs)
+
+  // Same file already shown — just scroll + refresh annotations
   if (absPath === currentFile.value && source.value) {
+    loading.value = false
     currentHint.value = hint
     await nextTick()
     scrollToLine(hint)
-    // Still refresh annotations for the new node in background
-    loadAnnotationsBackground(seq, node, absPath, fileId, source.value)
+    loadAnnotationsBackground(seq, node, absPath, fileId, source.value, prefetchedChildren)
     return
   }
 
+  loading.value = true
   currentFile.value = absPath
   currentHint.value = hint
   store.setActiveCodeFile(absPath)
 
-  // Fetch source — this is the only blocking call
   const data = await store.fetchSource(absPath, hint).catch(() => null)
-  if (seq !== _loadSeq) return // superseded by newer click
-  if (!data) { error.value = 'File not found'; return }
+  if (seq !== _loadSeq) return
+  if (!data) { error.value = 'File not found'; loading.value = false; return }
 
   source.value = data
+  loading.value = false
   await nextTick()
   scrollToLine(hint)
 
-  // Annotations in background — never blocks render
-  loadAnnotationsBackground(seq, node, absPath, fileId, data)
+  loadAnnotationsBackground(seq, node, absPath, fileId, data, prefetchedChildren)
 }
 
-async function loadAnnotationsBackground(seq, node, absPath, fileId, data) {
+async function loadAnnotationsBackground(seq, node, absPath, fileId, data, prefetchedChildren = null) {
   if (!fileId || node.line_no == null) {
     if (seq === _loadSeq) annotations.value = buildAnnotations(node, absPath, [], data, null)
     return
   }
-  // Fetch children and varCtx concurrently
+  // Use already-fetched children if available; otherwise fetch in background
+  const childrenPromise = prefetchedChildren
+    ? Promise.resolve(prefetchedChildren)
+    : store.fetchChildren(fileId, node.line_no, node.depth ?? 1).catch(() => null)
+
   const [childrenResult, varCtx] = await Promise.all([
-    store.fetchChildren(fileId, node.line_no, node.depth ?? 1).catch(() => null),
+    childrenPromise,
     store.fetchVarContext(fileId, node.line_no, node.depth ?? 1).catch(() => null),
   ])
-  if (seq !== _loadSeq) return // user clicked elsewhere while we were loading
+  if (seq !== _loadSeq) return
   const allCalls = childrenResult?.children || []
   annotations.value = buildAnnotations(node, absPath, allCalls, data, varCtx)
 }
@@ -521,6 +552,7 @@ function extractLineNo(fileStr) {
   min-width: 0;
   height: 100%;
   overflow: hidden;
+  position: relative;
 }
 
 .code-view--empty {
@@ -577,19 +609,32 @@ function extractLineNo(fileStr) {
   padding: 8px 0;
 }
 
-.code-view__loading,
+.code-view__loadbar {
+  position: absolute;
+  top: 35px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent 0%, rgba(60, 130, 200, 0.7) 40%, rgba(80, 160, 240, 0.9) 60%, transparent 100%);
+  background-size: 200% 100%;
+  animation: loadbar-slide 0.8s linear infinite;
+  z-index: 10;
+}
+@keyframes loadbar-slide {
+  0%   { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
 .code-view__error {
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
   font-size: 12px;
-  color: #3a5070;
+  color: #7a3030;
   padding: 20px;
   font-style: italic;
 }
-.code-view__error { color: #7a3030; }
 
 .code-line {
   display: flex;
@@ -716,17 +761,6 @@ function extractLineNo(fileStr) {
   font-style: italic;
 }
 
-.spinner-inline {
-  width: 10px;
-  height: 10px;
-  border: 1.5px solid currentColor;
-  border-top-color: transparent;
-  border-radius: 50%;
-  animation: spin 0.7s linear infinite;
-  display: inline-block;
-  flex-shrink: 0;
-}
-@keyframes spin { to { transform: rotate(360deg); } }
 
 .obj-popup {
   position: fixed;

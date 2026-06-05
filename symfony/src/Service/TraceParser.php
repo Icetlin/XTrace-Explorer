@@ -250,10 +250,12 @@ class TraceParser
                         if (str_contains($sig, $noise)) { $isNoise = true; break; }
                     }
                     if (!$isNoise && str_contains($sig, '\\') && !empty($dispatchStack)) {
+                        $rawFile = $this->extractFile($m[2]);
                         $dispatchStack[count($dispatchStack)-1]['listeners'][] = [
-                            'sig'     => $sig,
-                            'line_no' => $lineNo,
-                            'depth'   => $depth,
+                            'sig'      => $sig,
+                            'line_no'  => $lineNo,
+                            'depth'    => $depth,
+                            'file_abs' => $rawFile,
                         ];
                         $pendingInvoke = null;
                     }
