@@ -118,10 +118,23 @@ export const useTraceStore = defineStore('trace', () => {
     return data // [{line_no, depth, sig}, ...] root-first
   }
 
+  // In-memory caches — keyed by stable strings, capped at 200 entries each (LRU-lite)
+  const _childrenCache = new Map()  // `${fileId}:${lineNo}:${depth}` → data
+  const _sourceCache   = new Map()  // `${file}:${hint}` → data
+  const _varCtxCache   = new Map()  // `${fileId}:${lineNo}:${depth}` → data
+  const CACHE_MAX = 200
+  function _cacheSet(map, key, value) {
+    if (map.size >= CACHE_MAX) map.delete(map.keys().next().value)
+    map.set(key, value)
+  }
+
   async function fetchChildren(fileId, lineNo, depth, raw = false) {
+    const key = `${fileId}:${lineNo}:${depth}`
+    if (!raw && _childrenCache.has(key)) return _childrenCache.get(key)
     const params = { line_no: lineNo, depth }
     if (raw) params.raw = 1
     const { data } = await axios.get(`/api/children/${fileId}`, { params })
+    if (!raw) _cacheSet(_childrenCache, key, data)
     return data
   }
 
@@ -131,8 +144,11 @@ export const useTraceStore = defineStore('trace', () => {
   }
 
   async function fetchVarContext(fileId, lineNo, depth) {
+    const key = `${fileId}:${lineNo}:${depth}`
+    if (_varCtxCache.has(key)) return _varCtxCache.get(key)
     try {
       const { data } = await axios.get(`/api/var-context/${fileId}`, { params: { line_no: lineNo, depth } })
+      _cacheSet(_varCtxCache, key, data)
       return data
     } catch {
       return null
@@ -140,8 +156,11 @@ export const useTraceStore = defineStore('trace', () => {
   }
 
   async function fetchSource(file, hint) {
+    const key = `${file}:${hint}`
+    if (_sourceCache.has(key)) return _sourceCache.get(key)
     try {
       const { data } = await axios.get('/api/source', { params: { file, hint } })
+      _cacheSet(_sourceCache, key, data)
       return data
     } catch {
       return null

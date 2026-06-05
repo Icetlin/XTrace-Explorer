@@ -1,5 +1,5 @@
 <template>
-  <div class="code-view" v-if="source || loading || error">
+  <div class="code-view" v-if="source || error">
     <!-- Header -->
     <div class="code-view__header">
       <span class="code-view__filename" :title="currentFile">{{ shortFilename }}</span>
@@ -7,13 +7,8 @@
       <button class="code-view__close" @click="store.setCodeNode(null)">✕</button>
     </div>
 
-    <!-- Loading -->
-    <div v-if="loading" class="code-view__loading">
-      <span class="spinner-inline" /> loading…
-    </div>
-
     <!-- Error -->
-    <div v-else-if="error" class="code-view__error">{{ error }}</div>
+    <div v-if="error" class="code-view__error">{{ error }}</div>
 
     <!-- Source lines -->
     <div v-else-if="source" ref="scrollEl" class="code-view__body"
@@ -100,7 +95,6 @@ hljs.registerLanguage('php', phpLang)
 
 const store = useTraceStore()
 
-const loading = ref(false)
 const error = ref(null)
 const source = ref(null)
 const currentFile = ref(null)
@@ -110,6 +104,8 @@ const annotations = ref(new Map())
 // Highlighted lines cache — populated lazily via requestIdleCallback
 const _highlightedCache = ref(null)
 let _highlightPending = false
+// Track inflight load so stale completions don't overwrite newer ones
+let _loadSeq = 0
 
 // Object inspector popup
 // popup: { x, y, title, type: 'object'|'array', rows: [{label, value, expandable, raw}] }
@@ -217,85 +213,59 @@ watch(() => store.activeCodeNode, (node) => {
 }, { immediate: true })
 
 // Load source for a node.
-// Fast path: fetchSource + fetchChildren run in parallel; source shown immediately.
-// Annotations built after both complete; varCtx loaded in background.
+// Critical path: fetchSource only (uses node.file_abs directly).
+// fetchChildren + fetchVarContext run concurrently in background for annotations.
 async function loadNodeSource(node) {
-  loading.value = true
+  const seq = ++_loadSeq
   error.value = null
-  source.value = null
   annotations.value = new Map()
   _highlightedCache.value = null
   _highlightPending = false
 
   const fileId = store.currentFile?.file_id
+  const absPath = node.file_abs.replace(/:\d+$/, '')
+  const hint = extractLineNo(node.file_abs)
 
-  try {
-    // Phase 1: fetch source and children in parallel
-    // We need children to know the body file, but we can start fetchSource with a best-guess:
-    // node.file_abs often already points inside the method (e.g. the call site line).
-    const hintFromNode = extractLineNo(node.file_abs)
-    const bestGuessPath = node.file_abs?.replace(/:\d+$/, '')
-
-    const [childrenResult, sourceDataBestGuess] = await Promise.all([
-      fileId && node.line_no != null
-        ? store.fetchChildren(fileId, node.line_no, node.depth ?? 1).catch(() => null)
-        : Promise.resolve(null),
-      bestGuessPath
-        ? store.fetchSource(bestGuessPath, hintFromNode).catch(() => null)
-        : Promise.resolve(null),
-    ])
-
-    const allCalls = childrenResult?.children || []
-
-    // Determine the actual body file from children
-    const bodyFileAbs = allCalls.find(c => c.file_abs)?.file_abs
-    const fileAbs = bodyFileAbs || node.file_abs
-    const absPath = fileAbs.replace(/:\d+$/, '')
-    const hint = extractLineNo(fileAbs)
-
-    // If same file+hint as already shown, just scroll
-    if (absPath === currentFile.value && hint === currentHint.value && source.value) {
-      scrollToLine(hint)
-      loading.value = false
-      return
-    }
-
-    currentFile.value = absPath
+  // If same file already shown — just update hint/scroll, no reload
+  if (absPath === currentFile.value && source.value) {
     currentHint.value = hint
-    store.setActiveCodeFile(absPath)
-
-    // Use parallel-fetched source if it matches, otherwise fetch the correct file
-    let data = (bestGuessPath === absPath) ? sourceDataBestGuess : null
-    if (!data) {
-      data = await store.fetchSource(absPath, hint)
-    }
-    if (!data) { error.value = 'File not found'; loading.value = false; return }
-
-    // Show source immediately — no more waiting
-    source.value = data
-    loading.value = false
     await nextTick()
     scrollToLine(hint)
-
-    // Phase 2: build annotations in background (varCtx is expensive)
-    if (fileId && node.line_no != null) {
-      store.fetchVarContext(fileId, node.line_no, node.depth ?? 1).then(varCtx => {
-        // Only apply if we're still on the same file (user didn't click elsewhere)
-        if (currentFile.value === absPath) {
-          annotations.value = buildAnnotations(node, absPath, allCalls, data, varCtx)
-        }
-      }).catch(() => {
-        if (currentFile.value === absPath) {
-          annotations.value = buildAnnotations(node, absPath, allCalls, data, null)
-        }
-      })
-    } else {
-      annotations.value = buildAnnotations(node, absPath, allCalls, data, null)
-    }
-  } catch (e) {
-    error.value = 'Failed to load: ' + (e?.message || 'unknown error')
-    loading.value = false
+    // Still refresh annotations for the new node in background
+    loadAnnotationsBackground(seq, node, absPath, fileId, source.value)
+    return
   }
+
+  currentFile.value = absPath
+  currentHint.value = hint
+  store.setActiveCodeFile(absPath)
+
+  // Fetch source — this is the only blocking call
+  const data = await store.fetchSource(absPath, hint).catch(() => null)
+  if (seq !== _loadSeq) return // superseded by newer click
+  if (!data) { error.value = 'File not found'; return }
+
+  source.value = data
+  await nextTick()
+  scrollToLine(hint)
+
+  // Annotations in background — never blocks render
+  loadAnnotationsBackground(seq, node, absPath, fileId, data)
+}
+
+async function loadAnnotationsBackground(seq, node, absPath, fileId, data) {
+  if (!fileId || node.line_no == null) {
+    if (seq === _loadSeq) annotations.value = buildAnnotations(node, absPath, [], data, null)
+    return
+  }
+  // Fetch children and varCtx concurrently
+  const [childrenResult, varCtx] = await Promise.all([
+    store.fetchChildren(fileId, node.line_no, node.depth ?? 1).catch(() => null),
+    store.fetchVarContext(fileId, node.line_no, node.depth ?? 1).catch(() => null),
+  ])
+  if (seq !== _loadSeq) return // user clicked elsewhere while we were loading
+  const allCalls = childrenResult?.children || []
+  annotations.value = buildAnnotations(node, absPath, allCalls, data, varCtx)
 }
 
 const highlightedLines = computed(() => {
