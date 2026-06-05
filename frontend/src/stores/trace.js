@@ -138,6 +138,15 @@ export const useTraceStore = defineStore('trace', () => {
     return data
   }
 
+  // Synchronous: returns file_abs of first child if already in cache, else null
+  function getListenerFileAbs(fileId, lineNo, depth) {
+    const key = `${fileId}:${lineNo}:${depth}`
+    const cached = _childrenCache.get(key)
+    if (!cached) return null
+    const first = (cached.children || []).find(c => c.file_abs)
+    return first?.file_abs ?? null
+  }
+
   async function fetchAppCalls(fileId, eventIdx) {
     const { data } = await axios.get(`/api/app-calls/${fileId}/${eventIdx}`)
     return data
@@ -401,7 +410,7 @@ export const useTraceStore = defineStore('trace', () => {
     files, openTabs, activeTabFileId, currentTab, currentFile, toc, totalLines, annotations, favourites,
     listenerFilters, eventFilters, appNamespaces, pathMapping,
     loadFiles, selectFile, switchToTab, closeTab, pollStatus,
-    fetchChildren, fetchPath, fetchObject, fetchFindObject, fetchArray, expandItem, fetchSource, fetchVarContext, fetchAppCalls, search,
+    fetchChildren, fetchPath, fetchObject, fetchFindObject, fetchArray, expandItem, fetchSource, fetchVarContext, fetchAppCalls, getListenerFileAbs, search,
     addAnnotation, deleteAnnotation,
     loadFavourites, addFavourite, deleteFavourite, matchFavourites, favMatchesInRange, scanFavourites,
     loadSettings, saveSettings, addListenerFilter, isListenerFiltered, addEventFilter, isEventFiltered,

@@ -168,6 +168,7 @@
                   class="listener-row"
                   :class="{ 'listener-row--fav': listenerScanMatches(ei, li).length, 'listener-row--selected': store.isSelected(listener.line_no), 'listener-row--code-active': store.isCodeActive(listener.line_no), 'listener-row--abstain': listener.vote_result === 0, 'listener-row--granted': listener.vote_result === 1, 'listener-row--denied': listener.vote_result === -1 }"
                   :data-listener-line="listener.line_no"
+                  @mouseenter="prefetchListener(listener)"
                   @click="onListenerClick($event, ei, li, listener, toc[ei])"
                   @contextmenu.prevent="onListenerCtx($event, listener)"
                 >
@@ -502,9 +503,23 @@ function onListenerClick(e, ei, li, listener, event) {
     })
     return
   }
-  store.setCodeNode({ line_no: listener.line_no, sig: listener.sig, file_abs: null },
+  const cachedFileAbs = store.getListenerFileAbs(props.fileId, listener.line_no, listener.depth ?? 0)
+  store.setCodeNode({ line_no: listener.line_no, sig: listener.sig, file_abs: cachedFileAbs ?? null },
     [{ sig: event.event, line_no: event.line_no }])
   toggleListener(ei, li, listener)
+}
+
+function prefetchListener(listener) {
+  if (!props.fileId || listener.line_no == null) return
+  // Fire-and-forget: warm the children + source caches on hover so click is instant
+  store.fetchChildren(props.fileId, listener.line_no, listener.depth ?? 0).then(result => {
+    const firstChild = (result?.children || []).find(c => c.file_abs)
+    if (firstChild) {
+      const absPath = firstChild.file_abs.replace(/:\d+$/, '')
+      const hint = firstChild.file_abs.match(/:(\d+)$/)?.[1]
+      store.fetchSource(absPath, hint ? parseInt(hint) : 0)
+    }
+  }).catch(() => {})
 }
 
 async function toggleListener(ei, li, listener) {
