@@ -107,6 +107,9 @@ const currentFile = ref(null)
 const currentHint = ref(null)
 const scrollEl = ref(null)
 const annotations = ref(new Map())
+// Highlighted lines cache — populated lazily via requestIdleCallback
+const _highlightedCache = ref(null)
+let _highlightPending = false
 
 // Object inspector popup
 // popup: { x, y, title, type: 'object'|'array', rows: [{label, value, expandable, raw}] }
@@ -201,6 +204,8 @@ onMounted(() => document.addEventListener('click', onDocClick, true))
 onUnmounted(() => document.removeEventListener('click', onDocClick, true))
 
 watch(() => store.activeCodeNode, (node) => {
+  _highlightedCache.value = null
+  _highlightPending = false
   if (!node?.file_abs) {
     source.value = null
     error.value = null
@@ -211,77 +216,118 @@ watch(() => store.activeCodeNode, (node) => {
   loadNodeSource(node)
 }, { immediate: true })
 
-// Load source for a node. First fetches children (to know the body file),
-// then fetches source, then builds annotations.
+// Load source for a node.
+// Fast path: fetchSource + fetchChildren run in parallel; source shown immediately.
+// Annotations built after both complete; varCtx loaded in background.
 async function loadNodeSource(node) {
   loading.value = true
   error.value = null
   source.value = null
   annotations.value = new Map()
+  _highlightedCache.value = null
+  _highlightPending = false
+
+  const fileId = store.currentFile?.file_id
 
   try {
-    // Step 1: fetch direct children — their file_abs tells us which file is the method body
-    let allCalls = node.children || []
-    const fileId = store.currentFile?.file_id
-    if (fileId && node.line_no != null) {
-      try {
-        const result = await store.fetchChildren(fileId, node.line_no, node.depth ?? 1)
-        allCalls = result.children || []
-      } catch (e) { console.warn('[CodeView] fetchChildren failed', e) }
-    }
+    // Phase 1: fetch source and children in parallel
+    // We need children to know the body file, but we can start fetchSource with a best-guess:
+    // node.file_abs often already points inside the method (e.g. the call site line).
+    const hintFromNode = extractLineNo(node.file_abs)
+    const bestGuessPath = node.file_abs?.replace(/:\d+$/, '')
 
-    // Step 2: determine which file to show
-    // node.file_abs = call site in parent; children's file_abs = call sites inside the body.
-    // The body file is the base of children's file_abs.
+    const [childrenResult, sourceDataBestGuess] = await Promise.all([
+      fileId && node.line_no != null
+        ? store.fetchChildren(fileId, node.line_no, node.depth ?? 1).catch(() => null)
+        : Promise.resolve(null),
+      bestGuessPath
+        ? store.fetchSource(bestGuessPath, hintFromNode).catch(() => null)
+        : Promise.resolve(null),
+    ])
+
+    const allCalls = childrenResult?.children || []
+
+    // Determine the actual body file from children
     const bodyFileAbs = allCalls.find(c => c.file_abs)?.file_abs
     const fileAbs = bodyFileAbs || node.file_abs
     const absPath = fileAbs.replace(/:\d+$/, '')
-    // Hint: prefer the node's own line in the body file (first child's line) for scrolling
     const hint = extractLineNo(fileAbs)
 
+    // If same file+hint as already shown, just scroll
     if (absPath === currentFile.value && hint === currentHint.value && source.value) {
       scrollToLine(hint)
       loading.value = false
       return
     }
+
     currentFile.value = absPath
     currentHint.value = hint
     store.setActiveCodeFile(absPath)
 
-    // Step 3: fetch source
-    const data = await store.fetchSource(absPath, hint)
-    if (!data) { error.value = 'File not found'; return }
-    source.value = data
-
-    // Step 4: fetch var context (object fields + child return types from trace)
-    let varCtx = null
-    if (fileId && node.line_no != null) {
-      varCtx = await store.fetchVarContext(fileId, node.line_no, node.depth ?? 1)
+    // Use parallel-fetched source if it matches, otherwise fetch the correct file
+    let data = (bestGuessPath === absPath) ? sourceDataBestGuess : null
+    if (!data) {
+      data = await store.fetchSource(absPath, hint)
     }
+    if (!data) { error.value = 'File not found'; loading.value = false; return }
 
-    annotations.value = buildAnnotations(node, absPath, allCalls, data, varCtx)
+    // Show source immediately — no more waiting
+    source.value = data
+    loading.value = false
     await nextTick()
     scrollToLine(hint)
+
+    // Phase 2: build annotations in background (varCtx is expensive)
+    if (fileId && node.line_no != null) {
+      store.fetchVarContext(fileId, node.line_no, node.depth ?? 1).then(varCtx => {
+        // Only apply if we're still on the same file (user didn't click elsewhere)
+        if (currentFile.value === absPath) {
+          annotations.value = buildAnnotations(node, absPath, allCalls, data, varCtx)
+        }
+      }).catch(() => {
+        if (currentFile.value === absPath) {
+          annotations.value = buildAnnotations(node, absPath, allCalls, data, null)
+        }
+      })
+    } else {
+      annotations.value = buildAnnotations(node, absPath, allCalls, data, null)
+    }
   } catch (e) {
     error.value = 'Failed to load: ' + (e?.message || 'unknown error')
-  } finally {
     loading.value = false
   }
 }
 
 const highlightedLines = computed(() => {
+  // Return cached highlighted lines if available
+  if (_highlightedCache.value) return _highlightedCache.value
   if (!source.value) return []
   const entries = Object.entries(source.value.lines).map(([no, code]) => [parseInt(no), code])
   if (!entries.length) return []
-  const fullCode = entries.map(([, code]) => code).join('\n')
-  let highlighted
-  try {
-    highlighted = hljs.highlight(fullCode, { language: 'php' }).value
-  } catch {
-    highlighted = fullCode.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  // Show plain (escaped) lines immediately, schedule highlight in idle time
+  const plainLines = entries.map(([no, code]) => [no, code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')])
+  if (!_highlightPending) {
+    _highlightPending = true
+    const run = () => {
+      if (!source.value) { _highlightPending = false; return }
+      const fullCode = entries.map(([, code]) => code).join('\n')
+      let highlighted
+      try {
+        highlighted = hljs.highlight(fullCode, { language: 'php' }).value
+      } catch {
+        highlighted = fullCode.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      }
+      const htmlLines = highlighted.split('\n')
+      _highlightedCache.value = entries.map(([no], i) => [no, htmlLines[i] ?? ''])
+      _highlightPending = false
+    }
+    if (typeof requestIdleCallback !== 'undefined') {
+      requestIdleCallback(run, { timeout: 500 })
+    } else {
+      setTimeout(run, 0)
+    }
   }
-  const htmlLines = highlighted.split('\n')
-  return entries.map(([no], i) => [no, htmlLines[i] ?? ''])
+  return plainLines
 })
 
 const shortFilename = computed(() => {

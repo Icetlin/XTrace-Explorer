@@ -109,16 +109,17 @@
             <template v-if="toc[ei].type === 'controller_execution'">
               <div
                 class="event-row event-row--controller"
-                :class="{ 'has-listeners': toc[ei].children?.length || toc[ei].app_calls?.length, 'event-row--selected': store.isSelected(toc[ei].line_no), 'event-row--code-active': store.isCodeActive(toc[ei].line_no) }"
+                :class="{ 'has-listeners': toc[ei].children?.length || toc[ei].app_calls_count > 0, 'event-row--selected': store.isSelected(toc[ei].line_no), 'event-row--code-active': store.isCodeActive(toc[ei].line_no) }"
                 @click="onEventRowClick($event, ei, toc[ei])"
               >
                 <span class="chevron" @click.stop="toggleEvent(ei)">{{ expandedEvents.has(ei) ? '▾' : '▸' }}</span>
                 <span class="event-name event-name--controller">{{ controllerShortSig(toc[ei].event) }}</span>
               </div>
               <template v-if="expandedEvents.has(ei)">
+                <div v-if="appCallsLoading[ei]" class="app-calls-loading">loading…</div>
                 <AppCallTree
-                  v-if="dedupeAppCalls(toc[ei].event, toc[ei].app_calls).length"
-                  :calls="dedupeAppCalls(toc[ei].event, toc[ei].app_calls)"
+                  v-else-if="dedupeAppCalls(toc[ei].event, getAppCalls(ei)).length"
+                  :calls="dedupeAppCalls(toc[ei].event, getAppCalls(ei))"
                   :expanded="expandedAppCalls"
                   @toggle="toggleAppCall"
                 />
@@ -207,9 +208,10 @@
               no listeners recorded
             </div>
 
+            <div v-if="expandedEvents.has(ei) && appCallsLoading[ei]" class="app-calls-loading">loading…</div>
             <AppCallTree
-              v-if="expandedEvents.has(ei) && dedupeAppCalls(toc[ei].event, toc[ei].app_calls).length"
-              :calls="dedupeAppCalls(toc[ei].event, toc[ei].app_calls)"
+              v-else-if="expandedEvents.has(ei) && dedupeAppCalls(toc[ei].event, getAppCalls(ei)).length"
+              :calls="dedupeAppCalls(toc[ei].event, getAppCalls(ei))"
               :expanded="expandedAppCalls"
               @toggle="toggleAppCall"
             />
@@ -228,7 +230,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, nextTick } from 'vue'
+import { ref, reactive, computed, nextTick, watch } from 'vue'
 import { useTraceStore } from '../stores/trace'
 import CallNode from './CallNode.vue'
 import ContextMenu from './ContextMenu.vue'
@@ -249,11 +251,40 @@ const expandedEvents = ref(new Set())
 const expandedListeners = ref(new Set())
 const expandedGroups = ref(new Set())
 const expandedAppCalls = ref(new Set())
+// Cache of lazy-loaded app_calls per event index (ei → array)
+const appCallsCache = reactive({})
+const appCallsLoading = reactive({})
 
 function toggleAppCall(lineNo) {
   const s = new Set(expandedAppCalls.value)
   s.has(lineNo) ? s.delete(lineNo) : s.add(lineNo)
   expandedAppCalls.value = s
+}
+
+// Lazy-load app_calls when an event is expanded and app_calls is null (stripped on server)
+watch(expandedEvents, async (expanded) => {
+  for (const ei of expanded) {
+    const entry = props.toc[ei]
+    if (!entry) continue
+    // app_calls === null means server stripped it; app_calls_count > 0 means there's data
+    if (entry.app_calls === null && entry.app_calls_count > 0 && !(ei in appCallsCache) && !appCallsLoading[ei]) {
+      appCallsLoading[ei] = true
+      try {
+        appCallsCache[ei] = await store.fetchAppCalls(props.fileId, ei)
+      } finally {
+        appCallsLoading[ei] = false
+      }
+    }
+  }
+}, { deep: false })
+
+function getAppCalls(ei) {
+  const entry = props.toc[ei]
+  if (!entry) return []
+  // If app_calls is present (not stripped), use it directly
+  if (Array.isArray(entry.app_calls)) return entry.app_calls
+  // Otherwise use lazy-loaded cache
+  return appCallsCache[ei] ?? []
 }
 
 // For debug.security.authorization.vote: extract the voted attribute from listeners
@@ -433,10 +464,11 @@ function toggleEvent(ei) {
   expandedEvents.value = s
 }
 
-function controllerSrcNode(event) {
+function controllerSrcNode(event, ei) {
   // Root app_call file_abs points to the HttpKernel caller, not the controller file.
   // First child's file_abs = controller file:line (the line that makes the first call inside the method).
-  const root = event.app_calls?.[0]
+  const calls = getAppCalls(ei)
+  const root = calls[0]
   if (!root) return null
   const firstChild = root.children?.find(c => c.file_abs?.includes('/src/'))
   if (!firstChild) return null
@@ -451,7 +483,7 @@ function onEventRowClick(e, ei, event) {
   // expand on click, but never collapse — chevron handles collapse
   if (!expandedEvents.value.has(ei)) toggleEvent(ei)
   if (event.type === 'controller_execution') {
-    const srcNode = controllerSrcNode(event)
+    const srcNode = controllerSrcNode(event, ei)
     if (srcNode) store.setCodeNode(srcNode, [{ sig: event.event, line_no: event.line_no }])
     else store.setCodeNode({ line_no: event.line_no, sig: event.event }, [])
   } else {

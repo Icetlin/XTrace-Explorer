@@ -125,6 +125,11 @@ export const useTraceStore = defineStore('trace', () => {
     return data
   }
 
+  async function fetchAppCalls(fileId, eventIdx) {
+    const { data } = await axios.get(`/api/app-calls/${fileId}/${eventIdx}`)
+    return data
+  }
+
   async function fetchVarContext(fileId, lineNo, depth) {
     try {
       const { data } = await axios.get(`/api/var-context/${fileId}`, { params: { line_no: lineNo, depth } })
@@ -377,7 +382,7 @@ export const useTraceStore = defineStore('trace', () => {
     files, openTabs, activeTabFileId, currentTab, currentFile, toc, totalLines, annotations, favourites,
     listenerFilters, eventFilters, appNamespaces, pathMapping,
     loadFiles, selectFile, switchToTab, closeTab, pollStatus,
-    fetchChildren, fetchPath, fetchObject, fetchFindObject, fetchArray, expandItem, fetchSource, fetchVarContext, search,
+    fetchChildren, fetchPath, fetchObject, fetchFindObject, fetchArray, expandItem, fetchSource, fetchVarContext, fetchAppCalls, search,
     addAnnotation, deleteAnnotation,
     loadFavourites, addFavourite, deleteFavourite, matchFavourites, favMatchesInRange, scanFavourites,
     loadSettings, saveSettings, addListenerFilter, isListenerFiltered, addEventFilter, isEventFiltered,
