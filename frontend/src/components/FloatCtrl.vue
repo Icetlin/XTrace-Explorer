@@ -47,17 +47,51 @@
       </div>
     </transition>
 
-    <!-- Backend timings panel -->
+    <!-- Combined timings panel: Backend (DB) + Frontend (in-memory) -->
     <transition name="xd-expand">
       <div v-if="timingsOpen" class="timings-panel">
-        <div class="timings-panel__header">Backend</div>
+        <div class="timings-panel__header timings-panel__header--row">
+          <span>Timings</span>
+          <div class="timings-panel__head-actions">
+            <button
+              class="timings-panel__head-btn"
+              :class="{ 'timings-panel__head-btn--ok': copyFlash }"
+              :title="copyFlash ? 'Copied!' : 'Copy all timings to clipboard'"
+              @click="copyTimings"
+            >{{ copyFlash ? '✓' : '⧉' }}</button>
+            <button
+              class="timings-panel__head-btn"
+              :class="{ 'timings-panel__head-btn--off': !perf.enabled }"
+              :title="perf.enabled ? 'Pause frontend recording' : 'Resume frontend recording'"
+              @click="perf.toggle()"
+            >{{ perf.enabled ? '❚❚' : '▶' }}</button>
+            <button class="timings-panel__head-btn" title="Clear frontend buffer" @click="perf.clear()">⌫</button>
+          </div>
+        </div>
+        <div class="timings-panel__hint">
+          backend = server processing · frontend = client-side (API incl. network, render = mount, tab/toc = interactions)
+        </div>
         <div class="timings-panel__list">
-          <div v-if="!timings.length" class="timings-panel__empty">no requests yet</div>
-          <div v-for="t in timings" :key="t.id" class="timings-panel__row">
+          <!-- Backend section -->
+          <div v-if="timings.length" class="timings-panel__section">backend <span class="timings-panel__section-count">{{ timings.length }}</span></div>
+          <div v-if="!timings.length" class="timings-panel__empty">no backend requests yet</div>
+          <div v-for="t in timings" :key="'be-' + t.id" class="timings-panel__row">
             <span class="timings-panel__method" :class="'method--' + t.endpoint_method.toLowerCase()">{{ t.endpoint_method }}</span>
             <span class="timings-panel__url">{{ t.endpoint_url }}</span>
             <span class="timings-panel__duration" :class="durationClass(t.duration_ms)">{{ t.duration_ms }} ms</span>
             <span class="timings-panel__time">{{ t.created }}</span>
+          </div>
+
+          <!-- Frontend section -->
+          <div v-if="perf.entries.length" class="timings-panel__section timings-panel__section--spaced">frontend <span class="timings-panel__section-count">{{ perf.entries.length }}</span></div>
+          <div v-if="!perf.entries.length" class="timings-panel__empty">no frontend events yet</div>
+          <div v-for="e in perf.entries" :key="'fe-' + e.id" class="timings-panel__row timings-panel__row--fe">
+            <span class="timings-panel__cat" :class="'perf-cat--' + e.category">{{ e.category }}</span>
+            <span class="timings-panel__url" :title="e.name">{{ e.name }}</span>
+            <span class="timings-panel__duration" :class="durationClass(e.durationMs)">
+              {{ formatFeDuration(e.durationMs) }}
+            </span>
+            <span class="timings-panel__time">{{ feTime(e.ts) }}</span>
           </div>
         </div>
       </div>
@@ -96,12 +130,12 @@
         </svg>
       </button>
 
-      <!-- Backend timings toggle -->
+      <!-- Timings (backend + frontend) toggle — always available, since
+           frontend metrics are useful even before a trace is opened. -->
       <button
-        v-if="hasTrace"
         class="float-ctrl__item"
         :class="{ 'float-ctrl__item--active': timingsOpen }"
-        title="Backend timings"
+        title="Timings (backend + frontend)"
         @click="toggleTimings"
       >
         <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
@@ -233,6 +267,8 @@ import axios from 'axios'
 import SettingsPage from './SettingsPage.vue'
 import SqlPage from './SqlPage.vue'
 import { useTraceStore } from '../stores/trace'
+import { usePerfStore } from '../stores/perf'
+import { usePerfTrack } from '../perfTrack'
 import { favColor } from '../favColor.js'
 
 const props = defineProps({
@@ -240,6 +276,8 @@ const props = defineProps({
 })
 
 const store = useTraceStore()
+const perf = usePerfStore()
+usePerfTrack('FloatCtrl', { category: 'render' })
 const activeModal = ref(null)
 const collapsed = ref(false)
 const ctrlRef = ref(null)
@@ -393,6 +431,80 @@ function toggleTimings() {
   favOpen.value = false
   timingsOpen.value = !timingsOpen.value
 }
+
+// Render helpers for frontend timings.
+function formatFeDuration(ms) {
+  if (ms < 1)    return ms.toFixed(2) + ' ms'
+  if (ms < 10)   return ms.toFixed(1) + ' ms'
+  if (ms < 1000) return Math.round(ms) + ' ms'
+  return (ms / 1000).toFixed(2) + ' s'
+}
+function feTime(ts) {
+  const d = new Date(ts)
+  return d.toTimeString().slice(0, 8)
+}
+
+// ── Copy all timings to clipboard ──
+const copyFlash = ref(false)
+let copyFlashTimer = null
+function pad(s, n) { return String(s).padEnd(n).slice(0, n) }
+
+function buildTimingsText() {
+  const lines = []
+  const now = new Date()
+  const stamp = now.toISOString().replace('T', ' ').slice(0, 19)
+  lines.push(`# XTrace timings — ${stamp}`)
+  if (store.currentFile) lines.push(`# file: ${store.currentFile.name}`)
+  lines.push('')
+
+  lines.push(`## Backend (${timings.value.length})`)
+  if (!timings.value.length) {
+    lines.push('(no backend requests)')
+  } else {
+    // method(6)  url(padded)  duration(right-aligned in 10)  time
+    for (const t of timings.value) {
+      lines.push(`${pad(t.endpoint_method, 6)} ${pad(t.endpoint_url, 50)} ${pad(t.duration_ms + ' ms', 12)} ${t.created}`)
+    }
+  }
+  lines.push('')
+
+  lines.push(`## Frontend (${perf.entries.length})`)
+  if (!perf.entries.length) {
+    lines.push('(no frontend events)')
+  } else {
+    for (const e of perf.entries) {
+      const cat = pad(e.category, 7)
+      const dur = pad(formatFeDuration(e.durationMs), 10)
+      lines.push(`${cat} ${pad(e.name, 50)} ${dur} ${feTime(e.ts)}`)
+    }
+  }
+  return lines.join('\n')
+}
+
+async function copyTimings() {
+  const text = buildTimingsText()
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      // Fallback for non-secure contexts: temporary textarea + execCommand.
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    copyFlash.value = true
+    clearTimeout(copyFlashTimer)
+    copyFlashTimer = setTimeout(() => { copyFlash.value = false }, 1200)
+  } catch (e) {
+    console.error('copy failed:', e)
+  }
+}
+onUnmounted(() => clearTimeout(copyFlashTimer))
 
 async function loadTimings() {
   const f = store.currentFile
@@ -726,6 +838,137 @@ html[data-theme="light"] .timings-panel__url {
   color: rgba(100, 115, 160, 0.7);
   font-size: 10px;
 }
+
+/* Frontend-timings header row (title + actions) */
+.timings-panel__header--row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-right: 6px;
+}
+.timings-panel__hint {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  line-height: 1.45;
+  color: rgba(110, 125, 170, 0.6);
+  padding: 0 10px 6px;
+}
+html[data-theme="light"] .timings-panel__hint {
+  color: rgba(50, 70, 130, 0.55);
+}
+.timings-panel__head-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.timings-panel__head-count {
+  font-size: 9px;
+  color: rgba(120, 140, 190, 0.7);
+  font-family: 'JetBrains Mono', monospace;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  padding: 1px 6px;
+  min-width: 22px;
+  text-align: center;
+}
+html[data-theme="light"] .timings-panel__head-count {
+  color: rgba(40, 60, 130, 0.6);
+  background: rgba(80, 100, 200, 0.08);
+}
+.timings-panel__head-btn {
+  background: none;
+  border: 1px solid rgba(80, 100, 160, 0.25);
+  color: rgba(140, 160, 210, 0.75);
+  font-size: 9px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: 'JetBrains Mono', monospace;
+  transition: background 0.1s, color 0.1s;
+}
+.timings-panel__head-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(200, 220, 255, 0.95);
+}
+.timings-panel__head-btn--off {
+  color: rgba(120, 130, 160, 0.5);
+  border-color: rgba(80, 100, 160, 0.18);
+}
+.timings-panel__head-btn--off:hover {
+  color: rgba(100, 200, 140, 0.9);
+}
+.timings-panel__head-btn--ok {
+  color: #6fd98e;
+  border-color: rgba(70, 200, 120, 0.45);
+  background: rgba(70, 200, 120, 0.12);
+}
+.timings-panel__head-btn--ok:hover {
+  color: #6fd98e;
+  background: rgba(70, 200, 120, 0.16);
+}
+
+/* In-panel section labels (backend / frontend) */
+.timings-panel__section {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(140, 165, 215, 0.6);
+  padding: 6px 10px 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.timings-panel__section--spaced {
+  margin-top: 4px;
+  border-top: 1px solid rgba(55, 65, 110, 0.3);
+  padding-top: 8px;
+}
+html[data-theme="light"] .timings-panel__section {
+  color: rgba(30, 60, 140, 0.55);
+}
+html[data-theme="light"] .timings-panel__section--spaced {
+  border-top-color: rgba(160, 180, 220, 0.4);
+}
+.timings-panel__section-count {
+  font-size: 9px;
+  font-weight: 600;
+  color: rgba(120, 140, 190, 0.6);
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  padding: 0 6px;
+}
+html[data-theme="light"] .timings-panel__section-count {
+  color: rgba(40, 60, 130, 0.55);
+  background: rgba(80, 100, 200, 0.08);
+}
+
+/* Frontend row variant — name + category badge + duration */
+.timings-panel__row--fe { gap: 6px; }
+.timings-panel__cat {
+  flex-shrink: 0;
+  width: 44px;
+  text-align: center;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 2px 0;
+  border-radius: 4px;
+  text-transform: lowercase;
+  color: rgba(200, 215, 245, 0.9);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(120, 140, 190, 0.18);
+}
+.perf-cat--api     { color: #6cb8ff; background: rgba(60, 130, 255, 0.14);  border-color: rgba(60, 130, 255, 0.32); }
+.perf-cat--tab     { color: #c9a8ff; background: rgba(150,  90, 220, 0.14); border-color: rgba(150,  90, 220, 0.30); }
+.perf-cat--render  { color: #6fd98e; background: rgba(70,  200, 120, 0.14); border-color: rgba(70,  200, 120, 0.30); }
+.perf-cat--toc     { color: #ffb766; background: rgba(255, 160,  60, 0.14); border-color: rgba(255, 160,  60, 0.30); }
+.perf-cat--search  { color: #ff8ac6; background: rgba(220,  80, 170, 0.14); border-color: rgba(220,  80, 170, 0.30); }
+.perf-cat--boot    { color: #9ec0ff; background: rgba(100, 160, 255, 0.14); border-color: rgba(100, 160, 255, 0.28); }
+.perf-cat--custom  { color: #aaa;    background: rgba(160, 160, 160, 0.10); border-color: rgba(160, 160, 160, 0.24); }
+html[data-theme="light"] .timings-panel__cat { color: rgba(30, 50, 100, 0.85); background: rgba(80, 110, 200, 0.06); border-color: rgba(80, 110, 200, 0.18); }
 
 .xd-expand-enter-active { transition: opacity 0.18s ease, transform 0.18s cubic-bezier(0.34,1.1,0.64,1); }
 .xd-expand-leave-active { transition: opacity 0.12s ease, transform 0.12s ease; }

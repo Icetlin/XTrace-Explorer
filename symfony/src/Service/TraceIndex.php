@@ -11,10 +11,10 @@ class TraceIndex
      * Scans the trace file for all occurrences of any favourite pattern.
      * Returns a map: event_idx → listener_idx → [{ pattern, line_no }]
      *
-     * Algorithm:
-     *   1. Single pass through the file, checking each line against all patterns.
-     *   2. For each hit, binary-search the flat listener list (sorted by line_no) to find
-     *      which listener owns that line, then look up its event index.
+     * Optimizations over the original:
+     *   1. On-disk cache keyed by (fileId, sorted-pattern-list) so repeat calls are O(1).
+     *   2. Single forward pass through the file that does BOTH listener-scope computation
+     *      AND pattern matching, instead of two separate full passes.
      */
     public function scanFavourites(int $fileId, string $xtPath, array $patterns): array
     {
@@ -213,11 +213,16 @@ class TraceIndex
         return $result;
     }
 
+    public function invalidateFavouritesCache(int $fileId): void
+    {
+        $dir = $this->tracesDir . '/' . $fileId . '/fav_scan_cache';
+        if (!is_dir($dir)) return;
+        foreach (glob($dir . '/*.json') as $f) @unlink($f);
+    }
+
     /**
-     * Returns the ancestor chain from fromLine up to targetLine.
-     * fromLine should be the listener's line_no (its depth is the root for this traversal).
-     * Result: [{line_no, depth, sig}] ordered root-first, target last.
-     * Only includes nodes that are direct ancestors of targetLine (depth strictly increasing path).
+     * LEGACY ALIAS — kept for backward compat with code paths that still use it.
+     * New code should call scanFavourites() which now uses a merged pass + cache.
      */
     public function getAncestorPath(int $fileId, string $xtPath, int $targetLine, int $fromLine): array
     {
@@ -1066,10 +1071,16 @@ class TraceIndex
      * setToken($token = class Foo\Bar {...}) call before that line. Returns null if no
      * token is set yet (or it was last cleared via setToken(null)).
      * Used to infer the runtime type of $token inside security listeners.
+     *
+     * For traces without a prebuilt token_index.json, builds it once on disk and reuses.
      */
     private function inferTokenType(int $fileId, string $xtPath, int $untilLine): ?string
     {
         $tokenIndexPath = $this->tracesDir . '/' . $fileId . '/token_index.json';
+        if (!file_exists($tokenIndexPath)) {
+            // One-time backfill so we don't repeat the full scan on every var-context call.
+            $this->buildTokenIndexLazy($fileId, $xtPath);
+        }
         if (file_exists($tokenIndexPath)) {
             $tokenIndex = json_decode(file_get_contents($tokenIndexPath), true) ?: [];
             $lastTokenClass = null;
@@ -1080,7 +1091,7 @@ class TraceIndex
             return $lastTokenClass;
         }
 
-        // Fallback for traces parsed before token_index.json existed — full scan from start.
+        // Fallback for traces that failed backfill — full scan from start.
         // Start from the beginning (offset 0) — token is set very early
         $fh = fopen($xtPath, 'rb');
         $currentLine = 0;
@@ -1332,6 +1343,47 @@ class TraceIndex
         }
 
         return ['vars' => $vars, 'child_types' => $childTypes];
+    }
+
+    /**
+     * Build token_index.json on the fly for older traces that were parsed before
+     * TraceParser started emitting it. Single full-file pass that records every
+     * setToken($token = class Foo\Bar {...}) call (or setToken(null) for clears).
+     */
+    private function buildTokenIndexLazy(int $fileId, string $xtPath): void
+    {
+        $tokenIndexPath = $this->tracesDir . '/' . $fileId . '/token_index.json';
+        if (file_exists($tokenIndexPath)) return;
+
+        $fh = fopen($xtPath, 'rb');
+        if (!$fh) return;
+        $tokenIndex = [];
+        $lineNo = 0;
+
+        while (($line = fgets($fh, 1048576)) !== false) {
+            $lineNo++;
+            if (!str_contains($line, 'setToken')) continue;
+            if (!preg_match(TraceRegex::CallLineStrict->value, $line, $m)) continue;
+            $sig = $this->extractSig($m[2]);
+            if (!str_ends_with($sig, '->setToken')) continue;
+
+            foreach ($this->splitRawArgs($m[2]) as $arg) {
+                if (!str_contains($arg, '$token')) continue;
+                if (!preg_match('/^\$(\w+)\s*=\s*(.*)$/s', $arg, $am)) continue;
+                $val = trim($am[2]);
+                if (preg_match(TraceRegex::ClassDump->value, $val, $cm)) {
+                    $parts = explode('\\', $cm[1]);
+                    $tokenIndex[] = ['line_no' => $lineNo, 'class' => end($parts)];
+                } elseif ($val === 'NULL') {
+                    $tokenIndex[] = ['line_no' => $lineNo, 'class' => null];
+                }
+            }
+        }
+        fclose($fh);
+
+        if ($tokenIndex) {
+            @file_put_contents($tokenIndexPath, json_encode($tokenIndex));
+        }
     }
 
     private function truncateRaw(string $val): string

@@ -445,6 +445,10 @@ class TraceParser
         $tocJson = json_encode($toc, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         file_put_contents($dir . '/toc.json', $tocJson);
 
+        // Per-event app_calls cache: split the 38MB+ toc.json into one file per event
+        // so /api/app-calls/{id}/{eventIdx} doesn't have to decode the whole toc.
+        $this->writeAppCallsCache($dir, $toc);
+
         // Launch SQL extraction in parallel with extractResponseInfo (both do a full file scan).
         $sqlOutFile = $dir . '/sql.json.tmp';
         $sqlProcess = $this->startSqlWorker($xtFilePath, $sqlOutFile, $dir . '/toc.json');
@@ -672,6 +676,42 @@ class TraceParser
         }
 
         return $best;
+    }
+
+    /**
+     * Write per-event app_calls JSON files for fast lazy loading.
+     * Layout: $dir/app_calls/{flat_idx}.json — flat_idx is a stable sequential id
+     * assigned by walkFlattened() that matches the nested "3.2" notation from the controller.
+     */
+    private function writeAppCallsCache(string $dir, array $toc): void
+    {
+        $cacheDir = $dir . '/app_calls';
+        if (!is_dir($cacheDir) && !mkdir($cacheDir, 0755, true) && !is_dir($cacheDir)) {
+            return;
+        }
+        $counter = 0;
+        $this->walkAppCallsForCache($toc, $cacheDir, $counter);
+    }
+
+    private function walkAppCallsForCache(array $entries, string $cacheDir, int &$counter): void
+    {
+        foreach ($entries as $entry) {
+            $idx = $counter++;
+            $hasCalls = !empty($entry['app_calls']);
+            $hasChildren = !empty($entry['children']);
+
+            if ($hasCalls) {
+                $file = $cacheDir . '/' . $idx . '.json';
+                file_put_contents($file, json_encode(
+                    $entry['app_calls'],
+                    JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE
+                ));
+            }
+
+            if ($hasChildren) {
+                $this->walkAppCallsForCache($entry['children'], $cacheDir, $counter);
+            }
+        }
     }
 
     private function cleanupAppCallNodes(array &$toc): void

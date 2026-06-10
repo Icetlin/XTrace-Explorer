@@ -221,6 +221,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, nextTick, shallowRef } from 'vue'
 import { useTraceStore } from './stores/trace'
+import { usePerfStore } from './stores/perf'
 
 // apply saved theme immediately (before mount) to avoid flash
 const _savedTheme = localStorage.getItem('xtrace-theme') || 'dark'
@@ -353,10 +354,17 @@ async function openFile(relPath) {
   if (store.currentFile?.status !== 'ready') store.startPolling(data.file_id)
 }
 
+const perf = usePerfStore()
+
 function switchToTrace(fileId) {
-  store.switchToTab(fileId)
-  showBrowser.value = false
-  nextTick(() => { activeTocRef.value = tocTreeRefs[fileId] ?? null })
+  const tab = store.openTabs.find(t => t.fileId === fileId)
+  const name = shortName(tab?.name || fileId)
+  perf.time(`switch → ${name}`, 'tab', () => {
+    store.switchToTab(fileId)
+    showBrowser.value = false
+    // nextTick is sync, so time() will measure the DOM update latency too.
+    return nextTick().then(() => { activeTocRef.value = tocTreeRefs[fileId] ?? null })
+  })
 }
 
 function onJump(lineNo) {

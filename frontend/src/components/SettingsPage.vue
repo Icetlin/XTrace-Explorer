@@ -265,10 +265,12 @@ xdebug.trace_output_name = trace.%t.%p</pre>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 
 import { useTraceStore } from '../stores/trace'
+import { usePerfTrack } from '../perfTrack'
 import { favColor } from '../favColor.js'
 import axios from 'axios'
 
 const store = useTraceStore()
+usePerfTrack('SettingsPage', { category: 'render' })
 
 const sections = [
   { id: 'general',    icon: '⚙', label: 'General' },

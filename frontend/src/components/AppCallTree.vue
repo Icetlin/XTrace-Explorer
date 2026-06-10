@@ -61,6 +61,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useTraceStore } from '../stores/trace'
+import { usePerfTrack } from '../perfTrack'
 
 const props = defineProps({
   calls:        { type: Array,  default: () => [] },
@@ -70,6 +71,7 @@ const props = defineProps({
 
 const emit = defineEmits(['toggle'])
 const store = useTraceStore()
+usePerfTrack('AppCallTree', { category: 'render' })
 
 function onNodeClick(node) {
   if (node.children?.length) {

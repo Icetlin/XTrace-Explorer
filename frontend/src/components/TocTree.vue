@@ -233,6 +233,8 @@
 <script setup>
 import { ref, reactive, computed, nextTick, watch } from 'vue'
 import { useTraceStore } from '../stores/trace'
+import { usePerfStore } from '../stores/perf'
+import { usePerfTrack } from '../perfTrack'
 import CallNode from './CallNode.vue'
 import ContextMenu from './ContextMenu.vue'
 import NestedEventList from './NestedEventList.vue'
@@ -246,6 +248,9 @@ const props = defineProps({
 const emit = defineEmits(['jump', 'breadcrumb'])
 
 const store = useTraceStore()
+const perf = usePerfStore()
+// Record mount time so the Frontend timings panel can show component-load cost.
+usePerfTrack('TocTree', { category: 'render', trackUpdates: true })
 const ctxMenu = ref(null)
 
 const expandedEvents = ref(new Set())
@@ -546,7 +551,13 @@ async function toggleListener(ei, li, listener) {
   if (!childrenCache[key]) {
     loadingKey.value = key
     console.log('[toggleListener] fetching children for line_no', listener.line_no, 'depth', listener.depth ?? 0)
-    const result = await store.fetchChildren(props.fileId, listener.line_no, listener.depth ?? 0)
+    const shortSig = (listener.sig || '').split(/[\\>\(]/).pop() || listener.sig
+    const result = await perf.time(
+      `expand ${shortSig}`,
+      'toc',
+      () => store.fetchChildren(props.fileId, listener.line_no, listener.depth ?? 0),
+      { line_no: listener.line_no }
+    )
     console.log('[toggleListener] result', result)
     childrenCache[key] = result
     loadingKey.value = null

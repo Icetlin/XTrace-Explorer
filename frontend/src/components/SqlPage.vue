@@ -233,8 +233,10 @@
 import { ref, computed, watch } from 'vue'
 import axios from 'axios'
 import { useTraceStore } from '../stores/trace'
+import { usePerfTrack } from '../perfTrack'
 
 const store = useTraceStore()
+usePerfTrack('SqlPage', { category: 'render' })
 const queries = ref([])
 const loading = ref(false)
 const error = ref(null)

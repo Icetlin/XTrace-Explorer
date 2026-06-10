@@ -91,12 +91,16 @@
 <script setup>
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { useTraceStore } from '../stores/trace'
+import { usePerfTrack } from '../perfTrack'
 import hljs from 'highlight.js/lib/core'
 import phpLang from 'highlight.js/lib/languages/php'
 
 hljs.registerLanguage('php', phpLang)
 
 const store = useTraceStore()
+// CodeView re-mounts every time a new code node is selected — perfect
+// signal to record render time per node activation.
+usePerfTrack('CodeView', { category: 'render' })
 
 const loading = ref(false)
 const error = ref(null)

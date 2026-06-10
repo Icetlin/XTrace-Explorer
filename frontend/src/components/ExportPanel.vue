@@ -12,8 +12,10 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useTraceStore } from '../stores/trace'
+import { usePerfTrack } from '../perfTrack'
 
 const store = useTraceStore()
+usePerfTrack('ExportPanel', { category: 'render' })
 const selection = computed(() => store.selection)
 const copied = ref(false)
 

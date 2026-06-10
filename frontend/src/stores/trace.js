@@ -49,12 +49,16 @@ export const useTraceStore = defineStore('trace', () => {
     tab.progress = data.progress || 0
     activeTabFileId.value = fileId
     if (data.status === 'ready' && !tab.toc.length) {
+      // Critical: open tab as soon as toc/meta/annotations are loaded.
       await Promise.all([
         loadToc(fileId),
         loadMeta(fileId),
         loadAnnotations(fileId),
-        scanFavourites(fileId),
       ])
+      // Non-critical: scanFavourites is heavy on first call (cold cache, big trace
+      // can take 30-180s). Don't block tab opening — run in background, show
+      // a "scanning" indicator via tab.scanning (set inside scanFavourites).
+      scanFavourites(fileId).catch(() => {})
     } else if (data.status === 'parsing' || data.status === 'pending') {
       startPolling(fileId)
     }
@@ -87,7 +91,9 @@ export const useTraceStore = defineStore('trace', () => {
     }
     if (data.status === 'ready') {
       pollingIds.delete(fileId)
-      await Promise.all([loadToc(fileId), loadMeta(fileId), loadAnnotations(fileId), scanFavourites(fileId)])
+      await Promise.all([loadToc(fileId), loadMeta(fileId), loadAnnotations(fileId)])
+      // Heavy scan in background, non-blocking
+      scanFavourites(fileId).catch(() => {})
       return true
     }
     if (data.status === 'error') {
@@ -214,7 +220,7 @@ export const useTraceStore = defineStore('trace', () => {
   async function loadFavourites() {
     const { data } = await axios.get('/api/favourites')
     favourites.value = data
-    if (data.length) await rescanAllTabs()
+    if (data.length) rescanAllTabs().catch(() => {})  // fire-and-forget
   }
 
   async function addFavourite(pattern, label = null) {
@@ -231,7 +237,8 @@ export const useTraceStore = defineStore('trace', () => {
 
   async function rescanAllTabs() {
     const readyTabs = openTabs.value.filter(t => t.status === 'ready')
-    await Promise.all(readyTabs.map(t => scanFavourites(t.fileId)))
+    // Fire in parallel, don't await — UI shows "scanning" via tab.scanning
+    await Promise.allSettled(readyTabs.map(t => scanFavourites(t.fileId)))
   }
 
   function matchFavourites(text) {

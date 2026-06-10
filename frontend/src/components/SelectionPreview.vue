@@ -26,10 +26,12 @@
 <script setup>
 import { ref, watch } from 'vue'
 import { useTraceStore } from '../stores/trace'
+import { usePerfTrack } from '../perfTrack'
 import axios from 'axios'
 import SchemaNode from './SchemaNode.vue'
 
 const store = useTraceStore()
+usePerfTrack('SelectionPreview', { category: 'render' })
 const tree    = ref([])
 const loading = ref(false)
 const bodyEl  = ref(null)

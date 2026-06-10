@@ -216,7 +216,7 @@ class TraceController extends AbstractController
     }
 
     #[Route('/toc/{id}', methods: ['GET'])]
-    public function toc(int $id): JsonResponse
+    public function toc(int $id, Request $request): JsonResponse
     {
         $traceFile = $this->traceRepo->find($id);
         if (!$traceFile || $traceFile->getStatus() !== 'ready') {
@@ -226,6 +226,16 @@ class TraceController extends AbstractController
         $path = $this->tracesDir . '/' . $id . '/toc.json';
         if (!file_exists($path)) {
             return $this->json([]);
+        }
+
+        // ETag + 304 for repeat calls — toc.json is immutable after parse.
+        $mtime = filemtime($path);
+        $response = new JsonResponse();
+        $response->setEtag(base64_encode(pack('N', crc32(file_get_contents($path, false, null, 0, 8192)))));
+        $response->setLastModified((new \DateTime())->setTimestamp($mtime));
+        $response->setPublic();
+        if ($response->isNotModified($request)) {
+            return $response;
         }
 
         // Strip app_calls trees from the TOC response — they can be 100k+ nodes (38MB+).
@@ -249,7 +259,8 @@ class TraceController extends AbstractController
         }
         unset($entry);
 
-        return $this->json($toc);
+        $response->setData($toc);
+        return $response;
     }
 
     private function countAppCallNodes(array $nodes): int
@@ -272,24 +283,51 @@ class TraceController extends AbstractController
             return $this->json(['error' => 'Not ready'], 404);
         }
 
+        // Fast path: per-event cache file (built by TraceParser::writeAppCallsCache).
+        $cacheFile = $this->tracesDir . '/' . $id . '/app_calls/' . $eventIdx . '.json';
+        if (file_exists($cacheFile)) {
+            $response = new JsonResponse();
+            $response->setEtag(base64_encode(pack('N', crc32(file_get_contents($cacheFile, false, null, 0, 8192)))));
+            $response->setLastModified((new \DateTime())->setTimestamp(filemtime($cacheFile)));
+            $response->setPublic();
+            $req = Request::createFromGlobals();
+            if ($response->isNotModified($req)) {
+                return $response;
+            }
+            $response->setContent(file_get_contents($cacheFile));
+            return $response;
+        }
+
+        // Fallback for traces parsed before the cache was added — read whole toc.json.
+        // Supports nested "3.2" notation by recursively walking.
         $path = $this->tracesDir . '/' . $id . '/toc.json';
         if (!file_exists($path)) {
             return $this->json([]);
         }
-
         $toc = json_decode(file_get_contents($path), true);
-
-        // Support nested event idx like "3.2" for children
-        $entry = $toc[$eventIdx] ?? null;
-        if (!$entry) {
+        $entry = $this->findTocEntryByIdx($toc, $eventIdx);
+        if ($entry === null) {
             return $this->json(['error' => 'Event not found'], 404);
         }
-
         return $this->json($entry['app_calls'] ?? []);
     }
 
+    private function findTocEntryByIdx(array $entries, int|string $idx): ?array
+    {
+        if (is_int($idx)) {
+            return $entries[$idx] ?? null;
+        }
+        // "3.2" — walk through nested children
+        $parts = explode('.', (string)$idx);
+        $current = $entries[(int)$parts[0]] ?? null;
+        for ($i = 1; $i < count($parts) && $current !== null; $i++) {
+            $current = $current['children'][(int)$parts[$i]] ?? null;
+        }
+        return $current;
+    }
+
     #[Route('/meta/{id}', methods: ['GET'])]
-    public function meta(int $id): JsonResponse
+    public function meta(int $id, Request $request): JsonResponse
     {
         $traceFile = $this->traceRepo->find($id);
         if (!$traceFile || $traceFile->getStatus() !== 'ready') {
@@ -298,7 +336,15 @@ class TraceController extends AbstractController
 
         $metaPath = $this->tracesDir . '/' . $id . '/meta.json';
         if (file_exists($metaPath)) {
-            return new JsonResponse(file_get_contents($metaPath), 200, [], true);
+            $response = new JsonResponse();
+            $response->setEtag(base64_encode(pack('N', crc32(file_get_contents($metaPath, false, null, 0, 8192)))));
+            $response->setLastModified((new \DateTime())->setTimestamp(filemtime($metaPath)));
+            $response->setPublic();
+            if ($response->isNotModified($request)) {
+                return $response;
+            }
+            $response->setContent(file_get_contents($metaPath));
+            return $response;
         }
 
         // Fallback: derive total_lines from last key in line_index
@@ -639,6 +685,11 @@ class TraceController extends AbstractController
         $this->em->persist($fav);
         $this->em->flush();
 
+        // Invalidate fav_scan_cache for all parsed traces — new pattern must be matched
+        foreach ($this->traceRepo->findAll() as $tf) {
+            $this->traceIndex->invalidateFavouritesCache($tf->getId());
+        }
+
         return $this->json(['id' => $fav->getId()], 201);
     }
 
@@ -649,6 +700,10 @@ class TraceController extends AbstractController
         if (!$fav) return $this->json(['error' => 'Not found'], 404);
         $this->em->remove($fav);
         $this->em->flush();
+
+        foreach ($this->traceRepo->findAll() as $tf) {
+            $this->traceIndex->invalidateFavouritesCache($tf->getId());
+        }
         return $this->json(['ok' => true]);
     }
 

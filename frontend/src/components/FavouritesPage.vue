@@ -34,9 +34,11 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useTraceStore } from '../stores/trace'
+import { usePerfTrack } from '../perfTrack'
 import { favColor } from '../favColor.js'
 
 const store = useTraceStore()
+usePerfTrack('FavouritesPage', { category: 'render' })
 const newPattern = ref('')
 const newLabel = ref('')
 
