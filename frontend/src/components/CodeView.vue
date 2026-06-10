@@ -7,8 +7,9 @@
       <button class="code-view__close" @click="store.setCodeNode(null)">✕</button>
     </div>
 
-    <!-- Loading bar (thin, non-intrusive) -->
-    <div v-if="loading" class="code-view__loadbar" />
+    <!-- Loading bar — visible so user knows the click was registered while
+         fetchChildren (1.5s+ for deep listener) or fetchSource is in flight. -->
+    <div v-if="loading" class="code-view__loadbar">loading source…</div>
 
     <!-- Error -->
     <div v-if="error" class="code-view__error">{{ error }}</div>
@@ -264,10 +265,20 @@ async function loadNodeSource(node) {
   const method = sigParts.method
   const klass = sigParts.class
 
-  // Same file already shown — just scroll + refresh annotations
+  // Set currentFile + currentHint IMMEDIATELY (before any await) so the CodeView
+  // header shows the file path right away. Without this, a 1.5s fetchChildren for
+  // a listener with no cached children leaves the user staring at an empty
+  // "Click any node to view source" placeholder — looks unresponsive.
+  if (absPath !== currentFile.value) {
+    currentFile.value = absPath
+    source.value = null  // clear stale source from a different file
+  }
+  currentHint.value = hint
+  store.setActiveCodeFile(absPath)
+
+  // Same file already shown — just scroll + refresh annotations, no need to refetch source
   if (absPath === currentFile.value && source.value) {
     loading.value = false
-    currentHint.value = hint
     await nextTick()
     scrollToLine(hint)
     loadAnnotationsBackground(seq, node, absPath, fileId, source.value, prefetchedChildren)
@@ -275,9 +286,6 @@ async function loadNodeSource(node) {
   }
 
   loading.value = true
-  currentFile.value = absPath
-  currentHint.value = hint
-  store.setActiveCodeFile(absPath)
 
   const data = await store.fetchSource(absPath, hint, method, klass).catch(() => null)
   if (seq !== _loadSeq) return
@@ -622,15 +630,14 @@ function extractLineNo(fileStr) {
 }
 
 .code-view__loadbar {
-  position: absolute;
-  top: 35px;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: linear-gradient(90deg, transparent 0%, rgba(60, 130, 200, 0.7) 40%, rgba(80, 160, 240, 0.9) 60%, transparent 100%);
+  padding: 4px 12px;
+  font-size: 11px;
+  color: rgba(140, 180, 220, 0.85);
+  background: linear-gradient(90deg, transparent 0%, rgba(60, 130, 200, 0.25) 40%, rgba(80, 160, 240, 0.4) 60%, transparent 100%);
   background-size: 200% 100%;
-  animation: loadbar-slide 0.8s linear infinite;
-  z-index: 10;
+  animation: loadbar-slide 1.2s linear infinite;
+  border-bottom: 1px solid rgba(60, 130, 200, 0.2);
+  text-align: center;
 }
 @keyframes loadbar-slide {
   0%   { background-position: 100% 0; }

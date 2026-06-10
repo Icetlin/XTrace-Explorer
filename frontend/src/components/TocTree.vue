@@ -566,13 +566,24 @@ function onListenerClick(e, ei, li, listener, event) {
 
 function prefetchListener(listener) {
   if (!props.fileId || listener.line_no == null) return
-  // Fire-and-forget: warm the children + source caches on hover so click is instant
+  // Bail early if the children cache is already warm — clicking will be instant
+  const cacheKey = `${props.fileId}:${listener.line_no}:${listener.depth ?? 0}`
+  if (store._childrenCache?.has?.(cacheKey)) return
+  // Fire-and-forget: warm the children + source caches on hover so click is instant.
+  // Without this, clicking a deep listener (e.g. Repository::method at depth=11)
+  // triggers a 1.5s fetchChildren on the click handler before CodeView can show
+  // anything — looks unresponsive even though the click was registered.
   store.fetchChildren(props.fileId, listener.line_no, listener.depth ?? 0).then(result => {
     const firstChild = (result?.children || []).find(c => c.file_abs)
     if (firstChild) {
       const absPath = firstChild.file_abs.replace(/:\d+$/, '')
       const hint = firstChild.file_abs.match(/:(\d+)$/)?.[1]
-      store.fetchSource(absPath, hint ? parseInt(hint) : 0)
+      const klass = store.extractClassName?.(listener.sig)
+      const method = store.extractMethodName?.(listener.sig)
+      // method/class disambiguate call-site file_abs (xdebug convention) from
+      // the real method definition. Without these, fetchSource can land on
+      // the wrong method.
+      store.fetchSource(absPath, hint ? parseInt(hint) : 0, method, klass)
     }
   }).catch(() => {})
 }
