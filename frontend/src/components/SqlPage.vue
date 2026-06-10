@@ -201,17 +201,11 @@
                       <span v-if="qbData.get(uq.key).length === 0" class="qb-panel__none">no QB calls found (raw SQL or not captured)</span>
                     </div>
                     <div v-if="qbData.get(uq.key).length > 0" class="qb-chain">
+                      <div class="qb-chain__root">$qb</div>
                       <div v-for="(call, ci) in qbData.get(uq.key)" :key="ci" class="qb-call">
-                        <span class="qb-call__arrow">{{ ci === 0 ? '  ' : '->' }}</span>
-                        <span class="qb-call__method">{{ call.method }}</span>
-                        <span class="qb-call__paren">(</span>
-                        <template v-for="(arg, ai) in call.args" :key="ai">
-                          <span v-if="ai > 0" class="qb-call__sep">, </span>
-                          <span class="qb-call__arg">{{ arg }}</span>
-                        </template>
-                        <span class="qb-call__paren">)</span>
-                        <span v-if="call.return" class="qb-call__ret"> → {{ call.return }}</span>
+                        <span class="qb-call__arrow">→</span><span class="qb-call__method">{{ call.method }}</span><span class="qb-call__paren">(</span><span class="qb-call__args">{{ call.argsFormatted }}</span><span class="qb-call__paren">)</span>
                       </div>
+                      <div class="qb-chain__end">→getResult()</div>
                     </div>
                   </div>
                 </div>
@@ -548,41 +542,112 @@ function shortToc(toc) {
 
 const QB_METHODS = new Set(['select', 'addSelect', 'from', 'where', 'andWhere', 'orWhere',
   'innerJoin', 'leftJoin', 'join', 'rightJoin', 'orderBy', 'addOrderBy', 'groupBy', 'addGroupBy',
-  'having', 'andHaving', 'orHaving', 'setParameter', 'setParameters', 'setFirstResult', 'setMaxResults'])
+  'having', 'andHaving', 'orHaving', 'setParameter', 'setParameters', 'setFirstResult', 'setMaxResults',
+  'getQuery', 'getResult'])
+
+/**
+ * Strips the $var = PHP-style prefix that xdebug emits and expands
+ * variadic-array values inline so the chain reads like real code.
+ *
+ *   "$key = 'owner'"                    -> 'owner'
+ *   '$value = User {…}'                 -> User {…}
+ *   '$value = 163'                      -> 163
+ *   "$select = ['uda', 'u', 'profile']" -> 'uda', 'u', 'profile'
+ *   "$predicates = ['u.email IS NULL']" -> 'u.email IS NULL'
+ */
+function formatQbArgs(args) {
+  if (!args || args.length === 0) return ''
+  return args.map((arg) => {
+    let val = String(arg)
+    const m = val.match(/^\$?\w+\s*=\s*([\s\S]*)$/)
+    if (m) val = m[1].trim()
+
+    // Expand variadic array literal: ['a', 'b', 'c'] -> 'a', 'b', 'c'
+    if (val.length >= 2 && val.startsWith('[') && val.endsWith(']')) {
+      const inner = val.slice(1, -1).trim()
+      if (inner === '') return ''
+      const items = []
+      let cur = ''
+      let inQ = null
+      let parens = 0
+      for (let i = 0; i < inner.length; i++) {
+        const c = inner[i]
+        if (inQ) {
+          cur += c
+          if (c === inQ && inner[i - 1] !== '\\') inQ = null
+          continue
+        }
+        if (c === "'" || c === '"') { inQ = c; cur += c; continue }
+        if (c === '(') parens++
+        else if (c === ')') parens--
+        if (c === ',' && parens === 0 && inner[i + 1] === ' ') {
+          items.push(cur.trim()); cur = ''; continue
+        }
+        cur += c
+      }
+      if (cur.trim()) items.push(cur.trim())
+      if (items.length > 0) return items.join(', ')
+    }
+    return val
+  }).join(', ')
+}
 
 async function toggleQb(uq) {
+  console.log('[QB] toggleQb click', { key: uq.key, n: uq.n, sql_preview: (uq.sql||'').slice(0, 60) })
   if (qbData.value.has(uq.key)) {
+    console.log('[QB] already loaded — toggling closed')
     const m = new Map(qbData.value)
     m.delete(uq.key)
     qbData.value = m
     return
   }
   const fileId = store.activeTabFileId
-  if (!fileId || !uq.callerLineNo) return
+  console.log('[QB] fileId=', fileId, 'callerLineNo=', uq.callerLineNo, 'callerDepth=', uq.callerDepth)
+  if (!fileId || !uq.callerLineNo) {
+    console.warn('[QB] missing fileId or callerLineNo — abort')
+    return
+  }
 
   const s = new Set(qbLoading.value)
   s.add(uq.key)
   qbLoading.value = s
 
+  const url = `/api/children/${fileId}`
+  const params = { line_no: uq.callerLineNo, depth: uq.callerDepth ?? 0, raw: false }
+  console.log('[QB] GET', url, params)
+
   try {
-    const { data } = await axios.get(`/api/children/${fileId}`, {
-      params: { line_no: uq.callerLineNo, depth: uq.callerDepth ?? 0, raw: false },
+    const resp = await axios.get(url, { params })
+    const data = resp.data
+    const allChildren = (data && data.children) || []
+    console.log(`[QB] response: total_children=${allChildren.length}, parent_return=`, data && data.parent_return)
+    // Log every child for full visibility
+    allChildren.forEach((c, i) => {
+      console.log(`[QB]   child[${i}] line=${c.line_no} sig=${c.sig} args=${JSON.stringify(c.args)} return=${JSON.stringify(c.return)}`)
     })
-    const calls = (data || [])
+    const calls = allChildren
       .filter(c => {
         const local = (c.sig || '').split('\\').pop() || ''
         const method = local.includes('->') ? local.split('->').pop() : null
-        return local.includes('QueryBuilder->') && method && QB_METHODS.has(method)
+        const hasQB = local.includes('QueryBuilder->')
+        const inSet = method && QB_METHODS.has(method)
+        if (!hasQB || !inSet) {
+          console.log(`[QB]   filter SKIP line=${c.line_no} sig=${c.sig} hasQueryBuilder=${hasQB} method=${method} inSet=${inSet}`)
+        }
+        return hasQB && method && inSet
       })
       .map(c => {
         const local = (c.sig || '').split('\\').pop() || ''
         const method = local.includes('->') ? local.split('->').pop() : local
-        return { method, args: c.args || [], return: c.return }
+        return { method, argsFormatted: formatQbArgs(c.args || []) }
       })
+    console.log(`[QB] filtered calls: ${calls.length}`, calls)
     const m = new Map(qbData.value)
     m.set(uq.key, calls)
     qbData.value = m
-  } catch {
+    console.log('[QB] stored in qbData, panel should now show', calls.length, 'calls')
+  } catch (err) {
+    console.error('[QB] axios error', err)
     const m = new Map(qbData.value)
     m.set(uq.key, [])
     qbData.value = m
@@ -1319,40 +1384,59 @@ html[data-theme="light"] .qb-panel__label { color: rgba(15,110,50,0.85); }
 html[data-theme="light"] .qb-panel__hint { color: rgba(60,90,140,0.45); }
 
 .qb-chain {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  display: block;
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Code', 'Roboto Mono', Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: rgba(190,200,220,0.9);
+  background: rgba(0,0,0,0.18);
+  border-left: 2px solid rgba(100,160,220,0.35);
+  border-radius: 0 4px 4px 0;
+  padding: 6px 0 6px 10px;
+  margin-top: 2px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
+html[data-theme="light"] .qb-chain {
+  color: rgba(40,50,70,0.9);
+  background: rgba(110,150,210,0.06);
+  border-left-color: rgba(60,120,200,0.4);
+}
+.qb-chain__root {
+  color: rgba(140,180,200,0.75);
+  font-weight: 500;
+  margin-bottom: 2px;
+  font-style: italic;
+}
+html[data-theme="light"] .qb-chain__root { color: rgba(80,110,150,0.75); }
+.qb-chain__end {
+  color: rgba(100,180,140,0.7);
+  font-style: italic;
+  margin-top: 2px;
+}
+html[data-theme="light"] .qb-chain__end { color: rgba(60,130,80,0.8); }
 .qb-call {
-  display: flex;
-  align-items: baseline;
-  gap: 0;
-  font-size: 11px;
-  line-height: 1.55;
+  display: block;
+  padding-left: 1.2em;
+  text-indent: -1.2em;
 }
 .qb-call__arrow {
-  color: rgba(60,100,150,0.5);
-  flex-shrink: 0;
-  width: 18px;
-  font-size: 10px;
+  color: rgba(120,160,200,0.5);
+  display: inline-block;
+  width: 1.5em;
 }
 .qb-call__method {
-  color: rgba(100,190,230,0.9);
+  color: rgba(110,180,230,0.95);
   font-weight: 600;
 }
-.qb-call__paren { color: rgba(120,140,180,0.5); }
-.qb-call__arg {
-  color: rgba(206,145,120,0.9);
+.qb-call__paren { color: rgba(150,170,200,0.55); }
+.qb-call__args {
+  color: rgba(220,160,130,0.95);
 }
-.qb-call__sep { color: rgba(100,120,160,0.45); }
-.qb-call__ret {
-  color: rgba(100,180,100,0.55);
-  font-size: 10px;
-  margin-left: 4px;
-}
-html[data-theme="light"] .qb-call__method { color: rgba(0,80,160,0.9); }
-html[data-theme="light"] .qb-call__arg { color: rgba(150,40,0,0.85); }
-html[data-theme="light"] .qb-call__paren { color: rgba(80,100,150,0.45); }
+html[data-theme="light"] .qb-call__method { color: rgba(20,90,180,0.95); }
+html[data-theme="light"] .qb-call__args { color: rgba(170,50,0,0.95); }
+html[data-theme="light"] .qb-call__paren { color: rgba(100,120,160,0.55); }
+html[data-theme="light"] .qb-call__arrow { color: rgba(80,120,170,0.6); }
 
 /* Copy toast */
 .copy-toast {

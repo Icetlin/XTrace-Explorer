@@ -121,9 +121,10 @@ enum TraceRegex: string
     // Group 1 = referer URL
     case ServerReferer = "/'HTTP_REFERER'\s*=>\s*'([^']+)'/";
 
-    // Single-arg extraction: "$varName = someValue" at the start of a top-level-split arg token
-    // Group 1 = variable name (without $), group 2 = raw value
-    case ArgAssignment = '/^\$(\w+)\s*=\s*(.+)$/';
+    // Single-arg extraction: "$varName = someValue" at the start of a top-level-split arg token.
+    // Accepts: $name = value, &$name = value (by-ref), ...$name = variadic(...)
+    // Group 1 = variable name (without leading $ and ...), group 2 = raw value.
+    case ArgAssignment = '/^(?:\.\.\.|&)?\$(\w+)\s*=\s*(.+)$/';
 
     // Full arg raw value extraction when the entire line is known: "$name = value"
     // Group 1 = the raw value after "= "

@@ -720,7 +720,23 @@ class TraceIndex
         if ($paren === false) return [];
 
         $argsStr = substr($call, $paren + 1);
-        // Remove trailing )
+        // Cut at the matching closing paren. The raw call may also have a
+        // tail like ")) /path/to/file.php:LINE" — xdebug appends the call
+        // site AFTER the parens, but for fluent chains (e.g. select(...)->
+        // where(...)) there can be extra ')'. Find the position of the
+        // first top-level ')' and trim everything from there on.
+        $depth = 0;
+        $end = strlen($argsStr);
+        for ($i = 0; $i < strlen($argsStr); $i++) {
+            $ch = $argsStr[$i];
+            if ($ch === '(' || $ch === '[' || $ch === '{') $depth++;
+            elseif ($ch === ')' || $ch === ']' || $ch === '}') {
+                $depth--;
+                if ($depth === -1) { $end = $i; break; }
+            }
+        }
+        $argsStr = substr($argsStr, 0, $end);
+        // Final defensive strip of trailing ')'s that may remain
         $argsStr = preg_replace(TraceRegex::TrailingParen->value, '', $argsStr);
         if (trim($argsStr) === '' || $argsStr === '???') return [];
 
@@ -757,6 +773,40 @@ class TraceIndex
 
     private function simplifyValue(string $val): ?string
     {
+        // xdebug wraps variadic args as variadic(0 => 'x', 1 => 'y', ...) when the
+        // called method uses ...$param. Unwrap to ['x', 'y', ...] so the QB chain
+        // panel shows what was actually passed to ->select(...), ->addSelect(...), etc.
+        if (preg_match('/^variadic\(([\s\S]*?)\)?$/', $val, $vm)) {
+            $items = [];
+            $inner = $vm[1];
+            $depth = 0;
+            $cur = '';
+            $inStr = null;
+            $len = strlen($inner);
+            for ($i = 0; $i < $len; $i++) {
+                $c = $inner[$i];
+                if ($inStr !== null) {
+                    $cur .= $c;
+                    if ($c === '\\') { $i++; $cur .= $inner[$i] ?? ''; continue; }
+                    if ($c === $inStr) $inStr = null;
+                    continue;
+                }
+                if ($c === '\'' || $c === '"') { $inStr = $c; $cur .= $c; continue; }
+                if ($c === '(' || $c === '[' || $c === '{') $depth++;
+                elseif ($c === ')' || $c === ']' || $c === '}') $depth--;
+                if ($c === ',' && $depth === 0) { $items[] = $cur; $cur = ''; continue; }
+                $cur .= $c;
+            }
+            if (trim($cur) !== '') $items[] = $cur;
+            $vals = [];
+            foreach ($items as $item) {
+                $item = trim($item);
+                if ($item === '') continue;
+                $item = preg_replace('/^[^\s=]+\s*=>\s*/', '', $item);
+                $vals[] = $this->simplifyValue($item) ?? $item;
+            }
+            return '[' . implode(', ', $vals) . ']';
+        }
         // String literal (truncate long values like JWTs)
         if (preg_match(TraceRegex::StringLiteral->value, $val, $m)) {
             $s = $m[1];
