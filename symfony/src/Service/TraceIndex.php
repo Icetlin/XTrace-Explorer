@@ -1062,15 +1062,25 @@ class TraceIndex
     }
 
     /**
-     * Scans the trace from the start up to $untilLine looking for the last
-     * setToken($token = class Foo\Bar {...}) call. Returns short class name or null.
+     * Returns the runtime type of $token as of $untilLine, i.e. the class from the last
+     * setToken($token = class Foo\Bar {...}) call before that line. Returns null if no
+     * token is set yet (or it was last cleared via setToken(null)).
      * Used to infer the runtime type of $token inside security listeners.
      */
     private function inferTokenType(int $fileId, string $xtPath, int $untilLine): ?string
     {
-        $indexPath = $this->tracesDir . '/' . $fileId . '/line_index.json';
-        $index = json_decode(file_get_contents($indexPath), true);
+        $tokenIndexPath = $this->tracesDir . '/' . $fileId . '/token_index.json';
+        if (file_exists($tokenIndexPath)) {
+            $tokenIndex = json_decode(file_get_contents($tokenIndexPath), true) ?: [];
+            $lastTokenClass = null;
+            foreach ($tokenIndex as $entry) {
+                if ($entry['line_no'] >= $untilLine) break;
+                $lastTokenClass = $entry['class'];
+            }
+            return $lastTokenClass;
+        }
 
+        // Fallback for traces parsed before token_index.json existed — full scan from start.
         // Start from the beginning (offset 0) — token is set very early
         $fh = fopen($xtPath, 'rb');
         $currentLine = 0;

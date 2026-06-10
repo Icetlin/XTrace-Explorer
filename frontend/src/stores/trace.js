@@ -283,6 +283,11 @@ export const useTraceStore = defineStore('trace', () => {
     return data
   }
 
+  async function fetchTimings(fileId, limit = 50) {
+    const { data } = await axios.get(`/api/timings/${fileId}`, { params: { limit } })
+    return data
+  }
+
   const _settingsCache = ref({})
 
   async function loadSettings() {
@@ -434,7 +439,7 @@ export const useTraceStore = defineStore('trace', () => {
     files, openTabs, activeTabFileId, currentTab, currentFile, toc, totalLines, annotations, favourites,
     listenerFilters, eventFilters, appNamespaces, pathMapping,
     loadFiles, selectFile, switchToTab, closeTab, pollStatus, startPolling, reparse,
-    fetchChildren, fetchPath, fetchObject, fetchFindObject, fetchArray, expandItem, fetchSource, fetchVarContext, fetchAppCalls, getListenerFileAbs, search,
+    fetchChildren, fetchPath, fetchObject, fetchFindObject, fetchArray, expandItem, fetchSource, fetchVarContext, fetchAppCalls, getListenerFileAbs, search, fetchTimings,
     addAnnotation, deleteAnnotation,
     loadFavourites, addFavourite, deleteFavourite, matchFavourites, favMatchesInRange, scanFavourites,
     loadSettings, saveSettings, addListenerFilter, isListenerFiltered, addEventFilter, isEventFiltered,

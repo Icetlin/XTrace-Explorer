@@ -1,5 +1,5 @@
 <template>
-  <div ref="ctrlRef" class="float-ctrl" :class="{ 'float-ctrl--open': xdOpen || favOpen }">
+  <div ref="ctrlRef" class="float-ctrl" :class="{ 'float-ctrl--open': xdOpen || favOpen || timingsOpen }">
 
     <!-- Xdebug mode options (shown above buttons when open) -->
     <transition name="xd-expand">
@@ -47,6 +47,22 @@
       </div>
     </transition>
 
+    <!-- Backend timings panel -->
+    <transition name="xd-expand">
+      <div v-if="timingsOpen" class="timings-panel">
+        <div class="timings-panel__header">Backend</div>
+        <div class="timings-panel__list">
+          <div v-if="!timings.length" class="timings-panel__empty">no requests yet</div>
+          <div v-for="t in timings" :key="t.id" class="timings-panel__row">
+            <span class="timings-panel__method" :class="'method--' + t.endpoint_method.toLowerCase()">{{ t.endpoint_method }}</span>
+            <span class="timings-panel__url">{{ t.endpoint_url }}</span>
+            <span class="timings-panel__duration" :class="durationClass(t.duration_ms)">{{ t.duration_ms }} ms</span>
+            <span class="timings-panel__time">{{ t.created }}</span>
+          </div>
+        </div>
+      </div>
+    </transition>
+
     <!-- Buttons row (always horizontal) -->
     <div class="float-ctrl__row">
       <!-- Collapse / expand TOC -->
@@ -77,6 +93,21 @@
         <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
           <ellipse cx="7.5" cy="7.5" rx="6" ry="4" stroke="currentColor" stroke-width="1.3"/>
           <circle cx="7.5" cy="7.5" r="2" stroke="currentColor" stroke-width="1.3"/>
+        </svg>
+      </button>
+
+      <!-- Backend timings toggle -->
+      <button
+        v-if="hasTrace"
+        class="float-ctrl__item"
+        :class="{ 'float-ctrl__item--active': timingsOpen }"
+        title="Backend timings"
+        @click="toggleTimings"
+      >
+        <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+          <circle cx="7.5" cy="8.5" r="5.5" stroke="currentColor" stroke-width="1.3"/>
+          <path d="M7.5 8.5V5.5M7.5 8.5L9.5 10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M5.5 1.5h4M7.5 1.5V3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
         </svg>
       </button>
 
@@ -197,7 +228,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
 import SettingsPage from './SettingsPage.vue'
 import SqlPage from './SqlPage.vue'
@@ -217,6 +248,7 @@ function onDocClick(e) {
   if (ctrlRef.value && !ctrlRef.value.contains(e.target)) {
     xdOpen.value = false
     favOpen.value = false
+    timingsOpen.value = false
   }
 }
 onMounted(() => document.addEventListener('mousedown', onDocClick))
@@ -350,6 +382,47 @@ async function selectXdMode(mode) {
   } catch {}
   xdLoading.value = false
 }
+
+// ── Backend timings panel ──────────────────────────────────────────────────
+const timingsOpen = ref(false)
+const timings = ref([])
+let timingsTimer = null
+
+function toggleTimings() {
+  xdOpen.value = false
+  favOpen.value = false
+  timingsOpen.value = !timingsOpen.value
+}
+
+async function loadTimings() {
+  const f = store.currentFile
+  if (!f) return
+  try {
+    timings.value = await store.fetchTimings(f.file_id)
+  } catch {}
+}
+
+watch(timingsOpen, (open) => {
+  if (open) {
+    loadTimings()
+    timingsTimer = setInterval(loadTimings, 3000)
+  } else {
+    clearInterval(timingsTimer)
+    timingsTimer = null
+  }
+})
+
+watch(() => store.currentFile?.file_id, () => {
+  if (timingsOpen.value) loadTimings()
+})
+
+function durationClass(ms) {
+  if (ms >= 500) return 'timing--slow'
+  if (ms >= 100) return 'timing--mid'
+  return 'timing--fast'
+}
+
+onUnmounted(() => clearInterval(timingsTimer))
 </script>
 
 <style scoped>
@@ -370,7 +443,6 @@ async function selectXdMode(mode) {
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   filter: drop-shadow(0 4px 24px rgba(0, 0, 0, 0.55));
-  animation: float-bob 4s ease-in-out infinite;
 }
 html[data-theme="light"] .float-ctrl {
   background: rgba(232, 238, 252, 0.90);
@@ -388,10 +460,6 @@ html[data-theme="light"] .float-ctrl {
   gap: 2px;
 }
 
-@keyframes float-bob {
-  0%, 100% { transform: translateY(0); }
-  50%       { transform: translateY(-4px); }
-}
 
 /* Item buttons */
 .float-ctrl__item {
@@ -567,6 +635,97 @@ html[data-theme="light"] .float-ctrl__item--theme:hover {
   transition: background 0.12s;
 }
 .fav-panel__btn:hover { background: rgba(50,80,160,0.45); }
+
+/* ── Backend timings panel ── */
+.timings-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 360px;
+  max-width: 440px;
+}
+.timings-panel__header {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(140, 165, 215, 0.75);
+  padding: 6px 10px 4px;
+}
+html[data-theme="light"] .timings-panel__header {
+  color: rgba(30, 60, 140, 0.7);
+}
+.timings-panel__list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 0 0 4px;
+}
+.timings-panel__list::-webkit-scrollbar { width: 3px; }
+.timings-panel__list::-webkit-scrollbar-thumb { background: rgba(80,100,160,0.3); border-radius: 2px; }
+.timings-panel__empty {
+  font-size: 10px;
+  color: rgba(80,90,140,0.5);
+  padding: 6px 10px;
+  font-family: 'JetBrains Mono', monospace;
+}
+.timings-panel__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border-radius: 5px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  transition: background 0.1s;
+}
+.timings-panel__row:hover { background: rgba(255,255,255,0.05); }
+.timings-panel__method {
+  flex-shrink: 0;
+  width: 42px;
+  text-align: center;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 2px 0;
+  border-radius: 4px;
+  color: rgba(140, 160, 210, 0.85);
+  background: rgba(255,255,255,0.06);
+}
+.timings-panel__method.method--get    { color: #6cb8ff; background: rgba(60, 130, 255, 0.16); }
+.timings-panel__method.method--post   { color: #6fd98e; background: rgba(70, 200, 120, 0.16); }
+.timings-panel__method.method--put,
+.timings-panel__method.method--patch  { color: #ffb766; background: rgba(255, 160, 60, 0.16); }
+.timings-panel__method.method--delete { color: #ff8a8a; background: rgba(230, 70, 70, 0.16); }
+.timings-panel__url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(180, 195, 230, 0.9);
+}
+html[data-theme="light"] .timings-panel__url {
+  color: rgba(20, 40, 90, 0.85);
+}
+.timings-panel__duration {
+  flex-shrink: 0;
+  width: 56px;
+  text-align: right;
+  font-weight: 600;
+}
+.timings-panel__duration.timing--fast { color: #6fd98e; }
+.timings-panel__duration.timing--mid  { color: #ffc966; }
+.timings-panel__duration.timing--slow { color: #ff8a8a; }
+.timings-panel__time {
+  flex-shrink: 0;
+  width: 52px;
+  text-align: right;
+  color: rgba(100, 115, 160, 0.7);
+  font-size: 10px;
+}
 
 .xd-expand-enter-active { transition: opacity 0.18s ease, transform 0.18s cubic-bezier(0.34,1.1,0.64,1); }
 .xd-expand-leave-active { transition: opacity 0.12s ease, transform 0.12s ease; }

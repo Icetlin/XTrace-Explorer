@@ -231,7 +231,8 @@ async function loadNodeSource(node) {
   const fileId = store.currentFile?.file_id
 
   // Resolve file_abs — may require fetching children first
-  let fileAbs = node.file_abs
+  // trimEnd() removes trailing \n that old toc.json files may contain (fgets artifact)
+  let fileAbs = node.file_abs?.trimEnd() ?? null
   let prefetchedChildren = null
 
   if (!fileAbs && fileId && node.line_no != null) {
