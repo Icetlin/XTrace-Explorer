@@ -21,7 +21,7 @@
       @click="onRowClick"
       @contextmenu.prevent="onContextMenu"
     >
-      <span class="chevron-sm" :class="{ 'chevron-sm--leaf': isLeaf || isNoisy }">{{ isLeaf || isNoisy ? '·' : (expanded ? '▾' : '▸') }}</span>
+      <span class="chevron-sm" :class="{ 'chevron-sm--leaf': isLeaf || isNoisy }" @click.stop="toggle">{{ isLeaf || isNoisy ? '·' : (expanded ? '▾' : '▸') }}</span>
       <span class="call-sig" :class="[sigClass, { 'call-sig--dim': isLeaf || isNoisy }]" :title="node.sig" v-html="renderSig(node.sig)"></span>
       <template v-if="node.args?.length">
         <span
@@ -289,7 +289,9 @@ function onRowClick(e) {
   if (props.node.file_abs) {
     store.setCodeNode(props.node, props.ancestorCrumbs)
   }
-  toggle()
+  // Don't auto-toggle here. The chevron (▸/▾) handles expand/collapse via its
+  // own click handler — separating the two avoids the row double-acting
+  // (CodeView + children fetch firing on every click).
 }
 
 async function toggle() {

@@ -138,7 +138,7 @@ watch(() => props.children, async (children) => {
   if (!nos.length) return
   const hint = Math.min(...nos)
 
-  sourceData.value = await store.fetchSource(fileAbs, hint)
+  sourceData.value = await store.fetchSource(fileAbs, hint, store.extractMethodName(props.children?.[0]?.sig), store.extractClassName(props.children?.[0]?.sig))
 }, { immediate: true })
 </script>
 

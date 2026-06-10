@@ -20,7 +20,7 @@
         @mouseenter="node.file_abs && store.setHoveredCodeLine(node.file_abs)"
         @mouseleave="store.setHoveredCodeLine(null)"
       >
-        <span class="app-call-chevron">
+        <span class="app-call-chevron" @click.stop="node.children?.length && emit('toggle', node.line_no)">
           <template v-if="node.children?.length">{{ expanded.has(node.line_no) ? '▾' : '▸' }}</template>
           <template v-else>·</template>
         </span>
@@ -74,9 +74,8 @@ const store = useTraceStore()
 usePerfTrack('AppCallTree', { category: 'render' })
 
 function onNodeClick(node) {
-  if (node.children?.length) {
-    emit('toggle', node.line_no)
-  }
+  // Click on the row body opens the CodeView only.
+  // The chevron (▸/▾) handles expand/collapse via @click.stop.
   if (node.file_abs) {
     store.setCodeNode(node, props.parentCrumbs)
   }
@@ -220,12 +219,8 @@ function shortFile(file) {
   border-radius: 2px;
 }
 
-.app-call-chevron {
-  color: rgba(140, 160, 180, 0.4);
-  font-size: 9px;
-  width: 10px;
-  flex-shrink: 0;
-}
+.app-call-chevron { cursor: pointer; padding: 2px 4px; margin: -2px -4px; color: rgba(140, 160, 180, 0.4); font-size: 9px; width: 10px; flex-shrink: 0; }
+.app-call-row:hover .app-call-chevron { color: #80a8d8; }
 
 .app-call-class {
   font-size: 12.5px;

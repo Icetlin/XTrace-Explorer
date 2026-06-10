@@ -680,8 +680,12 @@ class TraceParser
 
     /**
      * Write per-event app_calls JSON files for fast lazy loading.
-     * Layout: $dir/app_calls/{flat_idx}.json — flat_idx is a stable sequential id
-     * assigned by walkFlattened() that matches the nested "3.2" notation from the controller.
+     * Layout: $dir/app_calls/{ei}.json where ei is the top-level index into toc.
+     * The frontend's /api/app-calls/{fileId}/{ei} uses the same top-level index.
+     *
+     * Only top-level events are cached — nested events (accessed via NestedEventList)
+     * are small enough that the toc.json fallback path is fast for them. Caching
+     * nested events with the same flat counter would mismatch the front-end's ei.
      */
     private function writeAppCallsCache(string $dir, array $toc): void
     {
@@ -689,28 +693,15 @@ class TraceParser
         if (!is_dir($cacheDir) && !mkdir($cacheDir, 0755, true) && !is_dir($cacheDir)) {
             return;
         }
-        $counter = 0;
-        $this->walkAppCallsForCache($toc, $cacheDir, $counter);
-    }
-
-    private function walkAppCallsForCache(array $entries, string $cacheDir, int &$counter): void
-    {
-        foreach ($entries as $entry) {
-            $idx = $counter++;
-            $hasCalls = !empty($entry['app_calls']);
-            $hasChildren = !empty($entry['children']);
-
-            if ($hasCalls) {
-                $file = $cacheDir . '/' . $idx . '.json';
-                file_put_contents($file, json_encode(
+        foreach ($toc as $ei => $entry) {
+            if (empty($entry['app_calls'])) continue;
+            file_put_contents(
+                $cacheDir . '/' . $ei . '.json',
+                json_encode(
                     $entry['app_calls'],
                     JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE
-                ));
-            }
-
-            if ($hasChildren) {
-                $this->walkAppCallsForCache($entry['children'], $cacheDir, $counter);
-            }
+                )
+            );
         }
     }
 

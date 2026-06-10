@@ -66,7 +66,7 @@
                 @contextmenu.prevent="onListenerCtx($event, listener)"
               >
                 <span class="event-idx">#{{ ei - group.startEi + 1 }}</span>
-                <span class="chevron-sm">{{ expandedListeners.has(`${ei}-${li}`) ? '▾' : '▸' }}</span>
+                <span class="chevron-sm" @click.stop="toggleListener(ei, li, listener)">{{ expandedListeners.has(`${ei}-${li}`) ? '▾' : '▸' }}</span>
                 <span class="listener-class"><span v-for="(p,pi) in camelParts(listenerClass(listener.sig))" :key="pi" :style="classPartStyle(pi)">{{ p }}</span></span>
                 <span class="listener-method"><span v-for="(p,pi) in camelParts(listenerMethod(listener.sig))" :key="pi" :style="methodPartStyle(pi)">{{ p }}</span></span>
                 <span v-if="listener.voter_class" class="voter-badge">{{ listener.voter_class }}</span>
@@ -174,7 +174,7 @@
                 >
                   <span class="connector">└</span>
                   <span class="listener-idx">#{{ li + 1 }}</span>
-                  <span class="chevron-sm">{{ expandedListeners.has(`${ei}-${li}`) ? '▾' : '▸' }}</span>
+                  <span class="chevron-sm" @click.stop="toggleListener(ei, li, listener)">{{ expandedListeners.has(`${ei}-${li}`) ? '▾' : '▸' }}</span>
                   <span class="listener-class"><span v-for="(p,pi) in camelParts(listenerClass(listener.sig))" :key="pi" :style="classPartStyle(pi)">{{ p }}</span></span>
                   <span class="listener-method"><span v-for="(p,pi) in camelParts(listenerMethod(listener.sig))" :key="pi" :style="methodPartStyle(pi)">{{ p }}</span></span>
                   <span v-if="listener.voter_class" class="voter-badge">{{ listener.voter_class }}</span>
@@ -231,7 +231,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, nextTick, watch } from 'vue'
+import { ref, reactive, shallowReactive, markRaw, computed, nextTick, watch } from 'vue'
 import { useTraceStore } from '../stores/trace'
 import { usePerfStore } from '../stores/perf'
 import { usePerfTrack } from '../perfTrack'
@@ -258,7 +258,10 @@ const expandedListeners = ref(new Set())
 const expandedGroups = ref(new Set())
 const expandedAppCalls = ref(new Set())
 // Cache of lazy-loaded app_calls per event index (ei → array)
-const appCallsCache = reactive({})
+// shallowReactive: only the outer object is reactive, child arrays/objects are NOT
+// wrapped in proxies. Setting appCallsCache[ei] = hugeArray on a `reactive({})`
+// would deep-reactify 99k+ nodes, freezing the page for seconds.
+const appCallsCache = shallowReactive({})
 const appCallsLoading = reactive({})
 
 function toggleAppCall(lineNo) {
@@ -276,7 +279,9 @@ watch(expandedEvents, async (expanded) => {
     if (entry.app_calls === null && entry.app_calls_count > 0 && !(ei in appCallsCache) && !appCallsLoading[ei]) {
       appCallsLoading[ei] = true
       try {
-        appCallsCache[ei] = await store.fetchAppCalls(props.fileId, ei)
+        // markRaw: data is read-only tree of 99k+ nodes — no need for Vue to
+        // create proxies on every node. Cheaper set, faster reads downstream.
+        appCallsCache[ei] = markRaw(await store.fetchAppCalls(props.fileId, ei))
       } finally {
         appCallsLoading[ei] = false
       }
@@ -348,21 +353,74 @@ const tocGroups = computed(() => {
   }
   return groups
 })
-const childrenCache = reactive({})
+// Listener children cache: shallowReactive avoids deep-proxy overhead on
+// potentially large result sets. Per-(ei,li) fetch results are read-only.
+const childrenCache = shallowReactive({})
 const loadingKey = ref(null)
 
 // favScan result from backend: { ei: { li: [{ pattern, label, line_no }] } }
+// Wrapped in computed so all child readers track the same dep and re-run once
+// when favScan changes — instead of running str_contains loops on every TocTree render.
 const favScan = computed(() => {
   const tab = store.openTabs.find(t => t.fileId === props.fileId)
   return tab?.favScan ?? {}
 })
 
+// Pre-aggregated unique matches per (ei, li) — recomputed only when favScan changes,
+// not on every render. 50 groups × 5 patterns × 50 listeners used to run str_contains
+// 12,500+ times per render.
+const _listenerScanCache = computed(() => {
+  const map = {}
+  for (const [ei, listeners] of Object.entries(favScan.value ?? {})) {
+    for (const [li, hits] of Object.entries(listeners)) {
+      if (!hits?.length) continue
+      const seen = new Set()
+      map[ei] = map[ei] || {}
+      map[ei][li] = hits.filter(h => seen.has(h.pattern) ? false : seen.add(h.pattern))
+    }
+  }
+  return map
+})
+
+const _eventScanCache = computed(() => {
+  const map = {}
+  for (const [ei, listeners] of Object.entries(favScan.value ?? {})) {
+    const seen = new Set()
+    const out = []
+    for (const hits of Object.values(listeners)) {
+      for (const h of hits) {
+        if (!seen.has(h.pattern)) { seen.add(h.pattern); out.push(h) }
+      }
+    }
+    if (out.length) map[ei] = out
+  }
+  return map
+})
+
+const _groupScanCache = computed(() => {
+  const map = {}
+  for (const [ei, matches] of Object.entries(_eventScanCache.value)) {
+    for (const h of matches) {
+      if (!map[ei]) map[ei] = new Set()
+      map[ei].add(h.pattern)
+    }
+  }
+  // Flatten to a list per ei of unique pattern objects (first hit carries label)
+  const out = {}
+  for (const [ei, patterns] of Object.entries(map)) {
+    const seenPatterns = patterns
+    const result = []
+    for (const h of _eventScanCache.value[ei]) {
+      if (seenPatterns.has(h.pattern)) { result.push(h); seenPatterns.delete(h.pattern) }
+    }
+    out[ei] = result
+  }
+  return out
+})
+
 // Unique patterns/labels that hit a listener (from scan)
 function listenerScanMatches(ei, li) {
-  const hits = favScan.value?.[ei]?.[li]
-  if (!hits?.length) return []
-  const seen = new Set()
-  return hits.filter(h => seen.has(h.pattern) ? false : seen.add(h.pattern))
+  return _listenerScanCache.value?.[ei]?.[li] ?? []
 }
 
 function listenerHits(ei, li, pattern) {
@@ -373,16 +431,7 @@ function listenerHits(ei, li, pattern) {
 
 // Unique patterns across all listeners of an event
 function eventScanMatches(ei) {
-  const eventHits = favScan.value?.[ei]
-  if (!eventHits) return []
-  const seen = new Set()
-  const result = []
-  for (const hits of Object.values(eventHits)) {
-    for (const h of hits) {
-      if (!seen.has(h.pattern)) { seen.add(h.pattern); result.push(h) }
-    }
-  }
-  return result
+  return _eventScanCache.value[ei] ?? []
 }
 
 // Collect unique fav matches across all events in a group
@@ -390,7 +439,7 @@ function groupScanMatches(group) {
   const seen = new Set()
   const result = []
   for (const ei of group.indices) {
-    for (const h of eventScanMatches(ei)) {
+    for (const h of _eventScanCache.value[ei] ?? []) {
       if (!seen.has(h.pattern)) { seen.add(h.pattern); result.push(h) }
     }
   }
@@ -486,8 +535,8 @@ function onEventRowClick(e, ei, event) {
     store.toggleSelection({ type: 'event', sig: event.event, line_no: event.line_no, breadcrumb: [] })
     return
   }
-  // expand on click, but never collapse — chevron handles collapse
-  if (!expandedEvents.value.has(ei)) toggleEvent(ei)
+  // Click on the row body opens the CodeView only.
+  // The chevron handles expand/collapse (separate click target with @click.stop).
   if (event.type === 'controller_execution') {
     const srcNode = controllerSrcNode(event, ei)
     if (srcNode) store.setCodeNode(srcNode, [{ sig: event.event, line_no: event.line_no }])
@@ -508,10 +557,11 @@ function onListenerClick(e, ei, li, listener, event) {
     })
     return
   }
+  // Click on the listener-row body opens the CodeView only.
+  // The chevron (▸/▾) handles expand/collapse of children via @click.stop.
   const cachedFileAbs = store.getListenerFileAbs(props.fileId, listener.line_no, listener.depth ?? 0)
   store.setCodeNode({ line_no: listener.line_no, sig: listener.sig, file_abs: cachedFileAbs ?? null },
     [{ sig: event.event, line_no: event.line_no }])
-  toggleListener(ei, li, listener)
 }
 
 function prefetchListener(listener) {
@@ -559,7 +609,7 @@ async function toggleListener(ei, li, listener) {
       { line_no: listener.line_no }
     )
     console.log('[toggleListener] result', result)
-    childrenCache[key] = result
+    childrenCache[key] = markRaw(result)
     loadingKey.value = null
   }
 }
@@ -713,7 +763,7 @@ async function jumpToLine(lineNo) {
   expandedListeners.value = ls
   if (!childrenCache[key]) {
     loadingKey.value = key
-    childrenCache[key] = await store.fetchChildren(props.fileId, targetListener.line_no, targetListener.depth ?? 0)
+    childrenCache[key] = markRaw(await store.fetchChildren(props.fileId, targetListener.line_no, targetListener.depth ?? 0))
     loadingKey.value = null
   }
 
@@ -847,8 +897,9 @@ defineExpose({ jumpToLine, collapseAll, expandAll, allCollapsed })
   letter-spacing: 0.02em;
 }
 
-.chevron { color: #5878a0; font-size: 11px; width: 12px; flex-shrink: 0; transition: color 0.1s; }
+.chevron { color: #5878a0; font-size: 11px; width: 12px; flex-shrink: 0; transition: color 0.1s; cursor: pointer; padding: 2px 4px; margin: -2px -4px; }
 .event-row:hover .chevron { color: #80a8d8; }
+.chevron:hover { color: #c0d8ff !important; }
 
 .event-name {
   font-size: 14.5px;
@@ -982,7 +1033,7 @@ defineExpose({ jumpToLine, collapseAll, expandAll, allCollapsed })
 }
 
 .connector { display: none; }
-.chevron-sm { color: #5070a0; font-size: 10px; width: 11px; flex-shrink: 0; }
+.chevron-sm { color: #5070a0; font-size: 10px; width: 11px; flex-shrink: 0; cursor: pointer; padding: 2px 4px; margin: -2px -4px; }
 .listener-row:hover .chevron-sm { color: #80a8d8; }
 
 .listener-class {

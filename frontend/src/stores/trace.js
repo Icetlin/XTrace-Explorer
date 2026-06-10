@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, shallowRef, markRaw } from 'vue'
 import axios from 'axios'
 
 export const useTraceStore = defineStore('trace', () => {
@@ -122,7 +122,7 @@ export const useTraceStore = defineStore('trace', () => {
   async function loadToc(fileId) {
     const { data } = await axios.get(`/api/toc/${fileId}`)
     const tab = openTabs.value.find(t => t.fileId === fileId)
-    if (tab) tab.toc = data
+    if (tab) tab.toc = markRaw(data)
   }
 
   async function loadMeta(fileId) {
@@ -138,7 +138,7 @@ export const useTraceStore = defineStore('trace', () => {
   async function loadAnnotations(fileId) {
     const { data } = await axios.get(`/api/annotations/${fileId}`)
     const tab = openTabs.value.find(t => t.fileId === fileId)
-    if (tab) tab.annotations = data
+    if (tab) tab.annotations = markRaw(data)
   }
 
   async function fetchPath(fileId, lineNo, fromLine = 0) {
@@ -194,15 +194,48 @@ export const useTraceStore = defineStore('trace', () => {
     }
   }
 
-  async function fetchSource(file, hint) {
-    const key = `${file}:${hint}`
+  // Extract PHP class FQCN and method name from a trace sig like
+  // "App\\Repository\\Foo->getBaz". Returns { class, method } or null.
+  // Returns null class/method for constructors so CodeView shows the
+  // enclosing class body rather than just the ctor.
+  function extractSigParts(sig) {
+    if (!sig) return { class: null, method: null }
+    const m = sig.match(/^(.+?)(?:->|::)(\w+)$/)
+    if (!m) return { class: null, method: null }
+    const klass = m[1]
+    const method = m[2]
+    if (method === '__construct') return { class: klass, method: null }
+    return { class: klass, method }
+  }
+
+  function extractMethodName(sig) {
+    return extractSigParts(sig).method
+  }
+
+  function extractClassName(sig) {
+    return extractSigParts(sig).class
+  }
+
+  async function fetchSource(file, hint, method = null, klass = null) {
+    // Class+method disambiguates the cache key — same (file, hint) but
+    // different (class, method) pair can resolve to different source files
+    // (e.g. Repository::method called from a Service shows the Repository,
+    // not the Service).
+    const key = `${file}:${hint}:${method ?? ''}:${klass ?? ''}`
     if (_sourceCache.has(key)) return _sourceCache.get(key)
     try {
-      const { data } = await axios.get('/api/source', { params: { file, hint } })
+      const params = { file, hint }
+      if (method) params.method = method
+      if (klass) params.class = klass
+      const { data } = await axios.get('/api/source', { params })
       _cacheSet(_sourceCache, key, data)
       return data
-    } catch {
-      return null
+    } catch (e) {
+      // Surface the server's error message so the user sees what went wrong
+      // (e.g. "File not found on server: foo.php" instead of a silent failure).
+      const msg = e?.response?.data?.error || e?.message || 'fetch failed'
+      console.warn('fetchSource', file, hint, method, klass, msg)
+      return { error: msg, file, lines: {}, fn_from: 0, fn_to: 0 }
     }
   }
 
@@ -213,7 +246,7 @@ export const useTraceStore = defineStore('trace', () => {
       // First call: trigger scan (returns 202+scanning if cold, 200+data if warm)
       let res = await axios.get(`/api/favourites-scan/${fileId}`)
       if (res.status === 200) {
-        if (tab) tab.favScan = res.data
+        if (tab) tab.favScan = markRaw(res.data)
         return
       }
       // 202: scanning. Poll status until ready (or timeout 10 min).
@@ -222,7 +255,7 @@ export const useTraceStore = defineStore('trace', () => {
         await new Promise(r => setTimeout(r, 2000))
         res = await axios.get(`/api/favourites-scan/${fileId}/status`)
         if (res.status === 200) {
-          if (tab) tab.favScan = res.data
+          if (tab) tab.favScan = markRaw(res.data)
           return
         }
       }
@@ -462,7 +495,7 @@ export const useTraceStore = defineStore('trace', () => {
     files, openTabs, activeTabFileId, currentTab, currentFile, toc, totalLines, annotations, favourites,
     listenerFilters, eventFilters, appNamespaces, pathMapping,
     loadFiles, selectFile, switchToTab, closeTab, pollStatus, startPolling, reparse,
-    fetchChildren, fetchPath, fetchObject, fetchFindObject, fetchArray, expandItem, fetchSource, fetchVarContext, fetchAppCalls, getListenerFileAbs, search, fetchTimings,
+    fetchChildren, fetchPath, fetchObject, fetchFindObject, fetchArray, expandItem, fetchSource, fetchVarContext, fetchAppCalls, getListenerFileAbs, search, fetchTimings, extractMethodName, extractClassName, extractSigParts,
     addAnnotation, deleteAnnotation,
     loadFavourites, addFavourite, deleteFavourite, matchFavourites, favMatchesInRange, scanFavourites,
     loadSettings, saveSettings, addListenerFilter, isListenerFiltered, addEventFilter, isEventFiltered,

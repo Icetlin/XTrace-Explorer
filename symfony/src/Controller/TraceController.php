@@ -326,6 +326,67 @@ class TraceController extends AbstractController
         return $current;
     }
 
+    /**
+     * Resolve a method's declaration site in the analysed project via PSR-4.
+     * Returns [absoluteFilePath, startLine, endLine] or null if not found.
+     */
+    private function resolveMethodInProject(string $class, string $method): ?array
+    {
+        $projectDir = getenv('SOURCE_CONTAINER_DIR');
+        if (!$projectDir || !is_dir($projectDir)) return null;
+
+        // PSR-4: App\Foo\Bar → src/Foo/Bar.php
+        $relParts = explode('\\', $class);
+        // strip the leading vendor name(s) until we find "App\\" or a known root
+        // For systeme.io monolith: namespace App\… → src/…
+        // Heuristic: try the last N namespace segments as relative path.
+        $escaped = preg_quote($method, '/');
+
+        // Try common PSR-4 roots: src/, app/, lib/. For each, scan for the
+        // expected class file by stripping common namespace prefixes.
+        $roots = ['src', 'app', 'lib', 'classes'];
+        $candidates = [];
+        foreach ($roots as $root) {
+            $base = $projectDir . '/' . $root;
+            if (!is_dir($base)) continue;
+            // Try the full FQCN path (e.g. App\Repository\User\Foo → src/Repository/User/Foo.php)
+            $tail = preg_replace('/^App\\\\?/', '', $class);
+            $candidates[] = $base . '/' . str_replace('\\', '/', $tail) . '.php';
+            // Also try one level deeper: src/Entity/User/Foo.php from App\Entity\User\Foo
+            // (rare; safety net)
+        }
+
+        // Also try the class file at its fully qualified path (no prefix strip)
+        // in case the project uses a different convention.
+        $candidates[] = $projectDir . '/' . str_replace('\\', '/', $class) . '.php';
+
+        foreach ($candidates as $file) {
+            if (!is_file($file)) continue;
+            $lines = file($file, FILE_IGNORE_NEW_LINES);
+            if ($lines === false) continue;
+            $startLine = null;
+            $depth = 0;
+            $inMethod = false;
+            for ($i = 0; $i < count($lines); $i++) {
+                $line = $lines[$i];
+                if ($startLine === null) {
+                    if (preg_match('/^\s*(public|protected|private|static|abstract|final|\s)*function\s+' . $escaped . '\s*\(/', $line)) {
+                        $startLine = $i + 1;
+                        $depth = 0;
+                        $inMethod = true;
+                    }
+                    continue;
+                }
+                // Walk braces inside the method to find the matching close
+                $depth += substr_count($line, '{') - substr_count($line, '}');
+                if ($inMethod && $depth <= 0) {
+                    return [$file, $startLine, $i + 1];
+                }
+            }
+        }
+        return null;
+    }
+
     #[Route('/meta/{id}', methods: ['GET'])]
     public function meta(int $id, Request $request): JsonResponse
     {
@@ -940,9 +1001,73 @@ class TraceController extends AbstractController
     {
         $file = $request->query->get('file', '');
         $hint = (int)$request->query->get('hint', 0); // any line inside the function
+        $method = trim((string)$request->query->get('method', '')); // optional method name to disambiguate
+        $class = trim((string)$request->query->get('class', ''));   // optional FQCN for Reflection lookup
+
+        // Preferred path: PHP Reflection knows exactly where each method is declared,
+        // including parent classes, traits, and interface inheritances. xdebug's
+        // file_abs sometimes points at the *call site* file (where the method is
+        // invoked) rather than the file where it's defined — for those cases
+        // (e.g. Repository::method called from a Service), Reflection is the
+        // only way to find the real declaration reliably.
+        if ($class !== '' && $method !== '' && class_exists($class)) {
+            try {
+                $ref = new \ReflectionClass($class);
+                if ($ref->hasMethod($method)) {
+                    $m = $ref->getMethod($method);
+                    $declFile = $m->getFileName();
+                    $declFrom = $m->getStartLine();
+                    $declTo   = $m->getEndLine();
+                    if ($declFile && file_exists($declFile) && $declFrom > 0 && $declTo >= $declFrom) {
+                        $allLines = file($declFile, FILE_IGNORE_NEW_LINES);
+                        if ($allLines !== false) {
+                            $lines = [];
+                            for ($i = $declFrom - 1; $i < $declTo; $i++) {
+                                $lines[$i + 1] = $allLines[$i];
+                            }
+                            return $this->json([
+                                'file'    => $declFile,
+                                'lines'   => $lines,
+                                'fn_from' => $declFrom,
+                                'fn_to'   => $declTo,
+                                'resolved' => 'reflection',
+                            ]);
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {
+                // Fall through to heuristic lookup
+            }
+        }
+
+        // Second path: PSR-4 file lookup against the analysed project. This handles
+        // the common case where the project's own autoloader isn't loaded into the
+        // xtrace container (e.g. monorepo setups), so Reflection can't see the class.
+        // We translate the FQCN to its expected file path under project_path and
+        // grep for the method declaration directly.
+        if ($class !== '' && $method !== '') {
+            $resolved = $this->resolveMethodInProject($class, $method);
+            if ($resolved !== null) {
+                [$declFile, $declFrom, $declTo] = $resolved;
+                $allLines = file($declFile, FILE_IGNORE_NEW_LINES);
+                if ($allLines !== false) {
+                    $lines = [];
+                    for ($i = $declFrom - 1; $i < $declTo; $i++) {
+                        $lines[$i + 1] = $allLines[$i];
+                    }
+                    return $this->json([
+                        'file'    => $declFile,
+                        'lines'   => $lines,
+                        'fn_from' => $declFrom,
+                        'fn_to'   => $declTo,
+                        'resolved' => 'psr4',
+                    ]);
+                }
+            }
+        }
 
         if (!$file || !str_starts_with($file, '/') || !file_exists($file) || !is_file($file)) {
-            return $this->json(['error' => 'not found'], 404);
+            return $this->json(['error' => 'File not found on server: ' . basename($file)], 404);
         }
 
         // Load the whole file into lines array (PHP source files are small)
@@ -951,26 +1076,52 @@ class TraceController extends AbstractController
 
         $total = count($allLines); // 0-indexed internally, 1-indexed externally
 
+        // Defensive: hint must be within file bounds. Out-of-range hints happen when
+        // the frontend mistakenly passes a trace line_no (millions) instead of a
+        // file line (small int). Clamp to a valid position and let the user see the
+        // top of the file rather than a 500 error.
+        $hint = max(1, min($total, $hint));
+
         // Find function boundaries around $hint line
         $from = max(1, $hint - 1);
         $to   = min($total, $hint + 1);
 
-        if ($hint > 0) {
-            // Walk backward from hint to find "function" keyword line
+        // xdebug puts the call site's line into file_abs, not the function declaration.
+        // When a hint sits inside another method's body (e.g. line 24 is `$this->getSubaccounts($x);`),
+        // a backward walk lands on the enclosing method (line 20: getUserSubaccountData)
+        // instead of the actually-called method (line 43: getSubaccounts). The frontend
+        // passes the target method name as ?method=...; locate its declaration precisely.
+        $declLine = null;
+        if ($method !== '') {
+            $escaped = preg_quote($method, '/');
+            // Match: "function getSubaccounts(" — declaration only, not call sites.
+            for ($i = 0; $i < $total; $i++) {
+                if (preg_match('/^\s*(public|protected|private|static|abstract|final|\s)*function\s+' . $escaped . '\s*\(/', $allLines[$i])) {
+                    $declLine = $i + 1;
+                    break;
+                }
+            }
+        }
+
+        if ($declLine !== null) {
+            $from = $declLine;
+        } elseif ($hint > 0) {
+            // Fallback: walk backward from hint to find "function" keyword line
             for ($i = $hint - 1; $i >= max(0, $hint - 60); $i--) {
                 if (preg_match('/^\s*(public|protected|private|static)?\s*function\s+\w+/', $allLines[$i])) {
                     $from = $i + 1; // convert to 1-indexed
                     break;
                 }
             }
-            // Walk forward to find matching closing brace
-            $depth = 0;
-            $started = false;
-            for ($i = $from - 1; $i < min($total, $from + 120); $i++) {
-                $depth += substr_count($allLines[$i], '{') - substr_count($allLines[$i], '}');
-                if (!$started && $depth > 0) $started = true;
-                if ($started && $depth <= 0) { $to = $i + 1; break; }
-            }
+        }
+
+        // Walk forward to find matching closing brace
+        $depth = 0;
+        $started = false;
+        for ($i = $from - 1; $i < min($total, $from + 200); $i++) {
+            $depth += substr_count($allLines[$i], '{') - substr_count($allLines[$i], '}');
+            if (!$started && $depth > 0) $started = true;
+            if ($started && $depth <= 0) { $to = $i + 1; break; }
         }
 
         $lines = [];

@@ -257,6 +257,12 @@ async function loadNodeSource(node) {
 
   const absPath = fileAbs.replace(/:\d+$/, '')
   const hint = extractLineNo(fileAbs)
+  // xdebug puts the call-site line into file_abs, not the function declaration.
+  // Pass the target class+method so the server can use PHP Reflection to find
+  // the actual definition (which may be in a different file from file_abs).
+  const sigParts = store.extractSigParts(node.sig)
+  const method = sigParts.method
+  const klass = sigParts.class
 
   // Same file already shown — just scroll + refresh annotations
   if (absPath === currentFile.value && source.value) {
@@ -273,9 +279,10 @@ async function loadNodeSource(node) {
   currentHint.value = hint
   store.setActiveCodeFile(absPath)
 
-  const data = await store.fetchSource(absPath, hint).catch(() => null)
+  const data = await store.fetchSource(absPath, hint, method, klass).catch(() => null)
   if (seq !== _loadSeq) return
   if (!data) { error.value = 'File not found'; loading.value = false; return }
+  if (data.error) { error.value = data.error; loading.value = false; return }
 
   source.value = data
   loading.value = false
