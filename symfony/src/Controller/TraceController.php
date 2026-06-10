@@ -503,7 +503,7 @@ class TraceController extends AbstractController
     }
 
     #[Route('/favourites-scan/{id}', methods: ['GET'])]
-    public function favouritesScan(int $id): JsonResponse
+    public function favouritesScan(int $id, Request $request): JsonResponse
     {
         $traceFile = $this->traceRepo->find($id);
         if (!$traceFile || $traceFile->getStatus() !== 'ready') {
@@ -516,26 +516,70 @@ class TraceController extends AbstractController
         );
         if (!$patterns) return $this->json([]);
 
-        $xtPath = $this->tracesDir . '/' . $id . '/trace.xt';
-        $result = $this->traceIndex->scanFavourites($id, $xtPath, $patterns);
+        $cacheKey = $this->favScanCacheKey($patterns);
+        $cacheFile = $this->tracesDir . '/' . $id . '/fav_scan_cache/' . $cacheKey . '.json';
 
-        // Ensure ei→li maps are always JSON objects even when keys start at 0.
-        // Symfony's json() uses the serializer which may unwrap stdClass — use JsonResponse
-        // with raw json_encode(JSON_FORCE_OBJECT on inner maps) to be explicit.
-        $normalized = new \stdClass();
-        foreach ($result as $eiKey => $listeners) {
-            $innerMap = new \stdClass();
-            foreach ($listeners as $liKey => $hits) {
-                $innerMap->$liKey = array_values($hits);
-            }
-            $normalized->$eiKey = $innerMap;
+        // Cache hit: return immediately. Status check is here (not just file_exists)
+        // because the worker might still be writing when the frontend polls.
+        if (file_exists($cacheFile) && filesize($cacheFile) > 2) {
+            return $this->favScanJsonResponse($cacheFile, $request);
         }
-        return new \Symfony\Component\HttpFoundation\JsonResponse(
-            json_encode($normalized),
-            200,
-            [],
-            true,
+
+        // Cache miss: dispatch background job. Returns HTTP 202 with status=scanning.
+        // Frontend polls /api/favourites-scan/{id}/status until ready.
+        $this->bus->dispatch(new \App\Message\ScanFavouritesMessage($id, $cacheKey));
+        return $this->json(['status' => 'scanning', 'cache_key' => $cacheKey], 202);
+    }
+
+    #[Route('/favourites-scan/{id}/status', methods: ['GET'])]
+    public function favouritesScanStatus(int $id, Request $request): JsonResponse
+    {
+        $traceFile = $this->traceRepo->find($id);
+        if (!$traceFile || $traceFile->getStatus() !== 'ready') {
+            return $this->json(['error' => 'Not ready'], 404);
+        }
+
+        $patterns = array_map(
+            fn($f) => ['pattern' => $f->getPattern(), 'label' => $f->getLabel()],
+            $this->favRepo->findAll()
         );
+        if (!$patterns) {
+            return $this->json(['status' => 'ready', 'result' => new \stdClass()]);
+        }
+
+        $cacheKey = $this->favScanCacheKey($patterns);
+        $cacheFile = $this->tracesDir . '/' . $id . '/fav_scan_cache/' . $cacheKey . '.json';
+
+        if (file_exists($cacheFile) && filesize($cacheFile) > 2) {
+            return $this->favScanJsonResponse($cacheFile, $request);
+        }
+
+        // No dispatch here — status endpoint is poll-only. If the original dispatch
+        // was lost (e.g. worker restart between dispatch and consume), the user can
+        // re-trigger by calling /api/favourites-scan/{id} again.
+        return $this->json(['status' => 'scanning', 'cache_key' => $cacheKey], 202);
+    }
+
+    private function favScanCacheKey(array $patterns): string
+    {
+        $keys = array_column($patterns, 'pattern');
+        sort($keys);
+        return md5(implode("\n", $keys));
+    }
+
+    private function favScanJsonResponse(string $cacheFile, Request $request): JsonResponse
+    {
+        $raw = file_get_contents($cacheFile);
+        $mtime = filemtime($cacheFile);
+        $response = new JsonResponse();
+        $response->setEtag(base64_encode(pack('N', crc32(substr($raw, 0, 8192)))));
+        $response->setLastModified((new \DateTime())->setTimestamp($mtime));
+        $response->setPublic();
+        if ($response->isNotModified($request)) {
+            return $response;
+        }
+        $response->setContent($raw);
+        return $response;
     }
 
     #[Route('/path/{id}', methods: ['GET'])]

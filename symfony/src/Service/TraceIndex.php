@@ -210,7 +210,25 @@ class TraceIndex
             }
         }
 
+        // Persist to cache so repeat calls (and same-pattern re-scans) are O(1).
+        $this->writeFavScanCache($fileId, $patterns, $result);
+
         return $result;
+    }
+
+    /**
+     * Persist scan result to on-disk cache so repeat calls are O(1).
+     */
+    private function writeFavScanCache(int $fileId, array $patterns, array $result): void
+    {
+        $keys = array_column($patterns, 'pattern');
+        sort($keys);
+        $cacheKey = md5(implode("\n", $keys));
+        $cacheDir = $this->tracesDir . '/' . $fileId . '/fav_scan_cache';
+        if (!is_dir($cacheDir) && !mkdir($cacheDir, 0755, true) && !is_dir($cacheDir)) {
+            return;
+        }
+        @file_put_contents($cacheDir . '/' . $cacheKey . '.json', json_encode($result));
     }
 
     public function invalidateFavouritesCache(int $fileId): void

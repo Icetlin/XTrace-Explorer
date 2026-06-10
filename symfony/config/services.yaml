@@ -36,6 +36,10 @@ services:
         arguments:
             $tracesDir: '%traces_dir%'
 
+    App\MessageHandler\ScanFavouritesHandler:
+        arguments:
+            $tracesDir: '%traces_dir%'
+
     App\Controller\TraceController:
         arguments:
             $tracesDir: '%traces_dir%'

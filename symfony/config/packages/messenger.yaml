@@ -5,3 +5,4 @@ framework:
 
         routing:
             'App\Message\ParseTraceMessage': async
+            'App\Message\ScanFavouritesMessage': async

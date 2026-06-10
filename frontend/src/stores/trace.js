@@ -210,8 +210,24 @@ export const useTraceStore = defineStore('trace', () => {
     const tab = openTabs.value.find(t => t.fileId === fileId)
     if (tab) tab.scanning = true
     try {
-      const { data } = await axios.get(`/api/favourites-scan/${fileId}`)
-      if (tab) tab.favScan = data
+      // First call: trigger scan (returns 202+scanning if cold, 200+data if warm)
+      let res = await axios.get(`/api/favourites-scan/${fileId}`)
+      if (res.status === 200) {
+        if (tab) tab.favScan = res.data
+        return
+      }
+      // 202: scanning. Poll status until ready (or timeout 10 min).
+      const deadline = Date.now() + 10 * 60 * 1000
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 2000))
+        res = await axios.get(`/api/favourites-scan/${fileId}/status`)
+        if (res.status === 200) {
+          if (tab) tab.favScan = res.data
+          return
+        }
+      }
+    } catch (e) {
+      console.warn('scanFavourites failed', e)
     } finally {
       if (tab) tab.scanning = false
     }
