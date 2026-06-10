@@ -7,9 +7,11 @@ use App\Entity\FavouritePattern;
 use App\Entity\TraceFile;
 use App\Message\ParseTraceMessage;
 use App\Repository\AnnotationRepository;
+use App\Repository\EndpointTimingRepository;
 use App\Repository\FavouritePatternRepository;
 use App\Repository\TraceFileRepository;
 use App\Service\TraceIndex;
+use App\Service\TraceParser;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -28,7 +30,9 @@ class TraceController extends AbstractController
         private readonly TraceFileRepository $traceRepo,
         private readonly AnnotationRepository $annotRepo,
         private readonly FavouritePatternRepository $favRepo,
+        private readonly EndpointTimingRepository $timingRepo,
         private readonly TraceIndex $traceIndex,
+        private readonly TraceParser $traceParser,
         private readonly MessageBusInterface $bus,
     ) {}
 
@@ -302,6 +306,46 @@ class TraceController extends AbstractController
         $index = json_decode(file_get_contents($indexPath), true);
         $lastIndexedLine = (int)array_key_last($index);
         return $this->json(['total_lines' => $lastIndexedLine]);
+    }
+
+    #[Route('/timings/{id}', methods: ['GET'])]
+    public function timings(int $id, Request $request): JsonResponse
+    {
+        $traceFile = $this->traceRepo->find($id);
+        if (!$traceFile) return $this->json(['error' => 'Not found'], 404);
+
+        $limit = min(200, max(1, (int)$request->query->get('limit', 50)));
+        $timings = $this->timingRepo->findByTraceName($traceFile->getOriginalName(), $limit);
+
+        return $this->json(array_map(fn($t) => [
+            'id'              => $t->getId(),
+            'endpoint_url'    => $t->getEndpointUrl(),
+            'endpoint_method' => $t->getEndpointMethod(),
+            'duration_ms'     => $t->getDurationMs(),
+            'created'         => $t->getCreatedAt()->format('H:i:s'),
+        ], $timings));
+    }
+
+    #[Route('/reparse-sql/{id}', methods: ['POST'])]
+    public function reparseSql(int $id): JsonResponse
+    {
+        $traceFile = $this->traceRepo->find($id);
+        if (!$traceFile || $traceFile->getStatus() !== 'ready') {
+            return $this->json(['error' => 'Not ready'], 404);
+        }
+
+        $dir        = $this->tracesDir . '/' . $id;
+        $xtFilePath = $this->findXtFile($dir);
+        if (!$xtFilePath) {
+            return $this->json(['error' => 'Trace file not found'], 404);
+        }
+
+        $tocFile = $dir . '/toc.json';
+        $toc     = file_exists($tocFile) ? (json_decode(file_get_contents($tocFile), true) ?? []) : [];
+        $queries = $this->traceParser->extractSqlQueriesPublic($xtFilePath, $toc);
+        file_put_contents($dir . '/sql.json', json_encode($queries, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+
+        return $this->json(['ok' => true, 'count' => count($queries)]);
     }
 
     #[Route('/sql/{id}', methods: ['GET'])]

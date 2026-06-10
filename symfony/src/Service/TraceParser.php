@@ -37,6 +37,7 @@ class TraceParser
         $sparseIndex = [];
         $skeleton = [];
         $seenSigs = [];
+        $tokenIndex = []; // [{line_no, class|null}, ...] — setToken() transitions, for fast inferTokenType lookups
 
         // TOC state
         $toc = [];
@@ -52,6 +53,11 @@ class TraceParser
         // $appCallsStacks[$stackIdx] = depth-stack of {sig, depth, line_no, children:[]}
         // The roots of each tree are stored in dispatchStack entry['app_calls'].
         $appCallsStacks = []; // indexed by dispatchStack index (rebuilt on push/pop)
+        // Parallel to $appCallsStacks: for each open block, a stack of child-index paths
+        // mirroring $appCallsStacks — top entry is the path to the current node in
+        // dispatchStack[$blockIdx]['app_calls'], so the path to a freshly pushed node
+        // is just "parent path + [newIdx]" (O(1), no tree search needed).
+        $appCallsPathStacks = [];
 
         $requestInfo = $this->extractRequestInfo($xtFilePath);
 
@@ -107,6 +113,22 @@ class TraceParser
                 $depth = (int)(strlen($m[1]) / 2);
                 $sig = $this->extractSignature($m[2]);
 
+                // --- Token index: record setToken($token = ...) transitions ---
+                if (str_ends_with($sig, '->setToken')) {
+                    $tokenPrefix = '$token = ';
+                    $tokenSuffix = ' {…}';
+                    foreach ($this->extractArgs($m[2]) as $tokenArg) {
+                        if (str_starts_with($tokenArg, $tokenPrefix) && str_ends_with($tokenArg, $tokenSuffix)) {
+                            $tokenIndex[] = [
+                                'line_no' => $lineNo,
+                                'class'   => substr($tokenArg, strlen($tokenPrefix), -strlen($tokenSuffix)),
+                            ];
+                        } elseif ($tokenArg === $tokenPrefix . 'NULL') {
+                            $tokenIndex[] = ['line_no' => $lineNo, 'class' => null];
+                        }
+                    }
+                }
+
                 // Track which top-level security listener is executing, to label vote events.
                 // Always overwrite when we see a new listener; reset on depth ≤ 11 (between kernel.request listeners).
                 if ($depth <= 11) {
@@ -130,6 +152,7 @@ class TraceParser
                 while (!empty($dispatchStack) && $depth <= $dispatchStack[count($dispatchStack)-1]['depth']
                     && !str_ends_with($sig, '->dispatch')) {
                     array_pop($appCallsStacks); // drop the closed block's app-call depth-stack
+                    array_pop($appCallsPathStacks);
                     $closed = array_pop($dispatchStack);
                     if ($closed['type'] === 'controller') {
                         // Wrap controller children in a synthetic toc entry so they don't appear
@@ -182,6 +205,7 @@ class TraceParser
                         'app_calls' => [],
                     ];
                     $appCallsStacks[] = []; // empty depth-stack for this block
+                    $appCallsPathStacks[] = []; // empty path-stack for this block
                 }
 
                 // --- TOC: detect TraceableEventDispatcher->dispatch (outermost, has $eventName) ---
@@ -236,6 +260,7 @@ class TraceParser
                             }
                             $dispatchStack[] = $entry;
                             $appCallsStacks[] = []; // empty depth-stack for this block
+                            $appCallsPathStacks[] = []; // empty path-stack for this block
                         }
                         $pendingInvoke = null;
                     }
@@ -288,7 +313,8 @@ class TraceParser
                 // --- TOC: app_calls tree — track App\ calls inside the active dispatch/controller block ---
                 if (!empty($dispatchStack) && str_contains($sig, 'App\\') && str_contains($sig, '->')) {
                     $blockIdx = count($dispatchStack) - 1;
-                    $acStack  = &$appCallsStacks[$blockIdx];
+                    $acStack     = &$appCallsStacks[$blockIdx];
+                    $acPathStack = &$appCallsPathStacks[$blockIdx];
 
                     // Pop depth-stack entries that are at same or deeper depth
                     while (!empty($acStack) && $acStack[count($acStack)-1]['depth'] >= $depth) {
@@ -299,6 +325,7 @@ class TraceParser
                         }
                         unset($closing);
                         array_pop($acStack);
+                        array_pop($acPathStack);
                     }
 
                     $rawFile = $this->extractFile($m[2]);
@@ -322,16 +349,19 @@ class TraceParser
                         $parent['children'][] = $node;
                         $newIdx = count($parent['children']) - 1;
                         $acStack[] = &$parent['children'][$newIdx];
-                        $newPath = $this->buildAppCallPath($dispatchStack[$blockIdx]['app_calls'], $lineNo);
-                        $lastAppCallPath[$blockIdx] = ['depth' => $depth, 'path' => $newPath];
+                        $newPath = $acPathStack[count($acPathStack)-1];
+                        $newPath[] = $newIdx;
+                        $acPathStack[] = $newPath;
                         unset($parent);
                     } else {
                         $dispatchStack[$blockIdx]['app_calls'][] = $node;
                         $rootIdx = count($dispatchStack[$blockIdx]['app_calls']) - 1;
                         $acStack[] = &$dispatchStack[$blockIdx]['app_calls'][$rootIdx];
-                        $lastAppCallPath[$blockIdx] = ['depth' => $depth, 'path' => [$rootIdx]];
+                        $newPath = [$rootIdx];
+                        $acPathStack[] = $newPath;
                     }
-                    unset($acStack);
+                    $lastAppCallPath[$blockIdx] = ['depth' => $depth, 'path' => $newPath];
+                    unset($acStack, $acPathStack);
                 }
 
                 // --- skeleton building (unchanged) ---
@@ -377,6 +407,7 @@ class TraceParser
         // Flush remaining open dispatch blocks (outermost last)
         while (!empty($dispatchStack)) {
             array_pop($appCallsStacks);
+            array_pop($appCallsPathStacks);
             $closed = array_pop($dispatchStack);
             if ($closed['type'] === 'controller') {
                 if (!empty($closed['children']) || !empty($closed['app_calls'])) {
@@ -404,6 +435,7 @@ class TraceParser
         ksort($sparseIndex, SORT_NUMERIC);
 
         file_put_contents($dir . '/line_index.json', json_encode($sparseIndex));
+        file_put_contents($dir . '/token_index.json', json_encode($tokenIndex));
         file_put_contents($dir . '/skeleton.json', json_encode(
             ['nodes' => $nodes, 'roots' => $skeleton],
             JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE
@@ -476,7 +508,7 @@ class TraceParser
         $lineNo = 0;
 
         // Rolling window — fixed-size ring buffer, O(1) insert, no array_shift
-        $windowSize = 300;
+        $windowSize = 800;
         $window     = array_fill(0, $windowSize, null);
         $windowHead = 0; // next write position
         $windowFull = false;
@@ -484,16 +516,27 @@ class TraceParser
         while (($line = fgets($fh, 1048576)) !== false) {
             $lineNo++;
 
-            // Track App\src calls in rolling window (cheap pre-filter first)
+            // Track App\src calls in rolling window (cheap pre-filter first).
+            // Only store entries that can actually be picked as a query caller —
+            // infrastructure (ORM filters/queries, DBAL, enums) fills the window
+            // without ever winning, flushing real business callers out too early.
             if (str_contains($line, '/src/') && str_contains($line, 'App\\')
                 && preg_match('#^\s+[\d.]+\s+\d+([ ]*)->\s+(App\\\\[^\(]+)\(.*?(/var/www/[^\s]*src/[^\s]+:\d+)#', $line, $wm)
             ) {
-                $wDepth = (int)(strlen($wm[1]) / 2);
-                $wSig   = trim($wm[2]);
-                $wFile  = preg_replace('#.*/src/#', 'src/', $wm[3]);
-                $window[$windowHead] = [$lineNo, $wDepth, $wSig, $wFile];
-                $windowHead = ($windowHead + 1) % $windowSize;
-                if ($windowHead === 0) $windowFull = true;
+                $wSig = trim($wm[2]);
+                if (!str_contains($wSig, '\\ORM\\Filter\\')
+                    && !str_contains($wSig, '\\ORM\\Query\\')
+                    && !str_contains($wSig, '\\DBAL\\')
+                    && !str_ends_with($wSig, '->addFilterConstraint')
+                    && !str_contains($wSig, '\\Enum\\')
+                    && !str_contains($wSig, '::from')
+                ) {
+                    $wDepth = (int)(strlen($wm[1]) / 2);
+                    $wFile  = preg_replace('#.*/src/#', 'src/', $wm[3]);
+                    $window[$windowHead] = [$lineNo, $wDepth, $wSig, $wFile];
+                    $windowHead = ($windowHead + 1) % $windowSize;
+                    if ($windowHead === 0) $windowFull = true;
+                }
             }
 
             // Fast pre-filter for executeQuery lines
@@ -535,18 +578,31 @@ class TraceParser
             $caller = $this->findQueryCaller($window, $windowHead, $windowFull, $windowSize, $depth);
 
             $queries[] = [
-                'n'      => count($queries) + 1,
-                'line_no' => $lineNo,
-                'time'   => $time,
-                'depth'  => $depth,
-                'sql'    => $sql,
-                'params' => $params,
-                'toc'    => $tocLabel,
-                'caller' => $caller,
+                'n'           => count($queries) + 1,
+                'line_no'     => $lineNo,
+                'time'        => $time,
+                'duration_ms' => null,
+                'depth'       => $depth,
+                'sql'         => $sql,
+                'params'      => $params,
+                'toc'         => $tocLabel,
+                'caller'      => $caller,
             ];
         }
 
         fclose($fh);
+
+        // Approximate query duration from time between consecutive calls.
+        // Traces without collect_return have no >=> lines, so inter-query delta
+        // is the next best signal (dominated by DB time for tight N+1 loops).
+        $count = count($queries);
+        for ($i = 0; $i < $count - 1; $i++) {
+            $delta = $queries[$i + 1]['time'] - $queries[$i]['time'];
+            if ($delta >= 0 && $delta < 10.0) { // sanity cap at 10 s
+                $queries[$i]['duration_ms'] = round($delta * 1000, 1);
+            }
+        }
+
         return $queries;
     }
 
@@ -580,14 +636,27 @@ class TraceParser
             if ($slot === null) continue;
             [$wLine, $wDepth, $wSig, $wFile] = $slot;
 
-            // Stop when we've gone past reasonable caller depth
-            if ($wDepth < $executeDepth - 10) break;
+            // For lazy-loaded queries the App\ caller can be many levels shallower
+            // (e.g. depth 5 vs executeQuery depth 25). Don't break on depth —
+            // the window size already provides temporal locality.
 
-            // Score: Repository > Service > Controller, prefer shallower depth (closer to App code)
+            // Skip Doctrine ORM infrastructure and non-initiator app code.
+            if (str_contains($wSig, '\\ORM\\Filter\\')
+                || str_contains($wSig, '\\ORM\\Query\\')
+                || str_contains($wSig, '\\DBAL\\')
+                || str_ends_with($wSig, '->addFilterConstraint')
+                || str_contains($wSig, '\\Enum\\')          // App enum helpers are never query initiators
+                || str_contains($wSig, '::from')            // Enum::from() calls
+            ) {
+                continue;
+            }
+
+            // Score: Repository > Service > Controller > Entity, prefer shallower depth
             $score = 0;
-            if (str_contains($wSig, 'Repository')) $score = 30;
-            elseif (str_contains($wSig, 'Service'))  $score = 20;
-            elseif (str_contains($wSig, 'Controller')) $score = 10;
+            if (str_contains($wSig, 'Repository'))  $score = 40;
+            elseif (str_contains($wSig, 'Service'))  $score = 25;
+            elseif (str_contains($wSig, 'Controller')) $score = 15;
+            elseif (str_contains($wSig, '\\Entity\\')) $score = 8;
             else $score = 5;
 
             // Prefer methods that clearly initiate a query
@@ -598,7 +667,7 @@ class TraceParser
 
             if ($score > $bestScore) {
                 $bestScore = $score;
-                $best = ['sig' => $wSig, 'file' => $wFile, 'line_no' => $wLine];
+                $best = ['sig' => $wSig, 'file' => $wFile, 'line_no' => $wLine, 'depth' => $wDepth];
             }
         }
 
@@ -689,22 +758,6 @@ class TraceParser
     }
 
     /**
-     * Finds the path (array of child indices) to the node with $lineNo inside $appCalls tree.
-     * Returns [] if not found.
-     */
-    private function buildAppCallPath(array $appCalls, int $lineNo): array
-    {
-        foreach ($appCalls as $idx => $node) {
-            if ($node['line_no'] === $lineNo) return [$idx];
-            if (!empty($node['children'])) {
-                $sub = $this->buildAppCallPath($node['children'], $lineNo);
-                if ($sub !== []) return array_merge([$idx], $sub);
-            }
-        }
-        return [];
-    }
-
-    /**
      * For each list of sibling app_calls, infer the return value of call[i] from
      * the first argument of call[i+1] that matches the pattern "$varName = <value>".
      * This works because xdebug traces don't include >=> return lines by default,
@@ -751,7 +804,7 @@ class TraceParser
     {
         $pos = strrpos($raw, ' /');
         if ($pos === false) return null;
-        $candidate = substr($raw, $pos + 1);
+        $candidate = rtrim(substr($raw, $pos + 1));
         if (preg_match(TraceRegex::FilePathSuffix->value, $candidate)) return $candidate;
         return null;
     }

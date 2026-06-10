@@ -65,8 +65,8 @@ DEMO_TRACE_GENERATOR = "/app/generate_demo_trace.py"
 @mcp.tool()
 def restart_worker() -> str:
     """Restart the Messenger async worker inside the app container (use after changing TraceParser/TraceIndex)."""
-    out = _docker_exec(["supervisorctl", "restart", "messenger"])
-    return f"supervisorctl restart messenger:\n{out}"
+    out = _docker_exec(["supervisorctl", "restart", "messenger:*"])
+    return f"supervisorctl restart messenger:*:\n{out}"
 
 
 @mcp.tool()
