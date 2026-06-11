@@ -595,6 +595,23 @@ class TraceParser
                         break;
                     }
                 }
+                // Full App\ call chain (root → leaf) for the frontend tree
+                // view. Walking ALL App\ frames, not just the deepest, lets
+                // the UI render the complete hierarchy controller → service
+                // → repo → entity getter → query — which is what makes N+1
+                // patterns visible (a ×56 getSelfLabel leaf is meaningless
+                // without seeing what called it).
+                $chain = [];
+                for ($d = 0; $d < $depth; $d++) {
+                    if (isset($depthStack[$d]) && $depthStack[$d][3]) {
+                        $chain[] = [
+                            'sig'     => $depthStack[$d][0],
+                            'file'    => $depthStack[$d][1],
+                            'line_no' => $depthStack[$d][2],
+                            'depth'   => $d,
+                        ];
+                    }
+                }
 
                 $sql = null;
                 if (preg_match("/\\\$sql\s*=\s*'((?:[^'\\\\]|\\\\.)*)('?\.\.\.)?/s", $body, $sm)) {
@@ -632,6 +649,7 @@ class TraceParser
                     'params'      => $params,
                     'toc'         => $tocLabel,
                     'caller'      => $caller,
+                    'chain'       => $chain,
                 ];
             }
         }

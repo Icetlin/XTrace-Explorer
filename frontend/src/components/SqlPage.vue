@@ -30,6 +30,11 @@
             :class="{ 'view-btn--active': viewMode === 'grouped' }"
             @click="viewMode = 'grouped'"
           >by caller</button>
+          <button
+            class="view-btn"
+            :class="{ 'view-btn--active': viewMode === 'tree' }"
+            @click="viewMode = 'tree'"
+          >tree</button>
         </div>
 
         <template v-if="viewMode === 'flat'">
@@ -126,7 +131,7 @@
       </template>
 
       <!-- ── GROUPED VIEW ── -->
-      <div v-else class="sql-list">
+      <div v-else-if="viewMode === 'grouped'" class="sql-list">
         <div
           v-for="tocGroup in visibleCallerGroups"
           :key="tocGroup.toc"
@@ -216,6 +221,37 @@
 
         <div v-if="!visibleCallerGroups.length" class="sql-state">No matches for "{{ filter }}"</div>
       </div>
+
+      <!-- ── TREE VIEW ── -->
+      <!-- Full N-level call hierarchy: each toc → tree of App\ calls
+           (controller → service → repo → entity getter → query).
+           A ×56 getSelfLabel leaf is meaningless without seeing what called
+           it; this view exposes the call chain that produced each query so
+           N+1 patterns are visible as dense subtrees, not flat counts. -->
+      <div v-else class="sql-list sql-tree-list">
+        <div v-if="!visibleTreeGroups.length" class="sql-state">No matches for "{{ filter }}"</div>
+        <div
+          v-for="tg in visibleTreeGroups"
+          :key="tg.toc"
+          class="toc-group"
+        >
+          <div class="toc-header" @click="toggleGroup(tg.toc)">
+            <span class="caller-chevron">{{ collapsedGroups.has(tg.toc) ? '▸' : '▾' }}</span>
+            <span class="toc-name">{{ tg.label }}</span>
+            <span class="caller-total">{{ tg.totalCount }} quer{{ tg.totalCount === 1 ? 'y' : 'ies' }}</span>
+          </div>
+          <div v-if="!collapsedGroups.has(tg.toc)" class="tree-children">
+            <SqlTreeNode
+              v-for="(rootNode, rk) in tg.roots"
+              :key="rk"
+              :node="rootNode"
+              :filter="filter"
+              :depth="0"
+              :file-id="store.activeTabFileId"
+            />
+          </div>
+        </div>
+      </div>
     </template>
 
     <!-- Copy toast -->
@@ -228,6 +264,7 @@ import { ref, computed, watch } from 'vue'
 import axios from 'axios'
 import { useTraceStore } from '../stores/trace'
 import { usePerfTrack } from '../perfTrack'
+import SqlTreeNode from './SqlTreeNode.vue'
 
 const store = useTraceStore()
 usePerfTrack('SqlPage', { category: 'render' })
@@ -351,6 +388,122 @@ const visibleCallerGroups = computed(() => {
         .filter(cg => cg.uniqueQueries.length > 0 || cg.sig.toLowerCase().includes(f)),
     }))
     .filter(tg => tg.callers.length > 0 || tg.label.toLowerCase().includes(f))
+})
+
+// ── Tree view ────────────────────────────────────────────────────────────────
+// Build an N-level tree from query chains. Each query's `chain` is the ordered
+// list of App\ calls (root → leaf) that were on the stack at executeQuery time.
+// Nodes are merged by sig+file so the same call in different invocations
+// collapses into a single node, but its child calls branch out from there.
+//
+// Tree shape (per toc):
+//   roots: { [sig]: node, ... }  ← one entry per outermost App\ call
+//   node: { sig, file, line_no, depth, count, totalMs, queries[], children: { sig: node } }
+
+function buildQueryTree(qs) {
+  const roots = {}
+  for (const q of qs) {
+    const chain = Array.isArray(q.chain) ? q.chain : []
+    if (chain.length === 0) {
+      // No App\ caller (e.g. a cron job or pure-vendor path) — bucket separately
+      const key = '(no App caller)'
+      if (!roots[key]) {
+        roots[key] = {
+          sig: key, file: '', line_no: null, depth: null,
+          count: 0, totalMs: 0, queries: [], children: {},
+        }
+      }
+      roots[key].queries.push(q)
+      roots[key].count++
+      if (q.duration_ms) roots[key].totalMs += q.duration_ms
+      continue
+    }
+    // Walk the chain, creating/finding nodes at each level
+    let level = roots
+    let parentNode = null
+    for (let i = 0; i < chain.length; i++) {
+      const frame = chain[i]
+      const key = frame.sig
+      if (!level[key]) {
+        level[key] = {
+          sig: frame.sig,
+          file: frame.file,
+          line_no: frame.line_no,
+          depth: frame.depth,
+          count: 0, totalMs: 0, queries: [],
+          children: {},
+        }
+      }
+      const node = level[key]
+      node.count++
+      if (q.duration_ms) node.totalMs += q.duration_ms
+      // If this is the last frame in the chain, attach the query to this node
+      if (i === chain.length - 1) {
+        node.queries.push(q)
+      }
+      parentNode = node
+      level = node.children
+    }
+  }
+  return roots
+}
+
+const queryTree = computed(() => {
+  // Group by toc (controller/event), like the existing grouped view, but the
+  // body of each group is an N-level tree of App\ calls.
+  const tocMap = {}
+  for (const q of queries.value) {
+    const tocKey = q.toc || '(no context)'
+    if (!tocMap[tocKey]) {
+      tocMap[tocKey] = { toc: tocKey, label: shortToc(tocKey), queries: [], firstLine: q.line_no }
+    }
+    tocMap[tocKey].queries.push(q)
+    if (q.line_no < tocMap[tocKey].firstLine) tocMap[tocKey].firstLine = q.line_no
+  }
+  return Object.values(tocMap)
+    .map(tg => ({
+      toc: tg.toc,
+      label: tg.label,
+      totalCount: tg.queries.length,
+      roots: buildQueryTree(tg.queries),
+      firstLine: tg.firstLine,
+    }))
+    .sort((a, b) => a.firstLine - b.firstLine)
+})
+
+const visibleTreeGroups = computed(() => {
+  if (!filter.value.trim()) return queryTree.value
+  const f = filter.value.trim().toLowerCase()
+  // Filter queries at the leaf level. A node is kept if it has any matching
+  // query OR its sig matches the filter OR any descendant has matches.
+  function pruneNode(node) {
+    const matchingQueries = node.queries.filter(q => (q.sql || '').toLowerCase().includes(f))
+    const sigMatches = node.sig.toLowerCase().includes(f)
+    const prunedChildren = {}
+    for (const [k, child] of Object.entries(node.children)) {
+      const pruned = pruneNode(child)
+      if (pruned) prunedChildren[k] = pruned
+    }
+    if (matchingQueries.length === 0 && !sigMatches && Object.keys(prunedChildren).length === 0) {
+      return null
+    }
+    return {
+      ...node,
+      queries: matchingQueries.length > 0 ? matchingQueries : node.queries,
+      children: prunedChildren,
+      count: matchingQueries.length + Object.values(prunedChildren).reduce((s, c) => s + c.count, 0),
+    }
+  }
+  return queryTree.value
+    .map(tg => {
+      const prunedRoots = {}
+      for (const [k, node] of Object.entries(tg.roots)) {
+        const pruned = pruneNode(node)
+        if (pruned) prunedRoots[k] = pruned
+      }
+      return { ...tg, roots: prunedRoots }
+    })
+    .filter(tg => Object.keys(tg.roots).length > 0)
 })
 
 function toggleGroup(toc) {
@@ -1305,6 +1458,10 @@ html[data-theme="light"] .uq-line {
   background: rgba(80,110,220,0.08);
   color: rgba(40,70,180,0.6);
 }
+
+/* ── Tree view ───────────────────────────────────────────────────────────── */
+.sql-tree-list { padding: 4px 0 16px; }
+.tree-children { padding: 2px 0 6px 0; }
 
 /* SQL syntax highlight tokens — :deep() needed because v-html bypasses scoped attributes */
 :deep(.sql-kw)  { color: rgba(86,156,214,1);    font-weight: 600; }
