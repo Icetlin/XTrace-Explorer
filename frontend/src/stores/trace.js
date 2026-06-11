@@ -132,6 +132,18 @@ export const useTraceStore = defineStore('trace', () => {
       tab.totalLines = data.total_lines || 0
       tab.request = data.request || null
       tab.response = data.response || null
+      // Override started_at with the wall-clock time from the directory name.
+      // The TRACE START line inside the trace file is in the container's timezone
+      // (UTC), which can differ from the host's local time encoded in the
+      // directory name by xdebug_organize. Use the directory time as the
+      // canonical "when this trace was recorded" time.
+      if (tab.request?.started_at && tab.name) {
+        const dirName = tab.name.split('/')[0] // "2026-06-11_17-42-54_..."
+        const m = dirName.match(/^(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})_/)
+        if (m) {
+          tab.request = { ...tab.request, started_at: `${m[1]} ${m[2]}:${m[3]}:${m[4]}` }
+        }
+      }
     }
   }
 

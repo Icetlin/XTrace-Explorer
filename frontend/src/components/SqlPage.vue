@@ -286,23 +286,31 @@ const callerGroups = computed(() => {
   const tocMap = {}
   for (const q of queries.value) {
     const tocKey = q.toc || '(no context)'
-    if (!tocMap[tocKey]) tocMap[tocKey] = { toc: tocKey, label: shortToc(tocKey), callerMap: {}, total: 0 }
+    if (!tocMap[tocKey]) tocMap[tocKey] = { toc: tocKey, label: shortToc(tocKey), callerMap: {}, total: 0, firstLine: q.line_no }
     const tg = tocMap[tocKey]
     tg.total++
+    if (q.line_no < tg.firstLine) tg.firstLine = q.line_no
 
     const callerSig = (q.caller && q.caller.sig) ? q.caller.sig : '(no caller)'
     const callerFile = (q.caller && q.caller.file) ? q.caller.file : ''
+    const callerLineNo = (q.caller && q.caller.line_no) ? q.caller.line_no : null
     if (!tg.callerMap[callerSig]) {
-      tg.callerMap[callerSig] = { sig: callerSig, file: callerFile, count: 0, sqlMap: {} }
+      tg.callerMap[callerSig] = { sig: callerSig, file: callerFile, count: 0, sqlMap: {}, firstLine: q.line_no }
     }
     const cg = tg.callerMap[callerSig]
     cg.count++
+    if (q.line_no < cg.firstLine) cg.firstLine = q.line_no
 
     const k = normalizeKey(q.sql)
-    if (!cg.sqlMap[k]) cg.sqlMap[k] = { key: k, sql: q.sql, count: 0, totalMs: 0, instances: [], sampleParams: q.params, callerLineNo: q.caller?.line_no, callerDepth: q.caller?.depth }
+    if (!cg.sqlMap[k]) cg.sqlMap[k] = {
+      key: k, sql: q.sql, count: 0, totalMs: 0, instances: [],
+      sampleParams: q.params, callerLineNo: callerLineNo, callerDepth: q.caller?.depth,
+      firstLine: q.line_no,
+    }
     cg.sqlMap[k].count++
     if (q.duration_ms != null) cg.sqlMap[k].totalMs += q.duration_ms
     cg.sqlMap[k].instances.push({ line_no: q.line_no, n: q.n, duration_ms: q.duration_ms })
+    if (q.line_no < cg.sqlMap[k].firstLine) cg.sqlMap[k].firstLine = q.line_no
   }
 
   return Object.values(tocMap)
@@ -310,22 +318,23 @@ const callerGroups = computed(() => {
       toc: tg.toc,
       label: tg.label,
       totalCount: tg.total,
+      firstLine: tg.firstLine,
       callers: Object.values(tg.callerMap)
         .map(cg => {
           const uqs = Object.values(cg.sqlMap)
             .map(uq => ({ ...uq, kind: classifyUq(uq) }))
             .sort((a, b) => {
-              // trigger first, then by count desc
-              if (a.kind === 'trigger' && b.kind !== 'trigger') return -1
-              if (b.kind === 'trigger' && a.kind !== 'trigger') return 1
-              return b.count - a.count
+              // Chronological: earliest line first
+              return a.firstLine - b.firstLine
             })
           const totalMs = uqs.reduce((s, uq) => s + uq.totalMs, 0)
-          return { sig: cg.sig, file: cg.file, count: cg.count, totalMs, uniqueQueries: uqs }
+          return { sig: cg.sig, file: cg.file, count: cg.count, totalMs, uniqueQueries: uqs, firstLine: cg.firstLine }
         })
-        .sort((a, b) => b.count - a.count),
+        // Chronological by first query line, not by count
+        .sort((a, b) => a.firstLine - b.firstLine),
     }))
-    .sort((a, b) => b.totalCount - a.totalCount)
+    // Chronological: earliest first query in the group
+    .sort((a, b) => a.firstLine - b.firstLine)
 })
 
 const visibleCallerGroups = computed(() => {

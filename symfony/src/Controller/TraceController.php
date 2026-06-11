@@ -1316,6 +1316,17 @@ class TraceController extends AbstractController
         if (file_exists($f)) unlink($f);
     }
 
+    private function findXtFile(string $dir): ?string
+    {
+        // Support both 'trace.xt' (parsed copy) and 'trace__*.xt' (original source)
+        $traceFile = rtrim($dir, '/') . '/trace.xt';
+        if (file_exists($traceFile)) {
+            return $traceFile;
+        }
+        $files = glob(rtrim($dir, '/') . '/trace__*.xt');
+        return $files[0] ?? null;
+    }
+
     #[Route('/xdebug/set', methods: ['POST'])]
     public function xdebugSet(Request $request): JsonResponse
     {

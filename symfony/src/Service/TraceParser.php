@@ -500,9 +500,22 @@ class TraceParser
         return $this->extractSqlQueries($xtFilePath, $toc);
     }
 
+    /**
+     * Walk the trace line-by-line maintaining a depth-indexed call stack.
+     * Each call line: trim everything at >= its own depth (implicit close of
+     * deeper/sibling frames), then push the new frame at that depth.
+     * Each return line: same trim (defensive — only fires if xdebug.collect_return
+     * is on, in which case it's redundant but cheap).
+     * On executeQuery: walk down from D-1 to 0 to find the nearest App\ frame —
+     * the actual Repository/Service/Controller that initiated the query chain.
+     *
+     * This works WITHOUT explicit return lines because depth in the trace is
+     * monotonic: any drop in depth implies that the previous frame(s) at that
+     * depth and below have returned. Stack size is bounded by max depth (~30
+     * for a typical Symfony request), not trace length.
+     */
     private function extractSqlQueries(string $xtFilePath, array $toc): array
     {
-        // Build a flat sorted list of TOC event line ranges for lookup
         $tocRanges = [];
         $this->collectTocRanges($toc, $tocRanges);
         usort($tocRanges, fn($a, $b) => $a['line_no'] <=> $b['line_no']);
@@ -511,98 +524,124 @@ class TraceParser
         $fh = fopen($xtFilePath, 'rb');
         $lineNo = 0;
 
-        // Rolling window — fixed-size ring buffer, O(1) insert, no array_shift
-        $windowSize = 800;
-        $window     = array_fill(0, $windowSize, null);
-        $windowHead = 0; // next write position
-        $windowFull = false;
+        // Depth-indexed call stack: $depthStack[D] = [sig, file, line_no, isApp]
+        // Holds the most recent call at each depth.
+        $depthStack = [];
+        $maxDepth   = -1;
 
         while (($line = fgets($fh, 1048576)) !== false) {
             $lineNo++;
 
-            // Track App\src calls in rolling window (cheap pre-filter first).
-            // Only store entries that can actually be picked as a query caller —
-            // infrastructure (ORM filters/queries, DBAL, enums) fills the window
-            // without ever winning, flushing real business callers out too early.
-            if (str_contains($line, '/src/') && str_contains($line, 'App\\')
-                && preg_match('#^\s+[\d.]+\s+\d+([ ]*)->\s+(App\\\\[^\(]+)\(.*?(/var/www/[^\s]*src/[^\s]+:\d+)#', $line, $wm)
-            ) {
-                $wSig = trim($wm[2]);
-                if (!str_contains($wSig, '\\ORM\\Filter\\')
-                    && !str_contains($wSig, '\\ORM\\Query\\')
-                    && !str_contains($wSig, '\\DBAL\\')
-                    && !str_ends_with($wSig, '->addFilterConstraint')
-                    && !str_contains($wSig, '\\Enum\\')
-                    && !str_contains($wSig, '::from')
-                ) {
-                    $wDepth = (int)(strlen($wm[1]) / 2);
-                    $wFile  = preg_replace('#.*/src/#', 'src/', $wm[3]);
-                    $window[$windowHead] = [$lineNo, $wDepth, $wSig, $wFile];
-                    $windowHead = ($windowHead + 1) % $windowSize;
-                    if ($windowHead === 0) $windowFull = true;
+            // Return line — defensive. Redundant when xdebug.collect_return=0.
+            if (preg_match(TraceRegex::ReturnLine->value, $line, $rm)) {
+                $retDepth = (int)(strlen($rm[1]) / 2);
+                for ($d = $maxDepth; $d >= $retDepth; $d--) {
+                    unset($depthStack[$d]);
+                }
+                $maxDepth = $retDepth - 1;
+                continue;
+            }
+
+            // Call line.
+            if (!preg_match(TraceRegex::CallLine->value, $line, $cm)) {
+                continue;
+            }
+
+            // Depth = the spaces between the memory field and "->" (xdebug's
+            // fixed-column indent). The LEADING whitespace before the time
+            // number is constant padding, not the depth.
+            $depth = (int)(strlen($cm[1]) / 2);
+            $body  = $cm[2];
+
+            $paren = strpos($body, '(');
+            $sig   = $paren !== false ? trim(substr($body, 0, $paren)) : trim($body);
+
+            $file = '';
+            if (preg_match('# /([^\s]+\.php:\d+)\s*$#', $line, $fm)) {
+                if (preg_match('#/src/([^\s]+):(\d+)$#', $fm[1], $sm)) {
+                    $file = 'src/' . $sm[1] . ':' . $sm[2];
+                } else {
+                    $file = $fm[1];
                 }
             }
 
-            // Fast pre-filter for executeQuery lines
-            if (!str_contains($line, 'executeQuery')) continue;
-            if (!preg_match('/^\s+[\d.]+\s+(\d+)([ ]*)->\s+(?:[\w\\\\]+\\\\)*Connection->executeQuery\((.+)/', $line, $m)) continue;
+            $isApp = str_contains($sig, 'App\\');
 
-            $depth = (int)(strlen($m[2]) / 2);
-            $args  = $m[3];
-
-            $time = 0.0;
-            if (preg_match('/^\s+([\d.]+)/', $line, $tm)) $time = (float)$tm[1];
-
-            // Extract SQL string (may be xdebug-truncated)
-            $sql = null;
-            if (preg_match("/\\\$sql\s*=\s*'((?:[^'\\\\]|\\\\.)*)('?\.\.\.)?/s", $args, $sm)) {
-                $sql = $sm[1];
-                if (!empty($sm[2])) $sql .= '...';
+            // Trim: any frame at depth >= current has implicitly closed
+            // (sibling replacement at same depth, or return from deeper call).
+            for ($d = $maxDepth; $d >= $depth; $d--) {
+                unset($depthStack[$d]);
             }
+            // Push the new frame.
+            $depthStack[$depth] = [$sig, $file, $lineNo, $isApp];
+            $maxDepth = $depth;
 
-            // Extract params
-            $params = [];
-            if (preg_match('/\$params\s*=\s*\[([^\]]*)\]/', $args, $pm)) {
-                preg_match_all("/'([^']*)'/", $pm[1], $strings);
-                preg_match_all('/\b(\d+)\b/', $pm[1], $ints);
-                $params = array_merge($strings[1], $ints[1]);
-            } elseif (preg_match('/\$params\s*=\s*\[…\]/', $args)) {
-                $params = ['…'];
-            }
-
-            // TOC label
-            $tocLabel = null;
-            foreach ($tocRanges as $range) {
-                if ($lineNo >= $range['line_no'] && $lineNo <= $range['end_line']) {
-                    $tocLabel = $range['label'];
-                    break;
+            // executeQuery = the actual DB query. Find the nearest App\ caller
+            // by walking DOWN from D-1. This is what the previous depthStack
+            // approach got wrong: it only looked at depthStack[D-1], which a
+            // vendor call at that depth (e.g. a Doctrine callback) overwrote,
+            // losing the App caller. Walking down past vendor frames finds
+            // the real Repository/Service/Controller method above them.
+            if (str_contains($sig, 'Connection->executeQuery')) {
+                $caller = null;
+                for ($d = $depth - 1; $d >= 0; $d--) {
+                    if (isset($depthStack[$d]) && $depthStack[$d][3]) {
+                        $caller = [
+                            'sig'     => $depthStack[$d][0],
+                            'file'    => $depthStack[$d][1],
+                            'line_no' => $depthStack[$d][2],
+                            'depth'   => $d,
+                        ];
+                        break;
+                    }
                 }
+
+                $sql = null;
+                if (preg_match("/\\\$sql\s*=\s*'((?:[^'\\\\]|\\\\.)*)('?\.\.\.)?/s", $body, $sm)) {
+                    $sql = $sm[1];
+                    if (!empty($sm[2])) $sql .= '...';
+                }
+
+                $params = [];
+                if (preg_match('/\$params\s*=\s*\[([^\]]*)\]/', $body, $pm)) {
+                    preg_match_all("/'([^']*)'/", $pm[1], $strings);
+                    preg_match_all('/\b(\d+)\b/', $pm[1], $ints);
+                    $params = array_merge($strings[1], $ints[1]);
+                } elseif (preg_match('/\$params\s*=\s*\[…\]/', $body)) {
+                    $params = ['…'];
+                }
+
+                $time = 0.0;
+                if (preg_match('/^\s+([\d.]+)/', $line, $tm)) $time = (float)$tm[1];
+
+                $tocLabel = null;
+                foreach ($tocRanges as $range) {
+                    if ($lineNo >= $range['line_no'] && $lineNo <= $range['end_line']) {
+                        $tocLabel = $range['label'];
+                        break;
+                    }
+                }
+
+                $queries[] = [
+                    'n'           => count($queries) + 1,
+                    'line_no'     => $lineNo,
+                    'time'        => $time,
+                    'duration_ms' => null,
+                    'depth'       => $depth,
+                    'sql'         => $sql,
+                    'params'      => $params,
+                    'toc'         => $tocLabel,
+                    'caller'      => $caller,
+                ];
             }
-
-            $caller = $this->findQueryCaller($window, $windowHead, $windowFull, $windowSize, $depth);
-
-            $queries[] = [
-                'n'           => count($queries) + 1,
-                'line_no'     => $lineNo,
-                'time'        => $time,
-                'duration_ms' => null,
-                'depth'       => $depth,
-                'sql'         => $sql,
-                'params'      => $params,
-                'toc'         => $tocLabel,
-                'caller'      => $caller,
-            ];
         }
 
         fclose($fh);
 
-        // Approximate query duration from time between consecutive calls.
-        // Traces without collect_return have no >=> lines, so inter-query delta
-        // is the next best signal (dominated by DB time for tight N+1 loops).
         $count = count($queries);
         for ($i = 0; $i < $count - 1; $i++) {
             $delta = $queries[$i + 1]['time'] - $queries[$i]['time'];
-            if ($delta >= 0 && $delta < 10.0) { // sanity cap at 10 s
+            if ($delta >= 0 && $delta < 10.0) {
                 $queries[$i]['duration_ms'] = round($delta * 1000, 1);
             }
         }
@@ -625,57 +664,6 @@ class TraceParser
                 $this->collectTocRanges($entry['children'], $ranges, $end);
             }
         }
-    }
-
-    private function findQueryCaller(array $window, int $head, bool $full, int $size, int $executeDepth): ?array
-    {
-        $best = null;
-        $bestScore = -1;
-
-        // Iterate ring buffer from newest to oldest
-        $count = $full ? $size : $head;
-        for ($j = 0; $j < $count; $j++) {
-            $i = ($head - 1 - $j + $size) % $size;
-            $slot = $window[$i];
-            if ($slot === null) continue;
-            [$wLine, $wDepth, $wSig, $wFile] = $slot;
-
-            // For lazy-loaded queries the App\ caller can be many levels shallower
-            // (e.g. depth 5 vs executeQuery depth 25). Don't break on depth —
-            // the window size already provides temporal locality.
-
-            // Skip Doctrine ORM infrastructure and non-initiator app code.
-            if (str_contains($wSig, '\\ORM\\Filter\\')
-                || str_contains($wSig, '\\ORM\\Query\\')
-                || str_contains($wSig, '\\DBAL\\')
-                || str_ends_with($wSig, '->addFilterConstraint')
-                || str_contains($wSig, '\\Enum\\')          // App enum helpers are never query initiators
-                || str_contains($wSig, '::from')            // Enum::from() calls
-            ) {
-                continue;
-            }
-
-            // Score: Repository > Service > Controller > Entity, prefer shallower depth
-            $score = 0;
-            if (str_contains($wSig, 'Repository'))  $score = 40;
-            elseif (str_contains($wSig, 'Service'))  $score = 25;
-            elseif (str_contains($wSig, 'Controller')) $score = 15;
-            elseif (str_contains($wSig, '\\Entity\\')) $score = 8;
-            else $score = 5;
-
-            // Prefer methods that clearly initiate a query
-            $method = substr($wSig, strrpos($wSig, '->') + 2);
-            if (preg_match('/^(find|get|fetch|load|create|build|select|count|paginate)/i', $method)) {
-                $score += 5;
-            }
-
-            if ($score > $bestScore) {
-                $bestScore = $score;
-                $best = ['sig' => $wSig, 'file' => $wFile, 'line_no' => $wLine, 'depth' => $wDepth];
-            }
-        }
-
-        return $best;
     }
 
     /**

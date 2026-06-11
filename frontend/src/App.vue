@@ -348,8 +348,10 @@ async function loadBrowse() {
 async function openFile(relPath) {
   showBrowser.value = false
   const { data } = await axios.post('/api/open', { rel_path: relPath })
-  const displayName = relPath.includes('/') ? relPath.split('/').pop() : relPath
-  await store.selectFile(data.file_id, displayName)
+  // Use the full relPath (dir + file) as display name — the directory encodes the
+  // correct wall-clock time (e.g. 2026-06-11_17-42-54_…) which gets lost if we
+  // just take the filename. The tab shortName() truncates to 26 chars anyway.
+  await store.selectFile(data.file_id, relPath)
   await store.loadFiles()
   if (store.currentFile?.status !== 'ready') store.startPolling(data.file_id)
 }
