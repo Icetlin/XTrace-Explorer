@@ -10,6 +10,7 @@ use App\Repository\AnnotationRepository;
 use App\Repository\EndpointTimingRepository;
 use App\Repository\FavouritePatternRepository;
 use App\Repository\TraceFileRepository;
+use App\Service\SummaryBuilder;
 use App\Service\TraceIndex;
 use App\Service\TraceParser;
 use Doctrine\ORM\EntityManagerInterface;
@@ -33,6 +34,7 @@ class TraceController extends AbstractController
         private readonly EndpointTimingRepository $timingRepo,
         private readonly TraceIndex $traceIndex,
         private readonly TraceParser $traceParser,
+        private readonly SummaryBuilder $summaryBuilder,
         private readonly MessageBusInterface $bus,
     ) {}
 
@@ -453,6 +455,54 @@ class TraceController extends AbstractController
         file_put_contents($dir . '/sql.json', json_encode($queries, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
 
         return $this->json(['ok' => true, 'count' => count($queries)]);
+    }
+
+    /**
+     * Build a single AI-friendly markdown summary of the trace.
+     *
+     * Query params:
+     *   - sections   = comma-separated subset of context,toc,sql,annotations,timings
+     *                   (default = all)
+     *   - max_queries = cap on SQL queries included, oldest dropped first (default 200)
+     *   - include_qb  = "0" to skip QueryBuilder chain extraction (default 1)
+     *
+     * Returns { text, stats: {events, listeners, sql_queries, sql_n_plus_1,
+     *                          annotations, timings, favourites, sections_included,
+     *                          chars}, truncated: bool }
+     */
+    #[Route('/summary/{id}', methods: ['GET'])]
+    public function summary(int $id, Request $request): JsonResponse
+    {
+        $traceFile = $this->traceRepo->find($id);
+        if (!$traceFile || $traceFile->getStatus() !== 'ready') {
+            return $this->json(['error' => 'Not ready'], 404);
+        }
+
+        $allSections = ['context', 'toc', 'sql', 'annotations', 'timings'];
+        $sectionsParam = $request->query->get('sections', '');
+        if ($sectionsParam === '') {
+            $sections = $allSections;
+        } else {
+            $requested = array_filter(array_map('trim', explode(',', $sectionsParam)));
+            $sections = array_values(array_intersect($requested, $allSections));
+            if (!$sections) {
+                return $this->json(['error' => 'No valid sections requested. Allowed: ' . implode(',', $allSections)], 400);
+            }
+        }
+
+        $maxQueries = (int)$request->query->get('max_queries', 200);
+        $maxQueries = max(1, min(2000, $maxQueries));
+
+        $includeQb = $request->query->get('include_qb', '1') !== '0';
+
+        $result = $this->summaryBuilder->build(
+            $traceFile,
+            $sections,
+            $maxQueries,
+            $includeQb,
+        );
+
+        return $this->json($result);
     }
 
     #[Route('/sql/{id}', methods: ['GET'])]

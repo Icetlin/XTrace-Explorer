@@ -356,6 +356,25 @@ export const useTraceStore = defineStore('trace', () => {
     return data
   }
 
+  /**
+   * Build an AI-friendly markdown summary of a trace file.
+   * Returns { text, stats, truncated }.
+   */
+  async function buildSummary(fileId, opts = {}) {
+    const params = {}
+    if (opts.sections && opts.sections.length) {
+      params.sections = opts.sections.join(',')
+    }
+    if (opts.maxQueries != null) {
+      params.max_queries = opts.maxQueries
+    }
+    if (opts.includeQb === false) {
+      params.include_qb = 0
+    }
+    const { data } = await axios.get(`/api/summary/${fileId}`, { params })
+    return data
+  }
+
   const _settingsCache = ref({})
 
   async function loadSettings() {
@@ -507,7 +526,7 @@ export const useTraceStore = defineStore('trace', () => {
     files, openTabs, activeTabFileId, currentTab, currentFile, toc, totalLines, annotations, favourites,
     listenerFilters, eventFilters, appNamespaces, pathMapping,
     loadFiles, selectFile, switchToTab, closeTab, pollStatus, startPolling, reparse,
-    fetchChildren, fetchPath, fetchObject, fetchFindObject, fetchArray, expandItem, fetchSource, fetchVarContext, fetchAppCalls, getListenerFileAbs, search, fetchTimings, extractMethodName, extractClassName, extractSigParts,
+    fetchChildren, fetchPath, fetchObject, fetchFindObject, fetchArray, expandItem, fetchSource, fetchVarContext, fetchAppCalls, getListenerFileAbs, search, fetchTimings, buildSummary, extractMethodName, extractClassName, extractSigParts,
     addAnnotation, deleteAnnotation,
     loadFavourites, addFavourite, deleteFavourite, matchFavourites, favMatchesInRange, scanFavourites,
     loadSettings, saveSettings, addListenerFilter, isListenerFiltered, addEventFilter, isEventFiltered,

@@ -32,6 +32,10 @@ services:
         arguments:
             $tracesDir: '%traces_dir%'
 
+    App\Service\SummaryBuilder:
+        arguments:
+            $tracesDir: '%traces_dir%'
+
     App\MessageHandler\ParseTraceHandler:
         arguments:
             $tracesDir: '%traces_dir%'

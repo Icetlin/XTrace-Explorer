@@ -217,6 +217,55 @@ async def get_sql(file_id: int) -> str:
 
 
 @mcp.tool()
+async def summarize(
+    file_id: int,
+    sections: list[str] | None = None,
+    max_queries: int = 200,
+    include_qb: bool = True,
+) -> str:
+    """
+    Build a comprehensive AI-friendly summary of a trace file in one call.
+    Combines request context, TOC tree, SQL chronology (with N+1 detection
+    and QueryBuilder chains), user annotations, and backend timings into a
+    single markdown string ready to paste into an LLM chat.
+
+    sections:     subset of ['context','toc','sql','annotations','timings']
+                  (default: all)
+    max_queries:  cap on SQL queries included; oldest dropped first (1..2000, default 200)
+    include_qb:   extract QueryBuilder chains for each trigger (default: True)
+    """
+    params: dict = {"max_queries": max(1, min(2000, max_queries))}
+    if sections:
+        allowed = {"context", "toc", "sql", "annotations", "timings"}
+        bad = [s for s in sections if s not in allowed]
+        if bad:
+            return f"Unknown section(s): {bad}. Allowed: {sorted(allowed)}"
+        params["sections"] = ",".join(s for s in sections if s in allowed)
+    if not include_qb:
+        params["include_qb"] = "0"
+
+    try:
+        result = await _api("GET", f"/api/summary/{file_id}", params=params)
+    except Exception as e:
+        return f"summarize failed: {e}"
+
+    text = result.get("text", "")
+    stats = result.get("stats", {})
+    truncated = result.get("truncated", False)
+
+    # Prepend a one-liner with stats so the agent sees the scope at a glance.
+    header = (
+        f"[summary {stats.get('chars', len(text))} chars · "
+        f"events={stats.get('events', 0)} · "
+        f"SQL={stats.get('sql_queries', 0)} ({stats.get('sql_n_plus_1', 0)} N+1) · "
+        f"annot={stats.get('annotations', 0)} · "
+        f"timings={stats.get('timings', 0)}"
+        f"{' · TRUNCATED' if truncated else ''}]\n\n"
+    )
+    return header + text
+
+
+@mcp.tool()
 async def get_schema(file_id: int, items: list[dict]) -> str:
     """
     Fetch the call schema (aggregated tree) for selected items.

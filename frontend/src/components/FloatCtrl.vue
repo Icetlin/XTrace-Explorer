@@ -225,6 +225,23 @@
         </svg>
       </button>
 
+      <!-- AI summary (preview + copy) -->
+      <button
+        v-if="hasTrace"
+        class="float-ctrl__item float-ctrl__item--summary"
+        :class="{ 'float-ctrl__item--loading': summaryLoading }"
+        :disabled="summaryLoading"
+        title="Build AI summary — preview &amp; copy to clipboard"
+        @click="openSummary"
+      >
+        <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
+          <!-- four-point sparkle -->
+          <path d="M7.5 0.5L8.4 5.1L12.5 6.5L8.4 7.9L7.5 12.5L6.6 7.9L2.5 6.5L6.6 5.1Z" fill="currentColor"/>
+          <!-- small accent sparkle bottom-right -->
+          <path d="M11.5 9.5L11.9 11.1L13.5 11.5L11.9 11.9L11.5 13.5L11.1 11.9L9.5 11.5L11.1 11.1Z" fill="currentColor" opacity="0.7"/>
+        </svg>
+      </button>
+
       <!-- Theme toggle -->
       <button
         class="float-ctrl__item float-ctrl__item--theme"
@@ -259,6 +276,18 @@
       </div>
     </div>
   </transition>
+
+  <!-- AI summary modal (separate overlay so it sits above other modals) -->
+  <SummaryModal
+    :visible="summaryVisible"
+    :loading="summaryLoading"
+    :error="summaryError"
+    :text="summaryText"
+    :stats="summaryStats"
+    :truncated="summaryTruncated"
+    @cancel="closeSummary"
+    @copy="onSummaryCopied"
+  />
 </template>
 
 <script setup>
@@ -266,6 +295,7 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
 import SettingsPage from './SettingsPage.vue'
 import SqlPage from './SqlPage.vue'
+import SummaryModal from './SummaryModal.vue'
 import { useTraceStore } from '../stores/trace'
 import { usePerfStore } from '../stores/perf'
 import { usePerfTrack } from '../perfTrack'
@@ -331,6 +361,48 @@ async function doReparse() {
   } finally {
     reparsing.value = false
   }
+}
+
+// ── AI summary modal ────────────────────────────────────────────────────────
+const summaryVisible   = ref(false)
+const summaryLoading   = ref(false)
+const summaryError     = ref(null)
+const summaryText      = ref('')
+const summaryStats     = ref(null)
+const summaryTruncated = ref(false)
+
+async function openSummary() {
+  const f = store.currentFile
+  if (!f) return
+  summaryVisible.value = true
+  summaryError.value   = null
+  summaryText.value    = ''
+  summaryStats.value   = null
+  summaryTruncated.value = false
+  summaryLoading.value = true
+  try {
+    const t0 = performance.now()
+    const result = await store.buildSummary(f.file_id)
+    const elapsed = Math.round(performance.now() - t0)
+    summaryText.value      = result.text      ?? ''
+    summaryStats.value     = result.stats     ?? null
+    summaryTruncated.value = !!result.truncated
+    console.log(`[summary] built in ${elapsed}ms · ${result.stats?.chars ?? 0} chars · sections=${result.stats?.sections_included ?? '?'}`)
+  } catch (e) {
+    console.error('[summary] build failed:', e)
+    summaryError.value = e?.response?.data?.error || e?.message || 'Failed to build summary'
+  } finally {
+    summaryLoading.value = false
+  }
+}
+
+function closeSummary() {
+  if (summaryLoading.value) return
+  summaryVisible.value = false
+}
+
+function onSummaryCopied(text) {
+  console.log(`[summary] copied ${text.length} chars to clipboard`)
 }
 
 function openModal(id) {
@@ -652,6 +724,20 @@ html[data-theme="light"] .float-ctrl__item--reparse {
 }
 html[data-theme="light"] .float-ctrl__item--reparse:hover {
   color: rgba(180, 80, 10, 0.95);
+}
+.float-ctrl__item--summary {
+  color: rgba(190, 165, 255, 0.75);
+}
+.float-ctrl__item--summary:hover {
+  color: rgba(220, 195, 255, 1);
+  background: rgba(120, 80, 220, 0.18);
+}
+html[data-theme="light"] .float-ctrl__item--summary {
+  color: rgba(110, 80, 200, 0.7);
+}
+html[data-theme="light"] .float-ctrl__item--summary:hover {
+  color: rgba(90, 50, 200, 0.95);
+  background: rgba(120, 80, 220, 0.10);
 }
 .float-ctrl__item--theme {
   color: rgba(100, 140, 200, 0.6);
