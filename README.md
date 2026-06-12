@@ -10,7 +10,9 @@ A browser-based viewer for [Xdebug](https://xdebug.org/) function trace files (`
 
 - **Event TOC** — shows Symfony events (`kernel.request`, `kernel.controller`, …) and their listeners at a glance; listeners grouped by source namespace (SF / ACME / …)
 - **Lazy call tree** — click any listener to expand its full call stack on demand; noise-filtered by default, "show all" toggle to see everything
-- **Split-panel code view** — click any call node to open the PHP source side-by-side with a draggable resizer; target line is highlighted, call sites are annotated inline with runtime values
+- **Frosted-glass code view** *(v0.11.0)* — click any call node to open the PHP source in a translucent panel on the right edge; the TOC stays fully visible (and scrollable) behind the `backdrop-filter: blur(28px)` panel. Drag the left edge to resize, `Esc` to close.
+- **SQL chronology** — `by caller` / `tree` / `list` views, with N+1 detection, query-builder chain extraction for each trigger, and `⚡ eager` badges on detected N+1 patterns
+- **AI summary of a trace** *(v0.11.0)* — one-click ✨ button in the Ctrl menu generates a markdown summary (request context, TOC, SQL chronology with N+1 detection and QueryBuilder chains, annotations, timings) and copies it to the clipboard via a preview modal. Also exposed as the MCP `summarize` tool for AI agents.
 - **Runtime value annotations** — source lines are annotated with actual runtime values from the trace: argument values, return values, object fields — even without `collect_return`
 - **Deep drill-down** — expand any call node to recurse as deep as needed, one level at a time
 - **Nested events** — authorization votes and sub-dispatches shown inline, repeated vote groups collapsed to `× N`
@@ -32,17 +34,17 @@ A browser-based viewer for [Xdebug](https://xdebug.org/) function trace files (`
 |---|---|
 | ![Empty](docs/screenshots/01-empty.png) | ![Picker](docs/screenshots/02-picker.png) |
 
-| TOC — events & listeners | Expanded listener with call tree |
+| TOC — events & listeners | SQL chronology with N+1 detection |
 |---|---|
-| ![TOC](docs/screenshots/03-toc.png) | ![Expanded](docs/screenshots/05-calltree.png) |
+| ![TOC](docs/screenshots/03-toc.png) | ![SQL](docs/screenshots/04-sql.png) |
 
-| Split-panel code view with runtime value annotations | Light theme |
+| AI summary modal (✨) | Frosted-glass code view |
 |---|---|
-| ![Code view](docs/screenshots/07-code-view.png) | ![Light theme](docs/screenshots/08-light-theme.png) |
+| ![AI summary](docs/screenshots/05-ai-summary.png) | ![CodeView](docs/screenshots/06-codeview-frosted.png) |
 
-| Xdebug mode switcher | Settings |
-|---|---|
-| ![Xdebug panel](docs/screenshots/10-xdebug-panel.png) | ![Settings](docs/screenshots/09-settings.png) |
+| Ctrl menu — 4 grouped blocks with ✨ AI summary |
+|---|
+| ![Ctrl menu](docs/screenshots/08-final.png) |
 
 **Opening a trace and drilling down:**
 
@@ -92,6 +94,8 @@ Connect Claude Code:
 claude mcp add xtrace --transport sse http://localhost:8766/sse
 ```
 
+Then call `summarize(file_id=34)` to get a one-shot AI-ready summary of any parsed trace.
+
 ---
 
 ## Development
@@ -116,10 +120,11 @@ Backend lives in `symfony/`, frontend in `frontend/`. The async trace parser run
 1. You open a `.xt` file → the backend enqueues a parse job via Symfony Messenger
 2. `TraceParser` builds a sparse byte-offset index (`line_index.json`) and a Table of Contents (`toc.json`) that identifies every `TraceableEventDispatcher->dispatch` call, its listeners, and the `App\` method calls each block triggers
 3. The frontend fetches the TOC and renders events lazily; clicking a listener calls `/api/children` which seeks directly to the right byte position in the file using the index — no full file load
-4. Clicking a call node with a known source file opens the PHP source in a split panel — syntax-highlighted, scrolled to the target line, with child call sites annotated inline
+4. Clicking a call node with a known source file opens the PHP source in a frosted-glass panel on the right; syntax-highlighted, scrolled to the target line, with child call sites annotated inline
 5. `/api/var-context` parses raw object arguments from the trace to produce actual runtime values (field values, return values, inferred types) shown as inline annotations on source lines
 6. Noise filtering removes Symfony internals (Container, Stopwatch, Reflection, …) by default; toggle "show all calls" per listener to see everything
-7. The floating control bar lets you switch Xdebug modes directly from the UI and manage starred trace patterns
+7. The floating control bar (reorganised in v0.11.0 into four semantic groups) lets you switch Xdebug modes, manage starred trace patterns, and copy a one-click AI summary of the active trace
+8. The AI summary endpoint (`/api/summary/{id}`) renders a single markdown document that the MCP `summarize` tool (and the UI's ✨ button) deliver to the LLM
 
 Trace files with 3 million+ lines parse in seconds and navigate without loading the full file into memory.
 
