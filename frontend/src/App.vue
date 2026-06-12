@@ -157,14 +157,13 @@
     <!-- ── Main content ── -->
     <div class="main">
 
-      <!-- Trace views -->
+      <!-- Trace views — TOC owns the full width; CodeView slides in as an
+           overlay panel on the right when a node is selected. -->
       <template v-for="tab in store.openTabs" :key="tab.fileId">
         <div
           v-show="store.activeTabFileId === tab.fileId && tab.status === 'ready'"
           class="trace-view"
-          :style="store.activeCodeNode ? { gridTemplateColumns: splitWidth + 'px 4px 1fr' } : { gridTemplateColumns: '1fr' }"
         >
-          <!-- Left: TOC -->
           <TocTree
             v-if="tab.toc.length"
             :ref="el => { if (el) { tocTreeRefs[tab.fileId] = el; if (tab.fileId === store.activeTabFileId) activeTocRef.value = el } }"
@@ -174,15 +173,13 @@
             @breadcrumb="onBreadcrumb"
           />
 
-          <!-- Resize handle (only when code panel is open) -->
-          <div
+          <!-- CodeView: floating panel on the right (see CodeView.vue) -->
+          <CodeView
             v-if="store.activeCodeNode"
-            class="split-resizer"
-            @mousedown.prevent="startSplitResize"
+            :width="splitWidth"
+            @resize-start="startSplitResize"
+            @close="closeCodeView"
           />
-
-          <!-- Right: Code view (only when node selected) -->
-          <CodeView v-if="store.activeCodeNode" />
         </div>
       </template>
 
@@ -248,12 +245,20 @@ function startSplitResize(e) {
 }
 function onSplitResize(e) {
   if (!splitResizeStart) return
-  splitWidth.value = Math.max(260, Math.min(window.innerWidth - 320, splitResizeStart.width + e.clientX - splitResizeStart.x))
+  // Panel sits on the right edge; dragging the handle LEFTWARD makes it
+  // wider (delta is negative). Clamp to a sensible range.
+  const delta = e.clientX - splitResizeStart.x
+  splitWidth.value = Math.max(300, Math.min(window.innerWidth - 320, splitResizeStart.width - delta))
 }
 function stopSplitResize() {
   splitResizeStart = null
   document.removeEventListener('mousemove', onSplitResize)
   document.removeEventListener('mouseup', stopSplitResize)
+}
+
+function closeCodeView() {
+  // CodeView emits this on Esc / close-button / backdrop click.
+  store.setCodeNode(null)
 }
 const showBrowser = ref(false)
 const browseFiles = ref([])
@@ -1026,23 +1031,14 @@ html, body, #app {
 .trace-view {
   flex: 1;
   overflow: hidden;
-  display: grid;
-  grid-template-rows: 1fr;
+  display: block; /* TOC owns the full width; CodeView is an overlay panel */
   min-height: 0;
   min-width: 0;
+  position: relative;
 }
 
-.split-resizer {
-  background: var(--bg-resizer);
-  cursor: col-resize;
-  transition: background 0.15s;
-  position: relative;
-  z-index: 10;
-}
-.split-resizer:hover,
-.split-resizer:active {
-  background: var(--bg-resizer-act);
-}
+/* split-resizer styles moved to CodeView.vue — the handle now lives on
+   the left edge of the floating panel, not as a fixed grid divider. */
 
 /* ── Empty state ── */
 .empty-state {

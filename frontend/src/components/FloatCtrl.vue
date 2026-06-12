@@ -97,8 +97,10 @@
       </div>
     </transition>
 
-    <!-- Buttons row (always horizontal) -->
+    <!-- Buttons row (always horizontal). Four semantic groups, separated by
+         thin dividers: View · Trace state · Debug & runtime · Global. -->
     <div class="float-ctrl__row">
+      <!-- ── Group 1: View & analyze ── -->
       <!-- Collapse / expand TOC -->
       <button
         v-if="hasTrace"
@@ -117,57 +119,6 @@
         </svg>
       </button>
 
-      <!-- Favourites toggle -->
-      <button
-        class="float-ctrl__item"
-        :class="{ 'float-ctrl__item--active': favOpen }"
-        title="Favourites"
-        @click="favOpen = !favOpen; xdOpen = false"
-      >
-        <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
-          <ellipse cx="7.5" cy="7.5" rx="6" ry="4" stroke="currentColor" stroke-width="1.3"/>
-          <circle cx="7.5" cy="7.5" r="2" stroke="currentColor" stroke-width="1.3"/>
-        </svg>
-      </button>
-
-      <!-- Timings (backend + frontend) toggle — always available, since
-           frontend metrics are useful even before a trace is opened. -->
-      <button
-        class="float-ctrl__item"
-        :class="{ 'float-ctrl__item--active': timingsOpen }"
-        title="Timings (backend + frontend)"
-        @click="toggleTimings"
-      >
-        <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
-          <circle cx="7.5" cy="8.5" r="5.5" stroke="currentColor" stroke-width="1.3"/>
-          <path d="M7.5 8.5V5.5M7.5 8.5L9.5 10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M5.5 1.5h4M7.5 1.5V3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-        </svg>
-      </button>
-
-      <!-- Xdebug toggle button -->
-      <button
-        class="float-ctrl__item float-ctrl__item--xd"
-        :class="[xdColorClass, { 'float-ctrl__item--loading': xdLoading, 'float-ctrl__item--active': xdOpen }]"
-        :title="xdTitle"
-        :disabled="xdLoading"
-        @click="xdOpen = !xdOpen; favOpen = false"
-      >
-        <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
-          <!-- body -->
-          <ellipse cx="7.5" cy="8.5" rx="3" ry="3.8" stroke="currentColor" stroke-width="1.3"/>
-          <!-- head -->
-          <circle cx="7.5" cy="4.2" r="1.5" stroke="currentColor" stroke-width="1.3"/>
-          <!-- antennae -->
-          <path d="M6.5 3L5 1.5M8.5 3L10 1.5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
-          <!-- legs left -->
-          <path d="M4.5 7L2.5 6.5M4.5 8.5L2.5 8.5M4.5 10L2.5 11" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
-          <!-- legs right -->
-          <path d="M10.5 7L12.5 6.5M10.5 8.5L12.5 8.5M10.5 10L12.5 11" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
-        </svg>
-        <span class="xd-dot" />
-      </button>
-
       <!-- SQL queries -->
       <button
         v-if="hasTrace"
@@ -184,29 +135,49 @@
         </svg>
       </button>
 
-      <!-- Settings gear -->
+      <!-- AI summary (preview + copy) -->
       <button
-        class="float-ctrl__item"
-        :class="{ 'float-ctrl__item--active': activeModal === 'settings' }"
-        title="Settings"
-        @click="openModal('settings')"
+        v-if="hasTrace"
+        class="float-ctrl__item float-ctrl__item--summary"
+        :class="{ 'float-ctrl__item--loading': summaryLoading }"
+        :disabled="summaryLoading"
+        title="Build AI summary — preview &amp; copy to clipboard"
+        @click="openSummary"
       >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-          <path d="M11.42 15.17L17.25 21A2.652 2.652 0 0021 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 11-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 004.486-6.336l-3.276 3.277a3.004 3.004 0 01-2.25-2.25l3.276-3.276a4.5 4.5 0 00-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085m-1.745 1.437L5.909 7.5H4.5L2.25 3.75l1.5-1.5L7.5 4.5v1.409l4.26 4.26m-1.745 1.437l1.745-1.437m6.615 8.206L15.75 15.75M4.867 19.125h.008v.008h-.008v-.008z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
+          <path d="M7.5 0.5L8.4 5.1L12.5 6.5L8.4 7.9L7.5 12.5L6.6 7.9L2.5 6.5L6.6 5.1Z" fill="currentColor"/>
+          <path d="M11.5 9.5L11.9 11.1L13.5 11.5L11.9 11.9L11.5 13.5L11.1 11.9L9.5 11.5L11.1 11.1Z" fill="currentColor" opacity="0.7"/>
         </svg>
       </button>
 
-      <!-- Click logger toggle -->
+      <!-- Timings (backend + frontend) — always available, frontend metrics
+           are useful even before a trace is opened. -->
       <button
         class="float-ctrl__item"
-        :class="{ 'float-ctrl__item--active float-ctrl__item--log': clickLogEnabled }"
-        title="Toggle click logger"
-        @click="toggleClickLog"
+        :class="{ 'float-ctrl__item--active': timingsOpen }"
+        title="Timings (backend + frontend)"
+        @click="toggleTimings"
       >
         <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
-          <rect x="1.5" y="3" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/>
-          <path d="M4 6.5h7M4 9h4.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-          <circle v-if="clickLogEnabled" cx="12" cy="3" r="2.5" fill="#e05050"/>
+          <circle cx="7.5" cy="8.5" r="5.5" stroke="currentColor" stroke-width="1.3"/>
+          <path d="M7.5 8.5V5.5M7.5 8.5L9.5 10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M5.5 1.5h4M7.5 1.5V3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+        </svg>
+      </button>
+
+      <div class="float-ctrl__divider" />
+
+      <!-- ── Group 2: Trace state ── -->
+      <!-- Favourites toggle -->
+      <button
+        class="float-ctrl__item"
+        :class="{ 'float-ctrl__item--active': favOpen }"
+        title="Favourites"
+        @click="favOpen = !favOpen; xdOpen = false"
+      >
+        <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+          <ellipse cx="7.5" cy="7.5" rx="6" ry="4" stroke="currentColor" stroke-width="1.3"/>
+          <circle cx="7.5" cy="7.5" r="2" stroke="currentColor" stroke-width="1.3"/>
         </svg>
       </button>
 
@@ -225,37 +196,68 @@
         </svg>
       </button>
 
-      <!-- AI summary (preview + copy) -->
+      <div class="float-ctrl__divider" />
+
+      <!-- ── Group 3: Debug & runtime ── -->
+      <!-- Click logger toggle -->
       <button
-        v-if="hasTrace"
-        class="float-ctrl__item float-ctrl__item--summary"
-        :class="{ 'float-ctrl__item--loading': summaryLoading }"
-        :disabled="summaryLoading"
-        title="Build AI summary — preview &amp; copy to clipboard"
-        @click="openSummary"
+        class="float-ctrl__item"
+        :class="{ 'float-ctrl__item--active float-ctrl__item--log': clickLogEnabled }"
+        title="Toggle click logger"
+        @click="toggleClickLog"
       >
-        <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
-          <!-- four-point sparkle -->
-          <path d="M7.5 0.5L8.4 5.1L12.5 6.5L8.4 7.9L7.5 12.5L6.6 7.9L2.5 6.5L6.6 5.1Z" fill="currentColor"/>
-          <!-- small accent sparkle bottom-right -->
-          <path d="M11.5 9.5L11.9 11.1L13.5 11.5L11.9 11.9L11.5 13.5L11.1 11.9L9.5 11.5L11.1 11.1Z" fill="currentColor" opacity="0.7"/>
+        <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+          <rect x="1.5" y="3" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/>
+          <path d="M4 6.5h7M4 9h4.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+          <circle v-if="clickLogEnabled" cx="12" cy="3" r="2.5" fill="#e05050"/>
         </svg>
       </button>
 
+      <!-- Xdebug toggle button -->
+      <button
+        class="float-ctrl__item float-ctrl__item--xd"
+        :class="[xdColorClass, { 'float-ctrl__item--loading': xdLoading, 'float-ctrl__item--active': xdOpen }]"
+        :title="xdTitle"
+        :disabled="xdLoading"
+        @click="xdOpen = !xdOpen; favOpen = false"
+      >
+        <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+          <ellipse cx="7.5" cy="8.5" rx="3" ry="3.8" stroke="currentColor" stroke-width="1.3"/>
+          <circle cx="7.5" cy="4.2" r="1.5" stroke="currentColor" stroke-width="1.3"/>
+          <path d="M6.5 3L5 1.5M8.5 3L10 1.5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
+          <path d="M4.5 7L2.5 6.5M4.5 8.5L2.5 8.5M4.5 10L2.5 11" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
+          <path d="M10.5 7L12.5 6.5M10.5 8.5L12.5 8.5M10.5 10L12.5 11" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
+        </svg>
+        <span class="xd-dot" />
+      </button>
+
+      <div class="float-ctrl__divider" />
+
+      <!-- ── Group 4: Global ── -->
       <!-- Theme toggle -->
       <button
         class="float-ctrl__item float-ctrl__item--theme"
         :title="store.theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'"
         @click="store.toggleTheme()"
       >
-        <!-- Moon icon for dark mode (click to switch to light) -->
         <svg v-if="store.theme === 'dark'" width="15" height="15" viewBox="0 0 15 15" fill="none">
           <path d="M13 9.5A6 6 0 1 1 5.5 2a4.5 4.5 0 0 0 7.5 7.5z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
         </svg>
-        <!-- Sun icon for light mode (click to switch to dark) -->
         <svg v-else width="15" height="15" viewBox="0 0 15 15" fill="none">
           <circle cx="7.5" cy="7.5" r="2.5" stroke="currentColor" stroke-width="1.3"/>
           <path d="M7.5 1v1.5M7.5 12.5V14M1 7.5h1.5M12.5 7.5H14M2.93 2.93l1.06 1.06M11.01 11.01l1.06 1.06M2.93 12.07l1.06-1.06M11.01 3.99l1.06-1.06" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+        </svg>
+      </button>
+
+      <!-- Settings gear -->
+      <button
+        class="float-ctrl__item"
+        :class="{ 'float-ctrl__item--active': activeModal === 'settings' }"
+        title="Settings"
+        @click="openModal('settings')"
+      >
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+          <path d="M11.42 15.17L17.25 21A2.652 2.652 0 0021 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 11-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 004.486-6.336l-3.276 3.277a3.004 3.004 0 01-2.25-2.25l3.276-3.276a4.5 4.5 0 00-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085m-1.745 1.437L5.909 7.5H4.5L2.25 3.75l1.5-1.5L7.5 4.5v1.409l4.26 4.26m-1.745 1.437l1.745-1.437m6.615 8.206L15.75 15.75M4.867 19.125h.008v.008h-.008v-.008z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
       </button>
     </div>
@@ -642,6 +644,20 @@ html[data-theme="light"] .float-ctrl {
   flex-direction: row;
   align-items: center;
   gap: 2px;
+}
+
+/* Thin vertical separator between semantic button groups.
+   Width 1px, height matches the icon row, slightly muted so it groups
+   without competing visually with the icons themselves. */
+.float-ctrl__divider {
+  width: 1px;
+  height: 20px;
+  background: rgba(55, 65, 110, 0.4);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+html[data-theme="light"] .float-ctrl__divider {
+  background: rgba(140, 160, 220, 0.5);
 }
 
 

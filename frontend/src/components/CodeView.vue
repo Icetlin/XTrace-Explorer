@@ -1,56 +1,63 @@
 <template>
-  <div class="code-view" v-if="source || loading || error">
-    <!-- Header -->
-    <div class="code-view__header">
-      <span class="code-view__filename" :title="currentFile">{{ shortFilename }}</span>
-      <span class="code-view__range" v-if="source">lines {{ source.fn_from }}–{{ source.fn_to }}</span>
-      <button class="code-view__close" @click="store.setCodeNode(null)">✕</button>
-    </div>
-
-    <!-- Loading bar — visible so user knows the click was registered while
-         fetchChildren (1.5s+ for deep listener) or fetchSource is in flight. -->
-    <div v-if="loading" class="code-view__loadbar">loading source…</div>
-
-    <!-- Error -->
-    <div v-if="error" class="code-view__error">{{ error }}</div>
-
-    <!-- Source lines -->
-    <div v-else-if="source" ref="scrollEl" class="code-view__body"
-      @mouseleave="store.setHoveredCodeLine(null)"
-    >
+  <Transition name="code-panel">
+    <!-- No backdrop — TOC stays fully visible behind the panel. The panel
+         itself is frosted glass (semi-transparent + backdrop-filter blur)
+         so the user sees both simultaneously. -->
+    <div v-if="source || loading || error" class="code-panel" :style="{ width: width + 'px' }">
       <div
-        v-for="[no, html] in highlightedLines"
-        :key="no"
-        class="code-line"
-        :class="lineClass(no)"
-        :data-line="no"
-        @mouseenter="store.setHoveredCodeLine(currentFile + ':' + no)"
-      >
-        <div class="code-line__main">
-          <span class="code-line__no" @click.stop="openInStorm(no)" title="Open in PhpStorm">{{ no }}</span>
-          <span class="code-line__code" v-html="html" />
+        class="code-panel__resizer"
+        @mousedown.prevent="$emit('resize-start', $event)"
+      />
+
+      <div class="code-view">
+        <!-- Header -->
+        <div class="code-view__header">
+          <span class="code-view__filename" :title="currentFile">{{ shortFilename }}</span>
+          <span class="code-view__range" v-if="source">lines {{ source.fn_from }}–{{ source.fn_to }}</span>
+          <button class="code-view__close" @click="close" title="Close (Esc)">✕</button>
         </div>
-        <div v-if="annotations.has(no)" class="code-line__ann">
-          <span class="code-line__ann-no" />
-          <span
-            v-for="(ann, i) in annotations.get(no)"
-            :key="i"
-            class="code-line__ann-item"
-            :class="{ 'code-line__ann-item--clickable': ann.objCall || ann.arrCall || ann.inferredClass || ann.call }"
-            @click.stop="(ann.objCall || ann.arrCall || ann.inferredClass) ? openObjPopup($event, ann) : (ann.call && store.setCodeNode(ann.call))"
+
+        <!-- Loading bar — visible so user knows the click was registered while
+             fetchChildren (1.5s+ for deep listener) or fetchSource is in flight. -->
+        <div v-if="loading" class="code-view__loadbar">loading source…</div>
+
+        <!-- Error -->
+        <div v-if="error" class="code-view__error">{{ error }}</div>
+
+        <!-- Source lines -->
+        <div v-else-if="source" ref="scrollEl" class="code-view__body"
+          @mouseleave="store.setHoveredCodeLine(null)"
+        >
+          <div
+            v-for="[no, html] in highlightedLines"
+            :key="no"
+            class="code-line"
+            :class="lineClass(no)"
+            :data-line="no"
+            @mouseenter="store.setHoveredCodeLine(currentFile + ':' + no)"
           >
-            <span class="ann-arrow">⇒</span>
-            <span class="ann-val" :class="ann.type">{{ ann.value }}</span>
-          </span>
+            <div class="code-line__main">
+              <span class="code-line__no" @click.stop="openInStorm(no)" title="Open in PhpStorm">{{ no }}</span>
+              <span class="code-line__code" v-html="html" />
+            </div>
+            <div v-if="annotations.has(no)" class="code-line__ann">
+              <span class="code-line__ann-no" />
+              <span
+                v-for="(ann, i) in annotations.get(no)"
+                :key="i"
+                class="code-line__ann-item"
+                :class="{ 'code-line__ann-item--clickable': ann.objCall || ann.arrCall || ann.inferredClass || ann.call }"
+                @click.stop="(ann.objCall || ann.arrCall || ann.inferredClass) ? openObjPopup($event, ann) : (ann.call && store.setCodeNode(ann.call))"
+              >
+                <span class="ann-arrow">⇒</span>
+                <span class="ann-val" :class="ann.type">{{ ann.value }}</span>
+              </span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
-  </div>
-
-  <!-- Empty state when no node selected yet -->
-  <div v-else class="code-view code-view--empty">
-    <span>Click any node to view source</span>
-  </div>
+  </Transition>
 
   <!-- Object/array inspector popup -->
   <teleport to="body">
@@ -98,10 +105,28 @@ import phpLang from 'highlight.js/lib/languages/php'
 
 hljs.registerLanguage('php', phpLang)
 
+const props = defineProps({
+  width: { type: Number, default: 560 },
+})
+const emit = defineEmits(['resize-start', 'close'])
+
 const store = useTraceStore()
 // CodeView re-mounts every time a new code node is selected — perfect
 // signal to record render time per node activation.
 usePerfTrack('CodeView', { category: 'render' })
+
+function close() {
+  emit('close')
+}
+
+// Global Esc-to-close. The @keydown.esc on the overlay only fires when the
+// overlay has focus, which is unreliable (clicking on TOC steals focus).
+// Listening on document catches Esc regardless of where focus is.
+function onKeydown(e) {
+  if (e.key === 'Escape') close()
+}
+onMounted(() => document.addEventListener('keydown', onKeydown))
+onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 
 const loading = ref(false)
 const error = ref(null)
@@ -563,12 +588,70 @@ function extractLineNo(fileStr) {
 </style>
 
 <style scoped>
+/* ── Floating overlay layout ─────────────────────────────────────────────
+   CodeView is no longer a grid column — it slides in as a fixed-position
+   panel on the right with a matte backdrop. The TOC behind it keeps 100%
+   width and remains fully scrollable/interactable in the visible left area. */
+
+/* The panel is a fixed-position frosted-glass sheet on the right edge of the
+   viewport. No backdrop — the TOC behind stays fully visible (and fully
+   interactive) while the panel sits on top with blur. */
+.code-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 150; /* below .float-ctrl (200) so the floating bar stays clickable */
+  background: rgba(8, 10, 22, 0.62);
+  backdrop-filter: blur(28px) saturate(160%);
+  -webkit-backdrop-filter: blur(28px) saturate(160%);
+  border-left: 1px solid rgba(70, 90, 140, 0.55);
+  box-shadow: -10px 0 50px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.03);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  color: rgba(220, 230, 245, 0.9); /* base fg — overridden per-element below */
+}
+html[data-theme="light"] .code-panel {
+  background: rgba(248, 250, 255, 0.62);
+  border-left-color: rgba(140, 160, 220, 0.6);
+  box-shadow: -10px 0 50px rgba(80, 100, 200, 0.16), 0 0 0 1px rgba(80, 100, 200, 0.04);
+  color: rgba(15, 30, 60, 0.92);
+}
+
+/* Floating resize handle on the left edge of the panel — 4px wide hit area. */
+.code-panel__resizer {
+  position: absolute;
+  left: -2px;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: col-resize;
+  z-index: 1;
+  background: linear-gradient(to right, transparent 50%, rgba(140, 165, 215, 0.18) 50%);
+  transition: background 0.15s;
+}
+.code-panel__resizer:hover,
+.code-panel__resizer:active {
+  background: linear-gradient(to right, transparent 40%, rgba(140, 165, 215, 0.6) 50%, transparent 60%);
+}
+html[data-theme="light"] .code-panel__resizer {
+  background: linear-gradient(to right, transparent 50%, rgba(60, 100, 200, 0.22) 50%);
+}
+html[data-theme="light"] .code-panel__resizer:hover,
+html[data-theme="light"] .code-panel__resizer:active {
+  background: linear-gradient(to right, transparent 40%, rgba(40, 80, 200, 0.65) 50%, transparent 60%);
+}
+
+/* Inner .code-view — fills the panel, no border (panel has its own). */
 .code-view {
   display: flex;
   flex-direction: column;
-  background: #090b14;
-  border-left: 1px solid rgba(40, 60, 100, 0.4);
+  background: transparent;
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  flex: 1;
   min-width: 0;
   height: 100%;
   overflow: hidden;
@@ -871,4 +954,75 @@ function extractLineNo(fileStr) {
 .obj-popup__field--nested { padding: 1px 8px 1px 4px; }
 .obj-popup__field--nested .obj-popup__fname { min-width: 70px; color: #5878a0; font-size: 11px; }
 .obj-popup__field--nested .obj-popup__fval { font-size: 11px; }
+
+/* ── Slide-in transition (panel only — no backdrop to fade anymore) ── */
+.code-panel-enter-active,
+.code-panel-leave-active {
+  transition: transform 0.22s cubic-bezier(0.34, 1.05, 0.64, 1), opacity 0.18s ease;
+}
+.code-panel-enter-from,
+.code-panel-leave-to {
+  transform: translateX(40px);
+  opacity: 0;
+}
+
+/* ── Light-theme overrides ─────────────────────────────────────────────
+   The CodeView was originally dark-only. Every text colour gets a dark
+   counterpart for html[data-theme="light"] so the frosted-glass panel is
+   actually readable on a white-ish backdrop. The .code-panel base color
+   (set near the top) is the only thing scoped via theme; everything below
+   is force-overridden. */
+html[data-theme="light"] .code-line__no         { color: #2a4060; }
+html[data-theme="light"] .code-view__header    { border-bottom-color: rgba(140, 160, 220, 0.4); }
+html[data-theme="light"] .code-view__filename  { color: #1a4878; }
+html[data-theme="light"] .code-view__range     { color: #5a6a88; }
+html[data-theme="light"] .code-view__close     { color: #2a3a58; }
+html[data-theme="light"] .code-view__close:hover { color: #c03030; background: rgba(200, 40, 40, 0.1); }
+html[data-theme="light"] .code-view__loadbar   { background: rgba(220, 235, 250, 0.9); color: #2a4878; }
+html[data-theme="light"] .code-view__error     { color: #8a1f1f; background: rgba(200, 40, 40, 0.08); }
+html[data-theme="light"] .code-line            { color: rgba(15, 30, 60, 0.92); }
+html[data-theme="light"] .code-line:hover      { background: rgba(60, 100, 180, 0.06); }
+html[data-theme="light"] .code-line--target    { background: rgba(60, 120, 200, 0.13); border-left-color: rgba(40, 100, 200, 0.7); }
+html[data-theme="light"] .code-line--target .code-line__no { color: #1a4878; }
+html[data-theme="light"] .code-line--ann       { background: rgba(40, 120, 60, 0.08); }
+html[data-theme="light"] .code-line--ann.code-line--target { background: rgba(40, 120, 60, 0.14); border-left-color: rgba(30, 120, 60, 0.6); }
+html[data-theme="light"] .code-line__ann-no    { color: #3a8050; }
+html[data-theme="light"] .code-line__ann-item  { color: #1a3a20; }
+html[data-theme="light"] .code-line__ann-item--clickable { background: rgba(60, 120, 200, 0.12); }
+html[data-theme="light"] .code-line__ann-item--clickable:hover .ann-arrow { color: #1a4878; }
+html[data-theme="light"] .ann-arrow            { color: #4a6a90; }
+html[data-theme="light"] .ann-val              { color: #1a3060; }
+html[data-theme="light"] .ann-val--str         { color: #1a5040; }
+html[data-theme="light"] .ann-val--num         { color: #8a3010; }
+html[data-theme="light"] .ann-val--null        { color: #6a6a6a; }
+html[data-theme="light"] .ann-val--bool        { color: #7a3a8a; }
+
+/* highlight.js token colours — light palette. Mapped to the same slots as
+   the dark palette so syntax highlighting reads correctly on light bg. */
+html[data-theme="light"] .code-line__code .hljs-keyword  { color: #7c3aed; }
+html[data-theme="light"] .code-line__code .hljs-string   { color: #2a7a3a; }
+html[data-theme="light"] .code-line__code .hljs-comment  { color: #6a8090; font-style: italic; }
+html[data-theme="light"] .code-line__code .hljs-number   { color: #b8420a; }
+html[data-theme="light"] .code-line__code .hljs-variable { color: #1a5fb8; }
+html[data-theme="light"] .code-line__code .hljs-built_in { color: #1a8078; }
+html[data-theme="light"] .code-line__code .hljs-title,
+html[data-theme="light"] .code-line__code .hljs-function { color: #1a3aa0; }
+html[data-theme="light"] .code-line__code .hljs-attr     { color: #a06008; }
+html[data-theme="light"] .code-line__code .hljs-literal  { color: #b81f50; }
+html[data-theme="light"] .code-line__code .hljs-type,
+html[data-theme="light"] .code-line__code .hljs-class    { color: #8a5a08; }
+html[data-theme="light"] .code-line__code .hljs-params,
+html[data-theme="light"] .code-line__code .hljs-subst    { color: #3a3a3a; }
+
+/* Object/array inspector popup — dark by default, override for light */
+html[data-theme="light"] .obj-popup              { background: rgba(248, 250, 255, 0.96); border-color: rgba(140, 160, 220, 0.6); box-shadow: 0 4px 24px rgba(80, 100, 200, 0.18); }
+html[data-theme="light"] .obj-popup__header     { color: #1a3060; border-bottom-color: rgba(140, 160, 220, 0.4); }
+html[data-theme="light"] .obj-popup__field      { color: #1a3060; }
+html[data-theme="light"] .obj-popup__field:hover { background: rgba(60, 100, 180, 0.08); }
+html[data-theme="light"] .obj-popup__fname      { color: #2a4878; }
+html[data-theme="light"] .obj-popup__fval       { color: #1a3060; }
+html[data-theme="light"] .obj-popup__empty      { color: #6a7a90; }
+html[data-theme="light"] .obj-popup__nested-header { color: #1a3060; border-bottom-color: rgba(140, 160, 220, 0.3); }
+html[data-theme="light"] .obj-popup__field--nested { color: #1a3060; }
+html[data-theme="light"] .obj-popup__field--nested .obj-popup__fname { color: #2a4060; }
 </style>
