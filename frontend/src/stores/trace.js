@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, computed, shallowRef, markRaw } from 'vue'
+import { ref, computed, shallowRef, markRaw, watch, nextTick } from 'vue'
 import axios from 'axios'
 
 export const useTraceStore = defineStore('trace', () => {
@@ -9,6 +9,11 @@ export const useTraceStore = defineStore('trace', () => {
   // openTabs: array of { fileId, name, status, toc, totalLines, annotations, progress }
   const openTabs = ref([])
   const activeTabFileId = ref(null)
+
+  // tab groups: [{ id, name, color, tabs: [fileId, ...] }]. `tabs` is ordered.
+  // A fileId appears in at most one group at a time.
+  const groups = ref([])
+  const nextGroupId = ref(1) // monotonic; persisted alongside groups
 
   const favourites = ref([])
   const pollingIds = new Set() // fileIds currently being polled
@@ -80,6 +85,13 @@ export const useTraceStore = defineStore('trace', () => {
     if (activeTabFileId.value === fileId) {
       activeTabFileId.value = openTabs.value[0]?.fileId ?? null
     }
+    // Remove the tab from any group it belonged to. If the group becomes
+    // empty, dissolve it entirely — empty groups serve no purpose and
+    // would just clutter the tab bar.
+    for (const g of groups.value) {
+      g.tabs = g.tabs.filter(id => id !== fileId)
+    }
+    groups.value = groups.value.filter(g => g.tabs.length > 0)
   }
 
   async function pollStatus(fileId) {
@@ -469,29 +481,85 @@ export const useTraceStore = defineStore('trace', () => {
     return currentTab.value?.selection?.some(s => s.line_no === lineNo) ?? false
   }
 
-  // ── Session persistence ──
-  const STORAGE_KEY = 'xtrace-session'
-
-  function persistSession() {
-    const data = {
-      tabs: openTabs.value.map(t => ({ fileId: t.fileId, name: t.name })),
-      activeTabFileId: activeTabFileId.value,
-    }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
+  // ── Tab groups ──
+  // `tabs` in a group is the ORDERED list of fileIds. Order is preserved
+  // through the tab bar (so the visual order matches the group order).
+  // A fileId may appear in at most one group at any time.
+  const GROUP_COLORS = [
+    '#6cb8ff', // sky
+    '#ff8a4a', // orange
+    '#6fd98e', // green
+    '#c9a8ff', // lavender
+    '#ff7ab0', // pink
+    '#ffd866', // gold
+  ]
+  function pickColor() {
+    return GROUP_COLORS[(nextGroupId.value - 1) % GROUP_COLORS.length]
   }
 
-  async function restoreSession() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY)
-      if (!raw) return
-      const { tabs, activeTabFileId: savedActive } = JSON.parse(raw)
-      if (!tabs?.length) return
-      // Load all tabs in parallel, then set the active one
-      await Promise.all(tabs.map(t => selectFile(t.fileId, t.name)))
-      if (savedActive && openTabs.value.find(t => t.fileId === savedActive)) {
-        activeTabFileId.value = savedActive
+  // Drop tab A onto tab B. If both ungrouped: create a new group with A+B.
+  // If B is in a group: move A into that group (placed next to B).
+  // If A is already in a group and B ungrouped: add B to A's group.
+  // If both grouped (different groups): merge B's group into A's group.
+  function moveTabToGroup(sourceFileId, targetFileId) {
+    if (sourceFileId === targetFileId) return
+    // Remove source from any current group first
+    for (const g of groups.value) {
+      g.tabs = g.tabs.filter(id => id !== sourceFileId)
+    }
+    let targetGroup = groups.value.find(g => g.tabs.includes(targetFileId))
+    if (!targetGroup) {
+      // No group yet — create a new one with both tabs
+      targetGroup = {
+        id: nextGroupId.value++,
+        name: 'New group',
+        color: pickColor(),
+        tabs: [],
       }
-    } catch { /* ignore corrupt storage */ }
+      groups.value.push(targetGroup)
+    }
+    // Insert source next to target
+    const idx = targetGroup.tabs.indexOf(targetFileId)
+    targetGroup.tabs.splice(idx + 1, 0, sourceFileId)
+    // Cleanup any group that lost all its tabs
+    groups.value = groups.value.filter(g => g.tabs.length > 0)
+  }
+
+  // Drop tab in empty area (no target) → ungroup (remove from its group,
+  // or no-op if already ungrouped). Called by the bar's drop zone behind
+  // the tabs.
+  function ungroupTab(fileId) {
+    for (const g of groups.value) {
+      g.tabs = g.tabs.filter(id => id !== fileId)
+    }
+    groups.value = groups.value.filter(g => g.tabs.length > 0)
+  }
+
+  function renameGroup(groupId, name) {
+    const g = groups.value.find(x => x.id === groupId)
+    if (g) g.name = name
+  }
+
+  function setGroupColor(groupId, color) {
+    const g = groups.value.find(x => x.id === groupId)
+    if (g) g.color = color
+  }
+
+  // Reverse lookup: which group (if any) owns this tab?
+  const tabGroupId = computed(() => {
+    const m = {}
+    for (const g of groups.value) {
+      for (const id of g.tabs) m[id] = g.id
+    }
+    return m
+  })
+
+  function getGroupForTab(fileId) {
+    return groups.value.find(g => g.tabs.includes(fileId)) ?? null
+  }
+
+  function getOpenGroupId(fileId) {
+    return getGroupForTab(fileId)?.id ?? null
   }
 
   // Active code node for split view — set when user clicks any node with file_abs
@@ -522,9 +590,85 @@ export const useTraceStore = defineStore('trace', () => {
     localStorage.setItem('xtrace-theme', theme.value)
   }
 
+  // ── Session persistence (open tabs + active + groups) ──
+  const STORAGE_KEY = 'xtrace-session'
+
+  function persistSession() {
+    try {
+      const data = {
+        tabs: openTabs.value.map(t => ({ fileId: t.fileId, name: t.name })),
+        activeTabFileId: activeTabFileId.value,
+        groups: groups.value.map(g => ({ id: g.id, name: g.name, color: g.color, tabs: g.tabs })),
+      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
+    } catch { /* quota etc. — ignore */ }
+  }
+
+  async function restoreSession() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY)
+      if (!raw) return
+      const { tabs, activeTabFileId: savedActive, groups: savedGroups } = JSON.parse(raw)
+      if (!tabs?.length) return
+      // Load all tabs in parallel, then set the active one
+      await Promise.all(tabs.map(t => selectFile(t.fileId, t.name)))
+      if (savedActive && openTabs.value.find(t => t.fileId === savedActive)) {
+        activeTabFileId.value = savedActive
+      }
+      // Restore groups, dropping any tabIds that no longer exist and
+      // dissolving groups that became empty.
+      if (Array.isArray(savedGroups)) {
+        const validIds = new Set(openTabs.value.map(t => t.fileId))
+        const restored = savedGroups
+          .map(g => ({
+            id: Number(g.id) || 0,
+            name: String(g.name ?? 'Group'),
+            color: String(g.color ?? '#6cb8ff'),
+            tabs: Array.isArray(g.tabs) ? g.tabs.filter(id => validIds.has(id)) : [],
+          }))
+          .filter(g => g.tabs.length > 0)
+        groups.value = restored
+        nextGroupId.value = restored.reduce((m, g) => Math.max(m, g.id), 0) + 1
+      }
+    } catch { /* ignore corrupt storage */ }
+  }
+
+  // ── Tab groups persistence (independent backup of group metadata
+  //   via a dedicated key — also covered by persistSession above) ──
+  const GROUPS_STORAGE_KEY = 'xtrace-tab-groups'
+  function persistGroups() {
+    try {
+      const data = groups.value.map(g => ({ id: g.id, name: g.name, color: g.color, tabs: g.tabs }))
+      localStorage.setItem(GROUPS_STORAGE_KEY, JSON.stringify(data))
+    } catch { /* quota etc. — ignore */ }
+  }
+  function restoreGroups() {
+    try {
+      const raw = localStorage.getItem(GROUPS_STORAGE_KEY)
+      if (!raw) return
+      const saved = JSON.parse(raw)
+      if (!Array.isArray(saved)) return
+      const validIds = new Set(openTabs.value.map(t => t.fileId))
+      const restored = saved
+        .map(g => ({
+          id: Number(g.id) || 0,
+          name: String(g.name ?? 'Group'),
+          color: String(g.color ?? '#6cb8ff'),
+          tabs: Array.isArray(g.tabs) ? g.tabs.filter(id => validIds.has(id)) : [],
+        }))
+        .filter(g => g.tabs.length > 0)
+      groups.value = restored
+      nextGroupId.value = restored.reduce((m, g) => Math.max(m, g.id), 0) + 1
+    } catch { /* corrupt storage — ignore */ }
+  }
+  // Persist on every change. Cheap (single small JSON).
+  watch(groups, persistGroups, { deep: true })
+
   return {
     files, openTabs, activeTabFileId, currentTab, currentFile, toc, totalLines, annotations, favourites,
     listenerFilters, eventFilters, appNamespaces, pathMapping,
+    groups, tabGroupId, moveTabToGroup, ungroupTab, renameGroup, setGroupColor,
+    getGroupForTab, getOpenGroupId, restoreGroups,
     loadFiles, selectFile, switchToTab, closeTab, pollStatus, startPolling, reparse,
     fetchChildren, fetchPath, fetchObject, fetchFindObject, fetchArray, expandItem, fetchSource, fetchVarContext, fetchAppCalls, getListenerFileAbs, search, fetchTimings, buildSummary, extractMethodName, extractClassName, extractSigParts,
     addAnnotation, deleteAnnotation,

@@ -3,28 +3,90 @@
     <DesertBackground />
 
     <!-- ── Tab bar (always visible) ── -->
-    <div class="tabs-bar">
+    <div class="tabs-bar" @dragover.prevent @drop="onDropToBar">
       <div class="tabs-bar__logo">XTrace</div>
 
-      <!-- Trace tabs -->
-      <div
-        v-for="tab in store.openTabs"
-        :key="tab.fileId"
-        class="trace-tab"
-        :class="{
-          'trace-tab--active': store.activeTabFileId === tab.fileId,
-          'trace-tab--parsing': tab.status === 'parsing',
-          'trace-tab--pending': tab.status === 'pending',
-          'trace-tab--error': tab.status === 'error',
-        }"
-        @click="switchToTrace(tab.fileId)"
-      >
-        <span class="trace-tab__dot" :class="'dot--' + tab.status" />
-        <span class="trace-tab__name">{{ shortName(tab.name) }}</span>
-        <span v-if="tab.status === 'parsing'" class="trace-tab__progress">{{ tab.progress }}%</span>
-        <span v-else-if="tab.status === 'pending'" class="trace-tab__progress">queued</span>
-        <span class="trace-tab__close" @click.stop="store.closeTab(tab.fileId)">✕</span>
-      </div>
+      <!-- Trace tabs, grouped by `groups[]`. Ungrouped tabs render as
+           flat .trace-tab; grouped tabs are wrapped in .tab-group with a
+           coloured leading bar and an inline-editable name. -->
+      <template v-for="(slot, slotIdx) in tabBarSlots" :key="slot.kind === 'group' ? 'g-' + slot.group.id : 't-' + slot.tab.fileId">
+        <!-- Grouped tabs -->
+        <div
+          v-if="slot.kind === 'group'"
+          class="tab-group"
+          :class="{ 'tab-group--drop': dropTargetKey === 'g:' + slot.group.id }"
+          :style="{ '--group-color': slot.group.color }"
+          @dragover.prevent="dropTargetKey = 'g:' + slot.group.id"
+          @dragleave="dropTargetKey = (dropTargetKey === 'g:' + slot.group.id) ? null : dropTargetKey"
+          @drop.stop="onDropToGroup($event, slot.group.id)"
+        >
+          <button
+            v-if="!editingGroupId || editingGroupId !== slot.group.id"
+            class="tab-group__name"
+            :title="slot.group.name + ' (double-click to rename)'"
+            @dblclick.stop="startRenameGroup(slot.group.id, $event)"
+          >
+            <span class="tab-group__dot" />
+            <span class="tab-group__name-text">{{ slot.group.name || 'Group' }}</span>
+          </button>
+          <input
+            v-else
+            ref="groupRenameInput"
+            class="tab-group__name-input"
+            v-model="groupRenameDraft"
+            @keydown.enter="commitRenameGroup(slot.group.id)"
+            @keydown.escape.stop="cancelRenameGroup"
+            @blur="commitRenameGroup(slot.group.id)"
+            spellcheck="false"
+          />
+          <div
+            v-for="fileId in slot.group.tabs"
+            :key="fileId"
+            class="trace-tab trace-tab--in-group"
+            :class="{
+              'trace-tab--active': store.activeTabFileId === fileId,
+              ...tabStatusClass(fileId),
+            }"
+            :draggable="true"
+            @click="switchToTrace(fileId)"
+            @dragstart="onDragStart($event, fileId)"
+            @dragend="onDragEnd"
+            @dragover.prevent="dropTargetKey = 't:' + fileId"
+            @dragleave="dropTargetKey = (dropTargetKey === 't:' + fileId) ? null : dropTargetKey"
+            @drop.stop="onDropToTab($event, fileId)"
+          >
+            <span class="trace-tab__dot" :class="'dot--' + tabStatus(fileId)" />
+            <span class="trace-tab__name">{{ shortName(tabName(fileId)) }}</span>
+            <span v-if="tabStatus(fileId) === 'parsing'" class="trace-tab__progress">{{ tabProgress(fileId) }}%</span>
+            <span v-else-if="tabStatus(fileId) === 'pending'" class="trace-tab__progress">queued</span>
+            <span class="trace-tab__close" @click.stop="store.closeTab(fileId)">✕</span>
+          </div>
+        </div>
+
+        <!-- Ungrouped tab -->
+        <div
+          v-else
+          class="trace-tab"
+          :class="{
+            'trace-tab--active': store.activeTabFileId === slot.tab.fileId,
+            'trace-tab--drop': dropTargetKey === 't:' + slot.tab.fileId,
+            ...tabStatusClass(slot.tab.fileId),
+          }"
+          :draggable="true"
+          @click="switchToTrace(slot.tab.fileId)"
+          @dragstart="onDragStart($event, slot.tab.fileId)"
+          @dragend="onDragEnd"
+          @dragover.prevent="dropTargetKey = 't:' + slot.tab.fileId"
+          @dragleave="dropTargetKey = (dropTargetKey === 't:' + slot.tab.fileId) ? null : dropTargetKey"
+          @drop.stop="onDropToTab($event, slot.tab.fileId)"
+        >
+          <span class="trace-tab__dot" :class="'dot--' + slot.tab.status" />
+          <span class="trace-tab__name">{{ shortName(slot.tab.name) }}</span>
+          <span v-if="slot.tab.status === 'parsing'" class="trace-tab__progress">{{ slot.tab.progress }}%</span>
+          <span v-else-if="slot.tab.status === 'pending'" class="trace-tab__progress">queued</span>
+          <span class="trace-tab__close" @click.stop="store.closeTab(slot.tab.fileId)">✕</span>
+        </div>
+      </template>
 
       <!-- Add tab -->
       <button class="tab-add" @click="toggleBrowser" :class="{ 'tab-add--open': showBrowser }">
@@ -305,6 +367,118 @@ const filteredBrowseFiles = computed(() => {
 store.loadFiles()
 store.loadFavourites()
 store.loadSettings()
+
+// ── Tab groups: drag-and-drop + inline rename ──────────────────────────
+// `tabBarSlots` is a flat array of either { kind: 'tab', tab }
+// or { kind: 'group', group, tabs }, preserving the on-screen order:
+//   for each open tab, if it belongs to a group, the entire group is
+//   rendered once (in the position of the group's first tab) and the
+//   remaining group tabs are emitted inside that group render.
+const tabBarSlots = computed(() => {
+  const out = []
+  const seenGroups = new Set()
+  for (const tab of store.openTabs) {
+    const gid = store.getOpenGroupId(tab.fileId)
+    if (gid != null) {
+      if (seenGroups.has(gid)) continue
+      seenGroups.add(gid)
+      const g = store.groups.find(x => x.id === gid)
+      if (g) { out.push({ kind: 'group', group: g }); continue }
+    }
+    out.push({ kind: 'tab', tab })
+  }
+  return out
+})
+
+// HTML5 native drag-and-drop state
+const dragSourceFileId = ref(null)
+const dropTargetKey = ref(null) // 't:<fileId>' | 'g:<groupId>' | null
+
+function onDragStart(e, fileId) {
+  // dataTransfer is the only way to ferry the dragged fileId across the
+  // native DnD boundary. effectAllowed = 'move' makes the cursor show a
+  // move indicator in most browsers.
+  dragSourceFileId.value = fileId
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/x-xtrace-fileId', String(fileId))
+  }
+}
+function onDragEnd() {
+  dragSourceFileId.value = null
+  dropTargetKey.value = null
+}
+function onDropToTab(e, targetFileId) {
+  if (e.dataTransfer) e.preventDefault()
+  const src = dragSourceFileId.value
+    ?? (e.dataTransfer ? Number(e.dataTransfer.getData('text/x-xtrace-fileId')) : null)
+  if (!src || src === targetFileId) { dropTargetKey.value = null; return }
+  store.moveTabToGroup(src, targetFileId)
+  dropTargetKey.value = null
+}
+function onDropToGroup(e, groupId) {
+  if (e.dataTransfer) e.preventDefault()
+  const src = dragSourceFileId.value
+    ?? (e.dataTransfer ? Number(e.dataTransfer.getData('text/x-xtrace-fileId')) : null)
+  if (!src) { dropTargetKey.value = null; return }
+  // Find any tab in the target group; moveTabToGroup handles merging.
+  const g = store.groups.find(x => x.id === groupId)
+  if (!g || !g.tabs.length) { dropTargetKey.value = null; return }
+  store.moveTabToGroup(src, g.tabs[0])
+  dropTargetKey.value = null
+}
+function onDropToBar(e) {
+  // Drop on empty bar area → ungroup the dragged tab.
+  if (e.dataTransfer) e.preventDefault()
+  const src = dragSourceFileId.value
+    ?? (e.dataTransfer ? Number(e.dataTransfer.getData('text/x-xtrace-fileId')) : null)
+  if (!src) return
+  store.ungroupTab(src)
+  dropTargetKey.value = null
+}
+
+// Inline rename of group label
+const editingGroupId = ref(null)
+const groupRenameDraft = ref('')
+const groupRenameInput = ref(null)
+function startRenameGroup(groupId) {
+  const g = store.groups.find(x => x.id === groupId)
+  if (!g) return
+  editingGroupId.value = groupId
+  groupRenameDraft.value = g.name
+  nextTick(() => groupRenameInput.value?.focus())
+}
+function commitRenameGroup(groupId) {
+  if (editingGroupId.value !== groupId) return
+  const name = groupRenameDraft.value.trim()
+  if (name) store.renameGroup(groupId, name)
+  editingGroupId.value = null
+  groupRenameDraft.value = ''
+}
+function cancelRenameGroup() {
+  editingGroupId.value = null
+  groupRenameDraft.value = ''
+}
+
+// Helpers used by the v-for above (so the inner content can look up
+// status/progress of a tab that may not be the current one).
+function tabStatus(fileId) {
+  return store.openTabs.find(t => t.fileId === fileId)?.status ?? 'ready'
+}
+function tabProgress(fileId) {
+  return store.openTabs.find(t => t.fileId === fileId)?.progress ?? 0
+}
+function tabName(fileId) {
+  return store.openTabs.find(t => t.fileId === fileId)?.name ?? ''
+}
+function tabStatusClass(fileId) {
+  const s = tabStatus(fileId)
+  return {
+    'trace-tab--parsing': s === 'parsing',
+    'trace-tab--pending': s === 'pending',
+    'trace-tab--error': s === 'error',
+  }
+}
 
 watch(() => store.theme, (t) => {
   document.documentElement.setAttribute('data-theme', t)
@@ -687,6 +861,110 @@ html, body, #app {
   border-radius: 3px;
   line-height: 1;
   transition: color 0.1s, background 0.1s;
+}
+
+/* ── Tab groups ──
+   A .tab-group wraps one or more .trace-tab elements with a coloured
+   leading accent and an inline-editable name. Groups are visually
+   separated by a thin gap from the next slot. */
+.tab-group {
+  display: flex;
+  align-items: stretch;
+  border-radius: 6px;
+  margin: 2px 0 2px 4px;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--group-color, #6cb8ff);
+  border-left: 3px solid var(--group-color, #6cb8ff);
+  position: relative;
+  transition: background 0.12s, box-shadow 0.12s;
+  flex-shrink: 0;
+}
+.tab-group:first-of-type { margin-left: 0; }
+html[data-theme="light"] .tab-group {
+  background: rgba(0, 0, 0, 0.025);
+}
+.tab-group--drop {
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 0 0 2px var(--group-color, #6cb8ff), 0 0 14px var(--group-color, #6cb8ff);
+}
+html[data-theme="light"] .tab-group--drop {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.tab-group__name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 0 10px;
+  background: none;
+  border: none;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  color: var(--group-color, #6cb8ff);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: text;
+  white-space: nowrap;
+  flex-shrink: 0;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 0.1s;
+}
+html[data-theme="light"] .tab-group__name {
+  border-right-color: rgba(0, 0, 0, 0.08);
+}
+.tab-group__name:hover { background: rgba(255, 255, 255, 0.04); }
+.tab-group__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--group-color, #6cb8ff);
+  box-shadow: 0 0 6px var(--group-color, #6cb8ff);
+  flex-shrink: 0;
+}
+.tab-group__name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tab-group__name-input {
+  padding: 0 8px;
+  margin: 0;
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--text-input);
+  border: 1px solid var(--group-color, #6cb8ff);
+  border-radius: 4px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  outline: none;
+  width: 120px;
+}
+
+.trace-tab--in-group {
+  border-bottom: none; /* the group itself draws the active accent */
+  border-radius: 0;
+  margin: 0;
+  padding: 0 12px;
+  color: var(--text-tab);
+}
+.trace-tab--in-group.trace-tab--active {
+  color: var(--text-tab-active);
+  background: rgba(255, 255, 255, 0.04);
+}
+html[data-theme="light"] .trace-tab--in-group.trace-tab--active {
+  background: rgba(0, 0, 0, 0.04);
+}
+.trace-tab--in-group:hover { background: rgba(255, 255, 255, 0.06); }
+html[data-theme="light"] .trace-tab--in-group:hover { background: rgba(0, 0, 0, 0.05); }
+
+/* Drop-target highlight on a single tab being hovered as a target */
+.trace-tab--drop {
+  background: rgba(80, 140, 220, 0.18) !important;
+  outline: 2px dashed rgba(120, 180, 255, 0.6);
+  outline-offset: -2px;
 }
 .trace-tab__close:hover { color: var(--tab-close-hov-c); background: var(--tab-close-hov-b); }
 
