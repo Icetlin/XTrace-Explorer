@@ -369,6 +369,14 @@ class TraceController extends AbstractController
             $startLine = null;
             $depth = 0;
             $inMethod = false;
+            // Track whether we've ever seen an opening brace of this method.
+            // The function declaration itself rarely has `{` on the same line
+            // (multiline signatures like `public function foo(\n  ...\n): T {`
+            // push it several lines down). Without this flag, the condition
+            // `if ($inMethod && $depth <= 0)` fires on the very next line
+            // after the declaration and returns a 1-line slice. The companion
+            // fallback below (line ~1170) gets this right; mirror that here.
+            $seenOpen = false;
             for ($i = 0; $i < count($lines); $i++) {
                 $line = $lines[$i];
                 if ($startLine === null) {
@@ -376,13 +384,49 @@ class TraceController extends AbstractController
                         $startLine = $i + 1;
                         $depth = 0;
                         $inMethod = true;
+                        $seenOpen = false;
                     }
                     continue;
                 }
                 // Walk braces inside the method to find the matching close
-                $depth += substr_count($line, '{') - substr_count($line, '}');
-                if ($inMethod && $depth <= 0) {
-                    return [$file, $startLine, $i + 1];
+                $open  = substr_count($line, '{');
+                $close = substr_count($line, '}');
+                $depth += $open - $close;
+                if ($open > 0) $seenOpen = true;
+                if ($inMethod && $seenOpen && $depth <= 0) {
+                    // Walk back over PHP 8.0+ attributes (#[Route(...)], etc.)
+                    // sitting immediately above the method declaration. They
+                    // can be single-line, multi-line, or stacked. A "continuation
+                    // line" is one whose last significant char keeps the
+                    // attribute's bracket depth positive: a comma / open paren /
+                    // open bracket / pipe (in match-style attribute syntax).
+                    $attrStart = $startLine;
+                    for ($j = $startLine - 2; $j >= 0; $j--) {
+                        $prev = ltrim($lines[$j]);
+                        if ($prev === '') break;                 // blank line: stop
+                        if (str_starts_with($prev, '#[')) {      // start of an attribute
+                            $attrStart = $j + 1;
+                            continue;
+                        }
+                        $last = substr(rtrim($prev), -1);
+                        if ($last === ',' || $last === '(' || $last === '[' || $last === '|'
+                            || $last === '.' || $last === '+' || $last === '-' || $last === '*'
+                            || $last === '/' || $last === '%' || $last === '=' || $last === '?'
+                            || $last === ':' || $last === '>' || $last === '<' || $last === '&'
+                            || $last === '^' || $last === '!' || $last === '~' || $last === '@'
+                        ) {
+                            $attrStart = $j + 1;
+                            continue;
+                        }
+                        // Also recognise the literal closing ")]" of a multi-line
+                        // attribute, which is the canonical end.
+                        if (str_ends_with(rtrim($prev), ')]') || str_ends_with(rtrim($prev), ']')) {
+                            $attrStart = $j + 1;
+                            continue;
+                        }
+                        break;                                   // something else (e.g. another method, docblock end)
+                    }
+                    return [$file, $attrStart, $i + 1];
                 }
             }
         }
@@ -1165,12 +1209,42 @@ class TraceController extends AbstractController
             }
         }
 
-        // Walk forward to find matching closing brace
+        // Walk back over PHP 8.0+ attributes (#[Route(...)]) sitting immediately
+        // above the resolved method. They can be single-line, multi-line, or
+        // stacked. Mirrors the same logic in resolveMethodInProject() above.
+        if ($from > 1) {
+            for ($j = $from - 2; $j >= 0; $j--) {
+                $prev = ltrim($allLines[$j]);
+                if ($prev === '') break;
+                if (str_starts_with($prev, '#[')) { $from = $j + 1; continue; }
+                $last = substr(rtrim($prev), -1);
+                if ($last === ',' || $last === '(' || $last === '[' || $last === '|'
+                    || $last === '.' || $last === '+' || $last === '-' || $last === '*'
+                    || $last === '/' || $last === '%' || $last === '=' || $last === '?'
+                    || $last === ':' || $last === '>' || $last === '<' || $last === '&'
+                    || $last === '^' || $last === '!' || $last === '~' || $last === '@'
+                ) { $from = $j + 1; continue; }
+                if (str_ends_with(rtrim($prev), ')]') || str_ends_with(rtrim($prev), ']')) {
+                    $from = $j + 1; continue;
+                }
+                break;
+            }
+        }
+
+        // Walk forward to find matching closing brace. Two edge cases:
+        //  - single-line functions like `public function foo() { return 42; }`:
+        //    $started must flip on the *opening* brace, not on cumulative depth,
+        //    so we set $started whenever this line contains `{` (even if its
+        //    matching `}` is on the same line, netting depth back to 0).
+        //  - multiline signatures where `{` is several lines below the
+        //    declaration: the original cumulative-depth check works.
         $depth = 0;
         $started = false;
         for ($i = $from - 1; $i < min($total, $from + 200); $i++) {
-            $depth += substr_count($allLines[$i], '{') - substr_count($allLines[$i], '}');
-            if (!$started && $depth > 0) $started = true;
+            $open  = substr_count($allLines[$i], '{');
+            $close = substr_count($allLines[$i], '}');
+            $depth += $open - $close;
+            if ($open > 0) $started = true;
             if ($started && $depth <= 0) { $to = $i + 1; break; }
         }
 

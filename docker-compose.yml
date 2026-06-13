@@ -3,6 +3,12 @@ services:
     build: .
     ports:
       - "8765:80"
+    # host.docker.internal → host's loopback. Required on Linux so the
+    # container can reach services on the host OS (PhpStorm HTTP API on
+    # 63343 for "open in IDE"). On macOS / Windows Docker Desktop this is
+    # already auto-mapped, so adding the entry is harmless.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - traces:/app/var/traces
       - ${TRACES_DIR}:/traces:rw

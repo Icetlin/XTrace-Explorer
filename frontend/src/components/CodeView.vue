@@ -17,6 +17,9 @@
           <button class="code-view__close" @click="close" title="Close (Esc)">✕</button>
         </div>
 
+        <!-- Toast for openInStorm — appears after a click on a line number. -->
+        <div v-if="flashMessage" class="code-view__flash">{{ flashMessage }}</div>
+
         <!-- Loading bar — visible so user knows the click was registered while
              fetchChildren (1.5s+ for deep listener) or fetchSource is in flight. -->
         <div v-if="loading" class="code-view__loadbar">loading source…</div>
@@ -37,7 +40,7 @@
             @mouseenter="store.setHoveredCodeLine(currentFile + ':' + no)"
           >
             <div class="code-line__main">
-              <span class="code-line__no" @click.stop="openInStorm(no)" title="Open in PhpStorm">{{ no }}</span>
+              <span class="code-line__no" @click.stop="openInStorm(no)" title="Copy path:line — paste in PhpStorm (Ctrl+Shift+N / Double Shift)">{{ no }}</span>
               <span class="code-line__code" v-html="html" />
             </div>
             <div v-if="annotations.has(no)" class="code-line__ann">
@@ -135,6 +138,8 @@ const currentFile = ref(null)
 const currentHint = ref(null)
 const scrollEl = ref(null)
 const annotations = ref(new Map())
+// Transient toast shown on the code panel after clicking a line number.
+const flashMessage = ref(null)
 // Highlighted lines cache — populated lazily via requestIdleCallback
 const _highlightedCache = ref(null)
 let _highlightPending = false
@@ -546,13 +551,55 @@ function buildAnnotations(node, shownFile, allCalls, sourceData, varCtx) {
 
 
 
-function openInStorm(lineNo) {
+// currentFile stores a Docker-side path (e.g. /var/www/my-app/src/Controller/Foo.php)
+// because xdebug emits paths from inside the container. To get a path that
+// PhpStorm understands, we map it to the local host path via store.pathMapping
+// (configured in Settings → "Project source path (local)" + "Project path
+// inside container"). When the mapping is not set, fall back to the raw path.
+function toLocalPath(dockerPath) {
+  if (!dockerPath) return dockerPath
+  const { local, docker } = store.pathMapping || {}
+  if (!local || !docker) return dockerPath
+  if (dockerPath === docker) return local
+  if (dockerPath.startsWith(docker + '/')) return local + dockerPath.slice(docker.length)
+  // Vendor files or paths outside the mapped project root — leave untouched.
+  return dockerPath
+}
+
+// Click on a line number copies the file path with the line number to the
+// clipboard in the format PhpStorm's "Navigate → File" (Ctrl+Shift+N / Double
+// Shift) understands: "path/to/file.php:123" opens that file and jumps to
+// the line. This is the most reliable cross-version approach: it works
+// regardless of the IDE's HTTP API state, registered URL handlers, or which
+// PhpStorm project is currently active.
+async function openInStorm(lineNo) {
   if (!currentFile.value) return
-  fetch('http://localhost:63343', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: currentFile.value, line: lineNo }),
-  }).catch(() => {})
+  const localPath = toLocalPath(currentFile.value)
+  const target = `${localPath}:${lineNo}`
+  let copied = false
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(target)
+      copied = true
+    } else {
+      // Fallback for older browsers / non-secure contexts.
+      const ta = document.createElement('textarea')
+      ta.value = target
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      copied = document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+  } catch (e) {
+    console.warn('clipboard write failed', e)
+  }
+  // Visual feedback in the title (the span updates reactively).
+  flashMessage.value = copied
+    ? `Copied: ${target} — paste in PhpStorm (Ctrl+Shift+N / Double Shift)`
+    : `Copy failed — path: ${target}`
+  setTimeout(() => { flashMessage.value = null }, 3000)
 }
 
 function scrollToLine(lineNo) {
@@ -736,6 +783,17 @@ html[data-theme="light"] .code-panel__resizer:active {
   color: #7a3030;
   padding: 20px;
   font-style: italic;
+}
+
+.code-view__flash {
+  padding: 8px 16px;
+  background: rgba(80, 250, 123, 0.12);
+  color: #50fa7b;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  border-bottom: 1px solid rgba(80, 250, 123, 0.3);
+  word-break: break-all;
+  user-select: text;
 }
 
 .code-line {

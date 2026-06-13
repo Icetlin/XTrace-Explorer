@@ -530,7 +530,7 @@ function controllerSrcNode(event, ei) {
   return { ...root, file_abs: firstChild.file_abs, file: firstChild.file }
 }
 
-function onEventRowClick(e, ei, event) {
+async function onEventRowClick(e, ei, event) {
   if (e.ctrlKey || e.metaKey) {
     store.toggleSelection({ type: 'event', sig: event.event, line_no: event.line_no, breadcrumb: [] })
     return
@@ -538,9 +538,27 @@ function onEventRowClick(e, ei, event) {
   // Click on the row body opens the CodeView only.
   // The chevron handles expand/collapse (separate click target with @click.stop).
   if (event.type === 'controller_execution') {
-    const srcNode = controllerSrcNode(event, ei)
-    if (srcNode) store.setCodeNode(srcNode, [{ sig: event.event, line_no: event.line_no }])
-    else store.setCodeNode({ line_no: event.line_no, sig: event.event }, [])
+    // app_calls are stripped from the TOC payload for size; they're lazy-loaded
+    // by lazyLoadAppCalls() when the event is expanded. controllerSrcNode()
+    // relies on a synchronous cache that may be empty for a fresh click, so
+    // we await the fetch here. Without it, CodeView would get a node without
+    // file_abs and render empty.
+    if (props.fileId) {
+      const calls = await store.fetchAppCalls(props.fileId, ei).catch(() => null)
+      if (calls) {
+        const root = calls[0]
+        const firstChild = root?.children?.find(c => c.file_abs?.includes('/src/'))
+        if (firstChild) {
+          store.setCodeNode(
+            { ...root, file_abs: firstChild.file_abs, file: firstChild.file },
+            [{ sig: event.event, line_no: event.line_no }]
+          )
+          return
+        }
+      }
+    }
+    // Fallback: no file_abs — CodeView will show "File not found" or a hint line.
+    store.setCodeNode({ line_no: event.line_no, sig: event.event }, [])
   } else {
     store.setCodeNode({ line_no: event.line_no, sig: event.event, file_abs: null }, [])
   }
