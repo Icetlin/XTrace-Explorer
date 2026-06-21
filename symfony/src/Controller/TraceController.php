@@ -10,6 +10,8 @@ use App\Repository\AnnotationRepository;
 use App\Repository\EndpointTimingRepository;
 use App\Repository\FavouritePatternRepository;
 use App\Repository\TraceFileRepository;
+use App\Service\AppSettings;
+use App\Service\ErrorLog;
 use App\Service\SummaryBuilder;
 use App\Service\TraceIndex;
 use App\Service\TraceParser;
@@ -35,6 +37,8 @@ class TraceController extends AbstractController
         private readonly TraceIndex $traceIndex,
         private readonly TraceParser $traceParser,
         private readonly SummaryBuilder $summaryBuilder,
+        private readonly AppSettings $settings,
+        private readonly ErrorLog $errorLog,
         private readonly MessageBusInterface $bus,
     ) {}
 
@@ -1009,6 +1013,10 @@ class TraceController extends AbstractController
         $settings['listener_filters'] = $settings['listener_filters'] ?? [];
         $settings['event_filters']    = $settings['event_filters']    ?? [];
         $settings['app_namespaces']   = $settings['app_namespaces']   ?? [];
+        // Profiler+ on/off toggle — user preference, lives in the
+        // `app_setting` table (default off). Exposed here so the settings
+        // page can render its toggle in the right state on first load.
+        $settings['profiler_enabled'] = $this->settings->profilerEnabled();
 
         return $this->json($settings);
     }
@@ -1547,5 +1555,33 @@ class TraceController extends AbstractController
         // also clear session start
         $this->clearSessionStart();
         return $this->json(['ok' => $res['ok'], 'output' => $res['output'] ?? '']);
+    }
+
+    // ── Live error log (consumed by the ctrl-menu live console) ────────
+
+    #[Route('/errors', methods: ['GET'])]
+    public function errors(Request $request): JsonResponse
+    {
+        $limit = max(1, min(200, (int) $request->query->get('limit', 50)));
+        return $this->json(['ok' => true, 'errors' => $this->errorLog->tail($limit)]);
+    }
+
+    #[Route('/errors', methods: ['DELETE'])]
+    public function clearErrors(): JsonResponse
+    {
+        $this->errorLog->clear();
+        return $this->json(['ok' => true]);
+    }
+
+    /**
+     * Debug-only: throws a RuntimeException so you can verify that the
+     * ExceptionListener is wired up and the live console picks it up.
+     * Hit GET /api/_boom?msg=hello to see it in the ctrl-menu console.
+     */
+    #[Route('/_boom', methods: ['GET'])]
+    public function boom(Request $request): JsonResponse
+    {
+        $msg = $request->query->get('msg', 'synthetic error from /_boom');
+        throw new \RuntimeException((string) $msg);
     }
 }

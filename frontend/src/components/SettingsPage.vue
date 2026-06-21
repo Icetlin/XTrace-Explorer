@@ -97,6 +97,86 @@ xdebug.trace_output_name = trace.%t.%p</pre>
         </div>
       </template>
 
+      <!-- ── Profiler+ ── -->
+      <template v-if="activeSection === 'profiler'">
+        <div class="section-title">Profiler+</div>
+        <div class="section-desc">
+          Pulls SQL queries with <strong>full backtraces</strong> from the target app's
+          Symfony WebProfilerBundle. Replaces the heuristic QB chain in the DB Queries page
+          with ground-truth per-query call graphs.
+          <br><br>
+          When enabled, opening a trace attempts to auto-find the matching profiler token
+          using <code>meta.json</code> (request time &plusmn; 5s, method, path, user-agent).
+        </div>
+
+        <!-- The on/off toggle is a user preference, stored in settings.json. -->
+        <div class="field-group">
+          <label class="profiler-toggle-row" @click.prevent="toggleProfiler">
+            <span>Enable Profiler+</span>
+            <span class="profiler-switch" :class="{ on: profilerEnabled, busy: savingProfilerEnabled }">
+              <span class="profiler-switch-knob" />
+            </span>
+            <span v-if="profilerEnabled && profilerStatus?.usable" class="profiler-pill ok">on</span>
+            <span v-else class="profiler-pill off">off</span>
+          </label>
+          <div class="field-desc">
+            User toggle — persists in <code>settings.json</code> on the server. When off,
+            the DB Queries page falls back to xdebug-trace heuristics.
+          </div>
+        </div>
+
+        <div v-if="profilerStatus" class="profiler-status" :class="profilerStatus.usable ? 'ok' : 'no'">
+          {{ profilerStatusMessage }}
+        </div>
+
+        <!-- Read-only infrastructure config (env vars). -->
+        <div class="profiler-fields" v-if="profilerStatus">
+          <div class="profiler-row">
+            <span class="profiler-row__env">PROFILER_BASE_URL</span>
+            <span class="profiler-row__val">{{ profilerStatus.base_url ?? '— not set in .env —' }}</span>
+          </div>
+          <div class="profiler-row">
+            <span class="profiler-row__env">src prefix <small>(in-container)</small></span>
+            <span class="profiler-row__val">
+              {{ profilerStatus.src_prefix ?? '— SOURCE_CONTAINER_DIR not set —' }}
+              <small>← from <code>SOURCE_CONTAINER_DIR</code></small>
+            </span>
+          </div>
+          <div class="profiler-row">
+            <span class="profiler-row__env">host prefix <small>(local)</small></span>
+            <span class="profiler-row__val">
+              {{ profilerStatus.host_prefix ?? '— SOURCE_HOST_DIR not set —' }}
+              <small>← from <code>SOURCE_HOST_DIR</code></small>
+            </span>
+          </div>
+          <div class="profiler-row">
+            <span class="profiler-row__env">TLS verify</span>
+            <span class="profiler-row__val">{{ profilerStatus.insecure ? 'skipped (self-signed dev certs)' : 'on' }}</span>
+          </div>
+          <div class="profiler-row">
+            <span class="profiler-row__env">timeout</span>
+            <span class="profiler-row__val">{{ profilerStatus.timeout_sec }}s ({{ Math.round(profilerStatus.timeout_sec / 60) }} min)</span>
+          </div>
+        </div>
+
+        <div class="profiler-actions">
+          <button class="qb-btn" @click="testProfiler" :disabled="!profilerStatus?.usable || testingProfiler">
+            {{ testingProfiler ? 'Testing…' : 'Test connection' }}
+          </button>
+          <span v-if="profilerTestResult" class="profiler-test" :class="profilerTestResult.ok ? 'ok' : 'no'">
+            {{ profilerTestResult.ok
+                ? '✓ ' + profilerTestResult.recent_count + ' recent tokens'
+                : '✗ ' + (profilerTestResult.error ?? profilerTestResult.reason ?? 'failed') }}
+          </span>
+        </div>
+
+        <div class="env-vars-hint">
+          <strong>How to change the host</strong> — edit <code>.env</code> and restart the app:
+          <pre>PROFILER_BASE_URL=https://systeme.local</pre>
+          Then <code>docker compose up -d app &amp;&amp; docker exec xtrace-explorer-app-1 php bin/console cache:clear</code>.
+        </div>
+      </template>
+
       <!-- ── Favourites ── -->
       <template v-if="activeSection === 'favourites'">
         <div class="section-title">Tracked patterns</div>
@@ -265,15 +345,18 @@ xdebug.trace_output_name = trace.%t.%p</pre>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 
 import { useTraceStore } from '../stores/trace'
+import { useQbStore } from '../stores/qb'
 import { usePerfTrack } from '../perfTrack'
 import { favColor } from '../favColor.js'
 import axios from 'axios'
 
 const store = useTraceStore()
+const qb = useQbStore()
 usePerfTrack('SettingsPage', { category: 'render' })
 
 const sections = [
   { id: 'general',    icon: '⚙', label: 'General' },
+  { id: 'profiler',   icon: '◐', label: 'Profiler+' },
   { id: 'favourites', icon: '★', label: 'Favourites' },
   { id: 'filters',    icon: '⊘', label: 'Listener filters' },
   { id: 'mcp',        icon: '⬡', label: 'AI / MCP' },
@@ -286,6 +369,13 @@ const restarting = ref(false)
 const savedOnce = ref(false)
 const toast = ref(null)
 let toastTimer = null
+
+// Profiler+ (read-only — config comes from env vars on the container)
+const profilerStatus = ref(null)
+const profilerEnabled = ref(false)   // user toggle, persisted in settings.json
+const savingProfilerEnabled = ref(false)
+const testingProfiler = ref(false)
+const profilerTestResult = ref(null)
 
 // Favourites
 const newPattern = ref('')
@@ -317,8 +407,10 @@ onMounted(async () => {
       project_name:        data.project_name        || '',
       app_namespaces:      data.app_namespaces ? JSON.parse(JSON.stringify(data.app_namespaces)) : [],
     }
+    profilerEnabled.value = !!data.profiler_enabled
     savedOnce.value = !!(data.traces_host_path || data.project_path)
   } catch {}
+  await loadProfilerStatus()
 })
 
 function showToast(msg, type = 'ok') {
@@ -326,6 +418,60 @@ function showToast(msg, type = 'ok') {
   toast.value = { msg, type }
   toastTimer = setTimeout(() => { toast.value = null }, 3500)
 }
+
+async function loadProfilerStatus() {
+  try {
+    const { data } = await axios.get('/api/profiler/status')
+    profilerStatus.value = data
+  } catch {
+    profilerStatus.value = null
+  }
+}
+
+async function saveProfilerEnabled() {
+  savingProfilerEnabled.value = true
+  try {
+    // Persisted in `app_setting` table on the server (default off).
+    await axios.post('/api/profiler/toggle', { enabled: profilerEnabled.value })
+    await loadProfilerStatus()
+    // Sync the QbStore so QbPage (if mounted) re-evaluates mode and
+    // hides the "Find automatically" banner. QbPage's watcher on
+    // qb.profilerConfig.enabled will reload snapshot + trace queries.
+    await qb.loadProfilerConfig()
+  } catch (e) {
+    showToast('Failed to save: ' + e.message, 'err')
+  } finally {
+    savingProfilerEnabled.value = false
+  }
+}
+
+async function toggleProfiler() {
+  if (savingProfilerEnabled.value) return
+  profilerEnabled.value = !profilerEnabled.value
+  await saveProfilerEnabled()
+}
+
+async function testProfiler() {
+  testingProfiler.value = true
+  profilerTestResult.value = null
+  try {
+    const { data } = await axios.get('/api/profiler/ping')
+    profilerTestResult.value = data
+  } catch (e) {
+    const msg = e?.response?.data?.error || e?.response?.data?.reason || e?.message || 'failed'
+    profilerTestResult.value = { ok: false, error: msg }
+  } finally {
+    testingProfiler.value = false
+  }
+}
+
+const profilerStatusMessage = computed(() => {
+  const s = profilerStatus.value
+  if (!s) return 'Loading…'
+  if (!s.enabled) return 'Profiler+ is off (toggle above to enable).'
+  if (!s.base_url) return 'Profiler+ is on but PROFILER_BASE_URL is not set in .env.'
+  return `✓ Talking to ${s.base_url}`
+})
 
 async function save() {
   saving.value = true
@@ -389,6 +535,7 @@ function formPayload(overrides = {}) {
     app_namespaces:      form.value.app_namespaces,
     listener_filters:    store.listenerFilters,
     event_filters:       store.eventFilters,
+    profiler_enabled:    profilerEnabled.value,
     ...overrides,
   }
 }
@@ -1108,6 +1255,148 @@ const mcpTools = [
   color: rgba(90, 100, 150, 0.6);
   line-height: 1.4;
 }
+
+
+/* ── Profiler+ section (mostly read-only) ── */
+.profiler-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 13px;
+  user-select: none;
+  margin-bottom: 4px;
+}
+.profiler-switch {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  background: rgba(120, 120, 120, 0.35);
+  border-radius: 12px;
+  transition: background 0.18s ease;
+  flex-shrink: 0;
+  border: 1px solid rgba(120, 120, 120, 0.4);
+}
+.profiler-switch.on { background: rgba(92, 217, 122, 0.85); border-color: rgba(92, 217, 122, 0.9); }
+.profiler-switch.busy { opacity: 0.6; }
+.profiler-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  background: #f5f5f5;
+  border-radius: 50%;
+  transition: left 0.18s ease;
+}
+.profiler-switch.on .profiler-switch-knob { left: 18px; background: #151921; }
+
+.profiler-pill {
+  font-size: 10px;
+  font-family: 'JetBrains Mono', monospace;
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-left: auto;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.profiler-pill.ok { background: rgba(80, 160, 100, 0.25); color: rgba(140, 220, 160, 0.95); }
+.profiler-pill.off { background: rgba(120, 120, 120, 0.25); color: rgba(180, 180, 180, 0.85); }
+
+.profiler-status {
+  font-size: 12px;
+  padding: 8px 12px;
+  border-radius: 5px;
+  margin-bottom: 12px;
+  font-family: 'JetBrains Mono', monospace;
+}
+.profiler-status.ok { background: rgba(80, 160, 100, 0.18); color: rgba(140, 220, 160, 0.95); }
+.profiler-status.no { background: rgba(180, 80, 80, 0.18); color: rgba(220, 140, 140, 0.95); }
+
+.profiler-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.profiler-row {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 10px;
+  align-items: baseline;
+  padding: 5px 10px;
+  background: rgba(20, 25, 50, 0.3);
+  border-radius: 4px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+}
+.profiler-row__env {
+  color: rgba(110, 160, 220, 0.9);
+  font-weight: 500;
+}
+.profiler-row__val {
+  color: rgba(200, 220, 240, 0.9);
+  word-break: break-all;
+  user-select: text;
+}
+
+.profiler-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0;
+  padding: 10px 0;
+  border-top: 1px solid rgba(30, 32, 58, 0.4);
+}
+.profiler-test {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  margin-left: auto;
+}
+.profiler-test.ok { background: rgba(80, 160, 100, 0.2); color: rgba(140, 220, 160, 0.95); }
+.profiler-test.no { background: rgba(180, 80, 80, 0.2); color: rgba(220, 140, 140, 0.95); }
+
+.env-vars-hint {
+  margin-top: 18px;
+  padding: 12px 14px;
+  background: rgba(40, 50, 80, 0.25);
+  border: 1px solid rgba(60, 80, 120, 0.3);
+  border-radius: 6px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: rgba(160, 170, 200, 0.85);
+}
+.env-vars-hint strong { color: rgba(180, 200, 240, 0.95); }
+.env-vars-hint code {
+  background: rgba(20, 25, 50, 0.6);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 10.5px;
+}
+.env-vars-hint pre {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  background: rgba(15, 20, 40, 0.6);
+  border-radius: 4px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre;
+  color: rgba(140, 220, 180, 0.85);
+}
+.qb-btn {
+  background: rgba(40, 50, 80, 0.5);
+  border: 1px solid rgba(60, 80, 120, 0.4);
+  color: inherit;
+  padding: 5px 12px;
+  border-radius: 5px;
+  font-size: 11.5px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.qb-btn:hover { background: rgba(60, 80, 120, 0.5); }
+.qb-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 
 </style>

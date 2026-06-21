@@ -48,3 +48,29 @@ services:
         arguments:
             $tracesDir: '%traces_dir%'
             $tracesSourceDir: '%traces_source_dir%'
+
+    # ── Profiler+ : all config comes from env vars (PROFILER_*) ──
+    # ProfilerConfig is read once from env when the container compiles and
+    # reused for the lifetime of the worker. The UI is read-only — to change
+    # a setting, edit docker-compose / .env and restart the app container.
+    App\Service\Profiler\ProfilerConfig:
+        factory: ['@App\Service\Profiler\ProfilerConfigFactory', 'create']
+
+    App\Service\Profiler\ProfilerHttpClient:
+        arguments:
+            $config: '@App\Service\Profiler\ProfilerConfig'
+
+    App\Service\Profiler\DbPanelParser:
+        arguments:
+            $config: '@App\Service\Profiler\ProfilerConfig'
+
+    App\Service\Profiler\DbAnalyzer:
+        arguments:
+            $config: '@App\Service\Profiler\ProfilerConfig'
+
+    App\Service\Profiler\ProfilerClient:
+        arguments:
+            $config: '@App\Service\Profiler\ProfilerConfig'
+            $http: '@App\Service\Profiler\ProfilerHttpClient'
+            $parser: '@App\Service\Profiler\DbPanelParser'
+            $analyzer: '@App\Service\Profiler\DbAnalyzer'

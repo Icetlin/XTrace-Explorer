@@ -1,21 +1,32 @@
 services:
   app:
     build: .
-    ports:
-      - "8765:80"
-    # host.docker.internal → host's loopback. Required on Linux so the
-    # container can reach services on the host OS (PhpStorm HTTP API on
-    # 63343 for "open in IDE"). On macOS / Windows Docker Desktop this is
-    # already auto-mapped, so adding the entry is harmless.
+    # network_mode: host shares the host's network namespace. This is the
+    # simplest way for the app to reach host-bound dev services (e.g.
+    # systeme.local on 127.0.0.1:443) and for the host to reach the app
+    # at http://localhost:8088 (the nginx in docker/nginx.conf listens
+    # on 8088 to avoid colliding with the host's own nginx on :80).
+    #
+    # When this is enabled:
+    #   - `ports:` is ignored (so 8765:80 below is just documentation)
+    #   - the app's /etc/hosts is the HOST's /etc/hosts
+    #   - the docker-compose service alias `db` doesn't resolve, so we
+    #     add `db:host-gateway` to point it at the bridge gateway IP
+    network_mode: host
     extra_hosts:
       - "host.docker.internal:host-gateway"
+      - "db:host-gateway"
     volumes:
       - traces:/app/var/traces
       - ${TRACES_DIR}:/traces:rw
       - ${SOURCE_HOST_DIR}:${SOURCE_CONTAINER_DIR}:ro
+      # Source dirs — bind-mounted so edits on the host are visible inside
+      # the container without rebuilding the image. Saves the round-trip
+      # during dev and is the correct pattern for an open-source project.
       - ./symfony/src:/app/src
       - ./symfony/migrations:/app/migrations
       - ./symfony/tests:/app/tests
+      - ./symfony/config:/app/config
       - ./symfony/public/app:/app/public/app
       - ./docker-compose.yml:/compose/compose.yaml:rw
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -24,10 +35,10 @@ services:
     environment:
       APP_ENV: dev
       APP_SECRET: change_me_in_production
-      DATABASE_URL: postgresql://xtrace:xtrace@db:5432/xtrace?serverVersion=16&charset=utf8
+      DATABASE_URL: postgresql://xtrace@127.0.0.1:5433/xtrace?serverVersion=16&charset=utf8
       MESSENGER_TRANSPORT_DSN: doctrine://default?auto_setup=0
       CORS_ALLOW_ORIGIN: '^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$$'
-      DEFAULT_URI: http://localhost:8765
+      DEFAULT_URI: http://localhost:8088
       TRACES_SOURCE_DIR: /traces
       COMPOSE_FILE_PATH: /compose/compose.yaml
       XDEBUG_CONTAINER: ${XDEBUG_CONTAINER:-}
@@ -36,6 +47,8 @@ services:
       SOURCE_HOST_DIR: ${SOURCE_HOST_DIR:-}
       SOURCE_CONTAINER_DIR: ${SOURCE_CONTAINER_DIR:-}
       IDE_PROJECT_NAME: ${IDE_PROJECT_NAME:-}
+      # ── Profiler+ : only the base URL is required. ──
+      PROFILER_BASE_URL: ${PROFILER_BASE_URL:-}
 
   mcp:
     build:
@@ -60,12 +73,24 @@ services:
       PROJECT_DIR: /project
     restart: unless-stopped
 
+  # db shares the host's network namespace with app so they can reach
+  # each other on 127.0.0.1 — no docker-compose service aliasing needed.
+  # `POSTGRES_HOST_AUTH_METHOD=trust` makes the postgres container accept
+  # any connection without a password.
   db:
     image: postgres:16-alpine
+    network_mode: host
+    # xtrace's own PostgreSQL. We use port 5433 (not the default 5432)
+    # because dev hosts frequently already have a local postgres on
+    # 5432 (postgres.app, brew services, system postgresql, docker
+    # postgres from other projects), and 5433 is the next commonly-free
+    # port. To change: edit POSTGRES_PORT in .env.
+    command: ["postgres", "-p", "${POSTGRES_PORT:-5433}"]
     environment:
       POSTGRES_DB: xtrace
       POSTGRES_USER: xtrace
       POSTGRES_PASSWORD: xtrace
+      POSTGRES_HOST_AUTH_METHOD: trust
     volumes:
       - pgdata:/var/lib/postgresql/data
 

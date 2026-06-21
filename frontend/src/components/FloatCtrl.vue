@@ -119,13 +119,13 @@
         </svg>
       </button>
 
-      <!-- SQL queries -->
+      <!-- SQL queries (full-page QbPage) -->
       <button
         v-if="hasTrace"
         class="float-ctrl__item"
-        :class="{ 'float-ctrl__item--active': activeModal === 'sql' }"
-        title="SQL Queries"
-        @click="openModal('sql')"
+        :class="{ 'float-ctrl__item--active': qbOpen }"
+        title="DB Queries — full-page workspace (Profiler+ supported)"
+        @click="toggleQb"
       >
         <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
           <rect x="1.5" y="2" width="12" height="3" rx="1" stroke="currentColor" stroke-width="1.2"/>
@@ -199,17 +199,17 @@
       <div class="float-ctrl__divider" />
 
       <!-- ── Group 3: Debug & runtime ── -->
-      <!-- Click logger toggle -->
+      <!-- Live console (backend errors + frontend console.*) -->
       <button
         class="float-ctrl__item"
-        :class="{ 'float-ctrl__item--active float-ctrl__item--log': clickLogEnabled }"
-        title="Toggle click logger"
-        @click="toggleClickLog"
+        :class="{ 'float-ctrl__item--active': liveConsoleOpen, 'float-ctrl__item--log': liveConsoleOpen }"
+        title="Live console — backend errors + frontend console.log"
+        @click="liveConsoleOpen = !liveConsoleOpen; if (liveConsoleOpen) liveConsoleBadge = 0"
       >
         <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
           <rect x="1.5" y="3" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/>
           <path d="M4 6.5h7M4 9h4.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-          <circle v-if="clickLogEnabled" cx="12" cy="3" r="2.5" fill="#e05050"/>
+          <circle v-if="liveConsoleBadge > 0" cx="12" cy="3" r="2.5" fill="#e05050"/>
         </svg>
       </button>
 
@@ -273,7 +273,6 @@
         </div>
         <div class="float-modal__body">
           <SettingsPage v-if="activeModal === 'settings'" />
-          <SqlPage v-else-if="activeModal === 'sql'" />
         </div>
       </div>
     </div>
@@ -290,13 +289,29 @@
     @cancel="closeSummary"
     @copy="onSummaryCopied"
   />
+
+  <!-- Live console — opened by the console button in the ctrl menu -->
+  <LiveConsole
+    v-if="liveConsoleOpen"
+    :open="liveConsoleOpen"
+    @close="liveConsoleOpen = false"
+    @badge="liveConsoleBadge = $event"
+  />
+
+  <!-- DB Queries full-page workspace -->
+  <QbPage
+    v-if="qbOpen"
+    :file-id="store.activeTabFileId"
+    @close="qbOpen = false"
+  />
 </template>
 
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
 import SettingsPage from './SettingsPage.vue'
-import SqlPage from './SqlPage.vue'
+import QbPage from './QbPage.vue'
+import LiveConsole from './LiveConsole.vue'
 import SummaryModal from './SummaryModal.vue'
 import { useTraceStore } from '../stores/trace'
 import { usePerfStore } from '../stores/perf'
@@ -324,31 +339,15 @@ function onDocClick(e) {
 onMounted(() => document.addEventListener('mousedown', onDocClick))
 onUnmounted(() => document.removeEventListener('mousedown', onDocClick))
 
-// ── Click logger ──
-const clickLogEnabled = ref(false)
-function clickLogHandler(e) {
-  const el = e.target
-  const lineNo = el.closest('[data-line-no]')?.dataset?.lineNo
-    ?? el.closest('[data-listener-line]')?.dataset?.listenerLine
-    ?? null
-  console.log('[CLICK]',
-    el.tagName,
-    el.className?.slice?.(0, 80),
-    lineNo ? `line=${lineNo}` : '',
-    el.textContent?.slice?.(0, 50).trim(),
-  )
-}
-function toggleClickLog() {
-  clickLogEnabled.value = !clickLogEnabled.value
-  if (clickLogEnabled.value) {
-    document.addEventListener('click', clickLogHandler, true)
-    console.log('[ClickLog] enabled')
-  } else {
-    document.removeEventListener('click', clickLogHandler, true)
-    console.log('[ClickLog] disabled')
-  }
-}
-onUnmounted(() => document.removeEventListener('click', clickLogHandler, true))
+// ── Live console panel ──
+// The "console" button in the ctrl menu opens this. It shows both
+// backend errors (from /api/errors, polled) and frontend console.* calls
+// (intercepted on demand via a toggle inside the panel).
+const liveConsoleOpen = ref(false)
+const liveConsoleBadge = ref(0)   // bumps when new entries arrive while closed
+watch(liveConsoleBadge, (n) => {
+  // no-op — kept reactive for the badge dot
+})
 
 const hasTrace = computed(() => store.openTabs.some(t => t.status === 'ready'))
 
@@ -411,6 +410,13 @@ function openModal(id) {
   activeModal.value = activeModal.value === id ? null : id
 }
 
+// ── QbPage (full-page DB queries workspace) ──────────────────────────────
+const qbOpen = ref(false)
+function toggleQb() {
+  qbOpen.value = !qbOpen.value
+  if (qbOpen.value) activeModal.value = null   // close any modal
+}
+
 function closeModal() {
   activeModal.value = null
 }
@@ -428,7 +434,6 @@ function toggleCollapse() {
 
 const modalTitle = computed(() => {
   if (activeModal.value === 'settings') return 'Settings'
-  if (activeModal.value === 'sql') return 'SQL Queries'
   return ''
 })
 

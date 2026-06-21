@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+<head><title>Profiler DB panel — fixture</title></head>
+<body>
+<h1>DB Queries</h1>
+<!-- Modern WebProfilerBundle layout:
+     one <tr id="queryNo-CONN-N"> per query, with
+     td#1 = display number, td#2 = time, td#3 = SQL + params + hidden backtrace. -->
+<table class="queries">
+  <tr id="queryNo-c0-1">
+    <td>1</td>
+    <td>2.4 ms</td>
+    <td>
+      <pre class="highlight-sql">SELECT u0_.id AS id_0, u0_.email AS email_1, u0_.account_owner_id AS account_owner_id_2 FROM users u0_ WHERE u0_.account_owner_id = 42</pre>
+      <div>Parameters : [42]</div>
+      <a href="?_profiler/abc123&amp;page=explain&amp;query=1">EXPLAIN</a>
+      <div class="hidden">
+        <table>
+          <thead><tr><th>#</th><th>File/Call</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td><a href="file:///var/www/monolith-backend/vendor/doctrine/dbal/src/Connection.php#L1123">Doctrine\DBAL\Connection->executeQuery (line 1123)</a></td></tr>
+            <tr><td>2</td><td><a href="file:///var/www/monolith-backend/vendor/doctrine/orm/src/Internal/Execution/Connection.php#L42">Doctrine\ORM\Internal\Execution\Connection->executeQuery (line 42)</a></td></tr>
+            <tr><td>3</td><td><a href="file:///var/www/monolith-backend/vendor/doctrine/orm/src/Query.php#L206">Doctrine\ORM\Query->_doExecute (line 206)</a></td></tr>
+            <tr><td>4</td><td><a href="file:///var/www/monolith-backend/vendor/doctrine/orm/src/AbstractQuery.php#L1218">Doctrine\ORM\AbstractQuery->execute (line 1218)</a></td></tr>
+            <tr><td>5</td><td><a href="file:///var/www/monolith-backend/src/Repository/UserRepository.php#L58">App\Repository\UserRepository->findByAccountOwner (line 58)</a></td></tr>
+            <tr><td>6</td><td><a href="file:///var/www/monolith-backend/src/Service/Api/WorkspaceService.php#L131">App\Service\Api\WorkspaceService->loadMemberships (line 131)</a></td></tr>
+            <tr><td>7</td><td><a href="file:///var/www/monolith-backend/src/Controller/Api/WorkspaceController.php#L74">App\Controller\Api\WorkspaceController->index (line 74)</a></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </td>
+  </tr>
+  <tr id="queryNo-c0-2">
+    <td>2</td>
+    <td>0.9 ms</td>
+    <td>
+      <pre class="highlight-sql">SELECT t0_.id AS id_0, t0_.name AS name_1, t0_.workspace_id AS workspace_id_2 FROM tags t0_ WHERE t0_.workspace_id = 7</pre>
+      <div>Parameters : [7]</div>
+      <div class="hidden">
+        <table>
+          <thead><tr><th>#</th><th>File/Call</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td><a href="file:///var/www/monolith-backend/vendor/doctrine/dbal/src/Connection.php#L1123">Doctrine\DBAL\Connection->executeQuery (line 1123)</a></td></tr>
+            <tr><td>2</td><td><a href="file:///var/www/monolith-backend/vendor/doctrine/orm/src/Query.php#L206">Doctrine\ORM\Query->_doExecute (line 206)</a></td></tr>
+            <tr><td>3</td><td><a href="file:///var/www/monolith-backend/src/Repository/WorkspaceRepository.php#L24">App\Repository\WorkspaceRepository->findTags (line 24)</a></td></tr>
+            <tr><td>4</td><td><a href="file:///var/www/monolith-backend/src/Service/Api/WorkspaceService.php#L137">App\Service\Api\WorkspaceService->loadTags (line 137)</a></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </td>
+  </tr>
+  <!-- N+1: same query repeated 16 times -->
+  <tr id="queryNo-c0-3"><td>3</td><td>1.1 ms</td><td>
+    <pre class="highlight-sql">SELECT m0_.id AS id_0, m0_.label AS label_1, m0_.workspace_id AS workspace_id_2 FROM memberships m0_ WHERE m0_.workspace_id = 5</pre>
+    <div class="hidden"><table><thead><tr><th>#</th><th>File/Call</th></tr></thead><tbody>
+      <tr><td>3</td><td><a href="file:///var/www/monolith-backend/src/Repository/MembershipRepository.php#L18">App\Repository\MembershipRepository->findForWorkspace (line 18)</a></td></tr>
+      <tr><td>4</td><td><a href="file:///var/www/monolith-backend/src/Service/Api/WorkspaceService.php#L141">App\Service\Api\WorkspaceService->loadMemberships (line 141)</a></td></tr>
+    </tbody></table></div>
+  </td></tr>
+  <tr id="queryNo-c0-4"><td>4</td><td>1.1 ms</td><td>
+    <pre class="highlight-sql">SELECT m0_.id AS id_0, m0_.label AS label_1, m0_.workspace_id AS workspace_id_2 FROM memberships m0_ WHERE m0_.workspace_id = 8</pre>
+    <div class="hidden"><table><thead><tr><th>#</th><th>File/Call</th></tr></thead><tbody>
+      <tr><td>3</td><td><a href="file:///var/www/monolith-backend/src/Repository/MembershipRepository.php#L18">App\Repository\MembershipRepository->findForWorkspace (line 18)</a></td></tr>
+    </tbody></table></div>
+  </td></tr>
+  <tr id="queryNo-c0-5"><td>5</td><td>1.1 ms</td><td>
+    <pre class="highlight-sql">SELECT m0_.id AS id_0, m0_.label AS label_1, m0_.workspace_id AS workspace_id_2 FROM memberships m0_ WHERE m0_.workspace_id = 12</pre>
+    <div class="hidden"><table><thead><tr><th>#</th><th>File/Call</th></tr></thead><tbody>
+      <tr><td>3</td><td><a href="file:///var/www/monolith-backend/src/Repository/MembershipRepository.php#L18">App\Repository\MembershipRepository->findForWorkspace (line 18)</a></td></tr>
+    </tbody></table></div>
+  </td></tr>
+</table>
+</body>
+</html>
