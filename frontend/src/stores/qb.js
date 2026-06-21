@@ -309,6 +309,12 @@ function buildCallGraph(queries) {
       sql: q.sql,
       time_ms: q.time_ms ?? 0,
       time: q.time ?? '',
+      // Doctrine lazy-load flag — propagated from the backend so the tree
+      // view can render a 🐢 badge per query and roll up a "X of N are lazy"
+      // count on each method node. Without this, every query on a Repository
+      // method looks identical and users can't tell which ones are explicit
+      // vs Doctrine-driven.
+      lazy: q.lazy === true,
     })
 
     // Connect frames into a chain: appFrames[0] was called by appFrames[1],

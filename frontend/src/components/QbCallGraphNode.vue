@@ -18,6 +18,14 @@
       <span v-if="totalMs > 0" class="qcgn__stat qcgn__stat--t">
         {{ formatMs(totalMs) }}
       </span>
+      <!-- Of the queries hanging directly off THIS node (not the subtree),
+           how many are Doctrine lazy-loads? Highlighting this inline makes
+           it impossible to miss that, e.g., "6 SQL" really means "1 explicit
+           + 5 lazy" — the most common reading mistake with this view. -->
+      <span v-if="lazyHere > 0" class="qcgn__stat qcgn__stat--lazy"
+            :title="`${lazyHere} of ${node.queries.length} queries on this node are Doctrine lazy-loads (relation hydrator, not in your source).`">
+        🐢 {{ lazyHere }} lazy
+      </span>
 
       <a
         v-if="node.hostPath || node.file"
@@ -51,12 +59,18 @@
           v-for="(q, i) in sortedQueries"
           :key="i"
           class="qcgn__q"
-          :class="{ 'qcgn__q--n1': isN1 }"
+          :class="{ 'qcgn__q--n1': isN1, 'qcgn__q--lazy': q.lazy }"
+          :data-query-n="q.n"
           @click="selectedN = (selectedN === q.n ? null : q.n)"
         >
           <div class="qcgn__q-head">
             <span class="qcgn__q-n">#{{ q.n }}</span>
             <span class="qcgn__q-time">{{ formatMs(q.time_ms) }}</span>
+            <!-- 🐢 lazy badge — same semantics as QbQueryRow. Click-tooltip
+                 explains the Doctrine relation story so users know it's
+                 not a query in their source. -->
+            <span v-if="q.lazy" class="qcgn__q-lazy"
+                  title="Doctrine lazy-load — this query is not in your source. Add the relation to the parent QueryBuilder's leftJoin() to fold it into the explicit query.">🐢 lazy</span>
             <code class="qcgn__q-sql">{{ truncate(q.sql, 200) }}</code>
             <span class="qcgn__q-chev">{{ selectedN === q.n ? '▾' : '▸' }}</span>
           </div>
@@ -103,6 +117,13 @@ const hasChildren = computed(() => childKeys.value.length > 0)
 // so users see "this method + everything below it triggered N queries / M ms".
 const totalQueries = computed(() => walkSum(props.nodeKey, 'queries'))
 const totalMs = computed(() => walkSum(props.nodeKey, 'ms'))
+
+// Lazy counts DIRECTLY on this node (not rolled up from children) — that's
+// the count the user needs when reading the per-method badge. We deliberately
+// don't walk the subtree for this: a Controller method that calls a
+// Repository which then lazy-loads should not show "🐢 N lazy" on the
+// Controller itself — only on the Repository that emitted them.
+const lazyHere = computed(() => (node.value?.queries ?? []).filter(q => q.lazy).length)
 
 function walkSum(rootKey, field) {
   let total = 0
@@ -211,6 +232,12 @@ function highlightSql(sql) {
 }
 .qcgn__stat--q { background: #1a2440; color: #6da0ff; }
 .qcgn__stat--t { background: #3a2a1a; color: #f6c64a; }
+.qcgn__stat--lazy {
+  background: rgba(255, 138, 50, 0.18);
+  color: #ff9d57;
+  cursor: help;
+  border: 1px solid rgba(255, 138, 50, 0.3);
+}
 
 .qcgn__loc {
   font-size: 10px;
@@ -249,6 +276,7 @@ function highlightSql(sql) {
 
 .qcgn__q { font-family: monospace; font-size: 11px; }
 .qcgn__q--n1 .qcgn__q-sql { color: #f6c64a; }
+.qcgn__q--lazy .qcgn__q-sql { color: #c98c66; }
 .qcgn__q-head {
   display: flex;
   align-items: center;
@@ -262,6 +290,30 @@ function highlightSql(sql) {
 .qcgn__q-time { color: #f6c64a; min-width: 50px; font-variant-numeric: tabular-nums; }
 .qcgn__q-sql { flex: 1; color: #ccc; }
 .qcgn__q-chev { color: #888; }
+.qcgn__q-lazy {
+  display: inline-block;
+  background: rgba(255, 138, 50, 0.12);
+  color: #ff9d57;
+  border: 1px solid rgba(255, 138, 50, 0.25);
+  border-radius: 3px;
+  padding: 0 5px;
+  font-size: 9px;
+  letter-spacing: 0.02em;
+  cursor: help;
+}
+
+/* Flash highlight when jumpToQuery() scrolls to this row. Re-using the same
+ * keyframes as QbPage.vue so the visual feedback is identical across views. */
+@keyframes qb-flash-ring {
+  0%   { box-shadow: inset 0 0 0 3px #f6c64a, 0 0 18px rgba(246, 198, 74, 0.6); background: rgba(246, 198, 74, 0.18); }
+  20%  { box-shadow: inset 0 0 0 2px #f6c64a, 0 0 12px rgba(246, 198, 74, 0.5); background: rgba(246, 198, 74, 0.12); }
+  100% { box-shadow: inset 0 0 0 0px #f6c64a, 0 0 0 rgba(246, 198, 74, 0);   background: rgba(246, 198, 74, 0); }
+}
+.qcgn__q.qb-flash {
+  animation: qb-flash-ring 1.6s ease-out;
+  border-radius: 4px;
+  scroll-margin-top: 80px;
+}
 
 .qcgn__q-body { padding: 4px 4px 6px 36px; }
 .qcgn__q-sql-full {
