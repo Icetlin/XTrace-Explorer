@@ -383,6 +383,25 @@ class ProfilerController extends AbstractController
                     'line' => $q->getCallerLine(),
                 ],
                 'backtrace' => $q->getBacktraceJson() !== null ? json_decode($q->getBacktraceJson(), true) : null,
+                // Doctrine lazy-load detection — single-table single-PK SELECTs
+                // that fire after the explicit query returned, when code
+                // downstream touches an un-joined relation. Marked here so
+                // the QbQueryRow can render a 🐢 badge and the user can
+                // spot the N+1 in 1 click rather than reading every SQL.
+                'lazy' => \App\Service\Profiler\DbAnalyzer::isLazyLoadSql($q->getSql()),
+                // For lazy queries: walk the backtrace to find (a) the entity
+                // getter that triggered the lazy load (typically the first
+                // non-Doctrine frame that lives under App\Entity) and (b) the
+                // next non-entity user frame — the actual user code that
+                // asked for the relation. This lets the UI show "triggered
+                // by UserDomain::getFacebookPixel() in UserDataGetter::...",
+                // which is exactly the hint needed to fix the missing join.
+                'lazy_trigger' => $this->extractLazyTrigger(
+                    $q->getSql(),
+                    $q->getBacktraceJson() !== null ? json_decode($q->getBacktraceJson(), true) : null,
+                    $q->getCallerClass(),
+                    $q->getCallerMethod(),
+                ),
             ];
         }, $this->queryRepo->findBySnapshot($snap));
 
@@ -433,6 +452,84 @@ class ProfilerController extends AbstractController
             }
         }
         return null;
+    }
+
+    /**
+     * Walk the backtrace of a lazy-load query to find the chain that
+     * triggered it: the entity getter that Doctrine proxied into, and the
+     * user-method that called that getter. Returns null when not a lazy load
+     * or when the backtrace is too thin to attribute.
+     *
+     * The classic chain looks like (top → bottom, where top = closest to SQL):
+     *   Doctrine\ORM\Persisters\Entity\BasicEntityPersister->load()
+     *   Doctrine\ORM\UnitOfWork->load(...)
+     *   Doctrine\ORM\Proxy\...\__load()
+     *   App\Entity\UserDomain->getFacebookPixel()    ← entity getter that triggered it
+     *   App\Service\Api\UserDataGetter->doSomething() ← user code that called it
+     *   App\Controller\Api\Dashboard\UserController->getUserData()
+     *
+     * We want to surface the getter and the user-method, so the user knows
+     * "UserDataGetter reads $userDomain->facebookPixel — that's the relation
+     * to add to the findForUserData QueryBuilder".
+     *
+     * @param list<array<string,mixed>>|null $bt
+     * @return array{getter:?array,caller:?array}|null
+     */
+    private function extractLazyTrigger(string $sql, ?array $bt, ?string $callerClass, ?string $callerMethod): ?array
+    {
+        if (!\App\Service\Profiler\DbAnalyzer::isLazyLoadSql($sql)) return null;
+        if (!is_array($bt) || $bt === []) return null;
+
+        $getter = null;
+        $userCaller = null;
+        $seenEntityGetter = false;
+        foreach ($bt as $f) {
+            $cls = (string) ($f['class'] ?? '');
+            $file = (string) ($f['file'] ?? '');
+            if ($cls === '' || $file === '') continue;
+            // Skip vendor / framework entirely.
+            if (str_contains($file, '/vendor/')) continue;
+            // Skip Doctrine itself (BasicEntityPersister, UnitOfWork, Proxy\__load).
+            if (str_starts_with($cls, 'Doctrine\\')) continue;
+            // Skip Symfony / Sentry / etc.
+            foreach (['Symfony\\', 'Sentry\\'] as $skip) {
+                if (str_starts_with($cls, $skip)) continue 2;
+            }
+            // The first App\Entity frame IS the getter that proxied into Doctrine.
+            if (str_starts_with($cls, 'App\\Entity\\')) {
+                if ($getter === null) {
+                    $getter = [
+                        'class' => $cls,
+                        'method' => (string) ($f['method'] ?? ''),
+                        'file' => $file,
+                        'host_path' => $f['host_path'] ?? null,
+                        'line' => isset($f['line']) ? (int) $f['line'] : null,
+                    ];
+                    $seenEntityGetter = true;
+                }
+                continue;
+            }
+            // After we've seen the entity getter, the next non-entity App frame
+            // is the user code that actually asked for the relation.
+            if ($seenEntityGetter && $userCaller === null && str_starts_with($cls, 'App\\')) {
+                $userCaller = [
+                    'class' => $cls,
+                    'method' => (string) ($f['method'] ?? ''),
+                    'file' => $file,
+                    'host_path' => $f['host_path'] ?? null,
+                    'line' => isset($f['line']) ? (int) $f['line'] : null,
+                ];
+                // Don't break — there might be more frames below, but we want
+                // the CLOSEST user frame to the getter, which is what we have.
+                break;
+            }
+        }
+        // Fallback: if no entity getter was found, use the saved caller column.
+        if ($getter === null && $callerClass !== null && $callerMethod !== null) {
+            $getter = ['class' => $callerClass, 'method' => $callerMethod];
+        }
+        if ($getter === null && $userCaller === null) return null;
+        return ['getter' => $getter, 'caller' => $userCaller];
     }
 
     // ─── helpers ─────────────────────────────────────────────────────────

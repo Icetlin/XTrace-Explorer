@@ -566,7 +566,49 @@ class TraceController extends AbstractController
             return $this->json(['error' => 'sql.json not found — reparse the file'], 404);
         }
 
-        return new JsonResponse(file_get_contents($path), 200, [], true);
+        $raw = file_get_contents($path);
+        $queries = json_decode((string) $raw, true) ?: [];
+
+        // Aggregate memory stats — xdebug exposes bytes per `->` line, so we
+        // can compute the heap footprint around each query without touching
+        // the trace.xt file again. The frontend uses these for the "memory"
+        // column in the table and for the spike warning banner.
+        $memPeak = 0;
+        $memPeakAt = null;          // query n at which peak occurred
+        $memStart = null;
+        $memEnd = null;
+        $memGrowth = 0;
+        $biggestDelta = 0;
+        $biggestDeltaAt = null;
+        $prevMem = null;
+        foreach ($queries as $q) {
+            $m = $q['mem_at_query'] ?? null;
+            if (!is_int($m)) continue;
+            if ($memStart === null) $memStart = $m;
+            $memEnd = $m;
+            if ($m > $memPeak) { $memPeak = $m; $memPeakAt = $q['n'] ?? null; }
+            if ($prevMem !== null) {
+                $d = $m - $prevMem;
+                if ($d > $biggestDelta) { $biggestDelta = $d; $biggestDeltaAt = $q['n'] ?? null; }
+            }
+            $prevMem = $m;
+        }
+        if ($memStart !== null && $memEnd !== null) {
+            $memGrowth = $memEnd - $memStart;
+        }
+
+        return $this->json([
+            'queries' => $queries,
+            'memory' => [
+                'peak_bytes'        => $memPeak,
+                'peak_at_query'     => $memPeakAt,
+                'start_bytes'       => $memStart,
+                'end_bytes'         => $memEnd,
+                'growth_bytes'      => $memGrowth,
+                'biggest_delta_bytes'   => $biggestDelta,
+                'biggest_delta_at_query' => $biggestDeltaAt,
+            ],
+        ]);
     }
 
     #[Route('/lines/{id}', methods: ['GET'])]

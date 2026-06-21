@@ -95,6 +95,8 @@ export const useQbStore = defineStore('qb', () => {
   // ── Trace fallback (loaded once, cached) ──
   const traceFileId = ref(null)
   const traceQueries = ref([])
+  // Memory stats from /api/sql/{id}: {peak_bytes, growth_bytes, biggest_delta_bytes, ...}
+  const traceMemory = ref(null)
 
   async function loadTraceQueries(fileId) {
     // Always reload — cache-by-fileId is dangerous because toggling
@@ -104,8 +106,10 @@ export const useQbStore = defineStore('qb', () => {
     try {
       const { data } = await axios.get(`/api/sql/${fileId}`)
       traceQueries.value = Array.isArray(data) ? data : (data?.queries ?? [])
+      traceMemory.value = data?.memory ?? null
     } catch (e) {
       traceQueries.value = []
+      traceMemory.value = null
     }
   }
 

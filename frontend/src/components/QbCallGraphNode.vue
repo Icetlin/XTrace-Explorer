@@ -171,12 +171,17 @@ function openInIde(path, line) {
 }
 function highlightSql(sql) {
   if (!sql) return ''
+  // Numbers first — must not see tokens inside any span we insert afterwards
+  // (the previous version had `\b(\d+)\b` matching the `600` of
+  // `font-weight:600` inside the keyword span, producing nested
+  // `<span style="font-weight:<span ...>600</span>">` which the browser
+  // rendered as literal `600">`).
   const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   let out = esc(sql)
+  out = out.replace(/\b(\d+)\b/g, '<span class="qcgn__num">$1</span>')
+  out = out.replace(/('[^']*')/g, '<span class="qcgn__str">$1</span>')
   out = out.replace(/(\b(?:SELECT|FROM|WHERE|AND|OR|JOIN|LEFT|RIGHT|INNER|OUTER|ON|AS|GROUP|ORDER|BY|LIMIT|OFFSET|UNION|INSERT|UPDATE|DELETE|SET|INTO|VALUES|IS|NULL|NOT|EXISTS|IN|BETWEEN|LIKE|ILIKE|ASC|DESC|HAVING)\b)/gi,
-    '<span style="color:#6da0ff;font-weight:600">$1</span>')
-  out = out.replace(/('[^']*')/g, '<span style="color:#f6c64a">$1</span>')
-  out = out.replace(/\b(\d+)\b/g, '<span style="color:#5cd97a">$1</span>')
+    '<span class="qcgn__kw">$1</span>')
   return out
 }
 </script>
@@ -269,6 +274,9 @@ function highlightSql(sql) {
   white-space: pre-wrap;
   word-break: break-all;
 }
+.qcgn__q-sql-full :deep(.qcgn__kw) { color: #6da0ff; font-weight: bold; }
+.qcgn__q-sql-full :deep(.qcgn__str) { color: #f6c64a; }
+.qcgn__q-sql-full :deep(.qcgn__num) { color: #5cd97a; }
 .qcgn__q-params { display: flex; flex-wrap: wrap; gap: 4px; }
 .qcgn__q-param {
   background: rgba(0,0,0,0.3);

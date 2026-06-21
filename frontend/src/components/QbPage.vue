@@ -156,8 +156,108 @@
             <span class="qb-summary__sep">·</span>
             <span class="qb-summary__warn">⚠ {{ qb.analysis.n_plus_one.length }} N+1</span>
           </template>
+          <template v-if="qb.analysis.lazy?.total > 0">
+            <span class="qb-summary__sep">·</span>
+            <span class="qb-summary__lazy"
+                  :title="`${qb.analysis.lazy.total} Doctrine lazy-load queries that fetch single rows after the explicit query returned.`">
+              🐢 {{ qb.analysis.lazy.total }} lazy <em>({{ qb.analysis.lazy.total_ms.toFixed(0) }}ms)</em>
+            </span>
+          </template>
           <span class="qb-summary__sep">·</span>
           <span class="qb-summary__hint">all data from Symfony Profiler</span>
+        </div>
+
+        <!-- ── Lazy-load breakdown — tells you which relations are N+1'd by Doctrine ── -->
+        <section v-if="qb.mode === 'profiler' && qb.analysis?.lazy?.by_relation?.length"
+                 class="qb-section qb-section--lazy">
+          <header class="qb-section__header">
+            🐢 Doctrine lazy loads
+            <span class="qb-section__sub">{{ qb.analysis.lazy.total }} query · {{ qb.analysis.lazy.total_ms.toFixed(0) }}ms wasted</span>
+          </header>
+          <p class="qb-section__hint">
+            These queries are <strong>not</strong> written in your source. Two flavours:
+            <strong>getter-triggered</strong> fires when user code touches a relation after the original query returned
+            (the cheapest fix — pass the relation to the QueryBuilder);
+            <strong>hydration-triggered</strong> fires when Doctrine's row hydrator needs the relation while assembling
+            the original result (same fix — the relation was just dropped from <code>leftJoin()</code>).
+          </p>
+
+          <!-- getter-triggered: user code accessed a relation after the query returned -->
+          <template v-if="qb.analysis.lazy.by_relation.some(r => r.kind === 'getter')">
+            <div class="qb-lazy-kind">↳ getter-triggered — called by user code after the query returned</div>
+            <div
+              v-for="r in qb.analysis.lazy.by_relation.filter(r => r.kind === 'getter')"
+              :key="r.table"
+              class="qb-lazy-row"
+            >
+              <span class="qb-lazy-row__entity">
+                <span class="qb-lazy-row__icon">🐢</span>
+                {{ r.entity }}
+              </span>
+              <span class="qb-lazy-row__count">×{{ r.count }}</span>
+              <span class="qb-lazy-row__time">{{ r.total_ms.toFixed(0) }}ms</span>
+              <div class="qb-lazy-row__chain">
+                <span class="qb-lazy-row__getter">{{ r.trigger_getter }}</span>
+                <span class="qb-lazy-row__arrow">←</span>
+                <span class="qb-lazy-row__caller">{{ r.trigger_caller }}</span>
+                <a v-if="r.trigger_file"
+                   class="qb-lazy-row__loc"
+                   @click.prevent="openInIde(r.trigger_file, r.trigger_line)"
+                   :title="`${r.trigger_file}:${r.trigger_line}`">
+                  {{ shortPath(r.trigger_file) }}:{{ r.trigger_line }}
+                </a>
+              </div>
+              <code class="qb-lazy-row__sql" :title="r.sample_sql">{{ truncate(r.sample_sql, 80) }}</code>
+              <a class="qb-lazy-row__jump" @click.prevent="jumpToQuery(r.sample_n)">→ #{{ r.sample_n }}</a>
+            </div>
+          </template>
+
+          <!-- hydration-triggered: Doctrine needed the relation while assembling the original row -->
+          <template v-if="qb.analysis.lazy.by_relation.some(r => r.kind === 'hydration')">
+            <div class="qb-lazy-kind">↳ hydration-triggered — Doctrine loaded these during the original result hydration</div>
+            <div
+              v-for="r in qb.analysis.lazy.by_relation.filter(r => r.kind === 'hydration')"
+              :key="r.table"
+              class="qb-lazy-row qb-lazy-row--hydration"
+            >
+              <span class="qb-lazy-row__entity">
+                <span class="qb-lazy-row__icon">💧</span>
+                {{ r.entity }}
+              </span>
+              <span class="qb-lazy-row__count">×{{ r.count }}</span>
+              <span class="qb-lazy-row__time">{{ r.total_ms.toFixed(0) }}ms</span>
+              <div class="qb-lazy-row__chain">
+                <span class="qb-lazy-row__caller">in <strong>{{ r.parent_method }}</strong></span>
+                <a v-if="r.parent_file"
+                   class="qb-lazy-row__loc"
+                   @click.prevent="openInIde(r.parent_file, r.parent_line)"
+                   :title="`${r.parent_file}:${r.parent_line}`">
+                  {{ shortPath(r.parent_file) }}:{{ r.parent_line }}
+                </a>
+              </div>
+              <code class="qb-lazy-row__sql" :title="r.sample_sql">{{ truncate(r.sample_sql, 80) }}</code>
+              <a class="qb-lazy-row__jump" @click.prevent="jumpToQuery(r.sample_n)">→ #{{ r.sample_n }}</a>
+            </div>
+          </template>
+        </section>
+
+        <!-- ── Trace-mode summary (memory + totals from xdebug trace) ── -->
+        <div v-else-if="qb.mode === 'trace' && qb.traceMemory" class="qb-summary">
+          <span class="qb-summary__total">
+            <strong>{{ qb.totalQueries }}</strong> queries
+            <span class="qb-summary__sep">·</span>
+            <strong>{{ qb.totalMs.toFixed(1) }}ms</strong> total
+          </span>
+          <span class="qb-summary__sep">·</span>
+          <span class="qb-summary__mem" :title="`PHP heap grew from ${formatBytes(qb.traceMemory.start_bytes)} at first query to ${formatBytes(qb.traceMemory.end_bytes)} after last`">
+            <strong>peak {{ formatBytes(qb.traceMemory.peak_bytes) }}</strong>
+            <em v-if="qb.traceMemory.growth_bytes > 0">(+{{ formatBytes(qb.traceMemory.growth_bytes) }} during queries)</em>
+          </span>
+          <span v-if="qb.traceMemory.biggest_delta_bytes > 4 * 1024 * 1024" class="qb-summary__sep">·</span>
+          <span v-if="qb.traceMemory.biggest_delta_bytes > 4 * 1024 * 1024" class="qb-summary__warn"
+                :title="`Between query #${qb.traceMemory.biggest_delta_at_query - 1} and #${qb.traceMemory.biggest_delta_at_query}`">
+            ⚠ +{{ formatBytes(qb.traceMemory.biggest_delta_bytes) }} at query #{{ qb.traceMemory.biggest_delta_at_query }}
+          </span>
         </div>
 
         <!-- ── Render based on view mode + data source ── -->
@@ -423,6 +523,31 @@ function formatTime(iso) {
   if (!iso) return ''
   return new Date(iso).toLocaleString()
 }
+function formatBytes(b) {
+  if (b == null) return '–'
+  if (b < 1024) return b + ' B'
+  if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB'
+  if (b < 1024 * 1024 * 1024) return (b / 1024 / 1024).toFixed(1) + ' MB'
+  return (b / 1024 / 1024 / 1024).toFixed(2) + ' GB'
+}
+function jumpToQuery(n) {
+  // Switch to grouped view (the tree view doesn't render per-query rows
+  // at the top level), then scroll the target query into view AND flash
+  // it so the user can see where they landed — without the flash the row
+  // scrolls out of view half the time and the user has to scroll back.
+  qb.setViewMode('grouped')
+  setTimeout(() => {
+    const el = document.querySelector(`[data-query-n="${n}"]`)
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    // Two-phase highlight: hard-yellow ring (1.6s) + slow fade. Using a
+    // CSS animation keeps it cheap — the JS just adds the class once.
+    el.classList.remove('qb-flash') // restart the animation if it's already running
+    void el.offsetWidth              // force reflow so the re-added class restarts the keyframes
+    el.classList.add('qb-flash')
+    setTimeout(() => el.classList.remove('qb-flash'), 1800)
+  }, 80)
+}
 function openInIde(path, line) {
   if (!path) return
   fetch('/api/open-in-ide', {
@@ -644,6 +769,109 @@ watch(() => qb.profilerConfig?.enabled, async (enabled) => {
 .qb-summary__sep { color: #555; }
 .qb-summary__warn { color: #f6c64a; }
 .qb-summary__hint { color: #888; font-size: 11px; margin-left: auto; }
+.qb-summary__lazy { color: #ff9d57; cursor: help; }
+.qb-summary__lazy em { color: #888; font-style: normal; font-size: 10px; }
+
+.qb-section--lazy {
+  background: rgba(255, 138, 50, 0.04);
+  border: 1px solid rgba(255, 138, 50, 0.15);
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin: 8px 14px 18px;
+}
+.qb-section--lazy .qb-section__header {
+  border: none;
+  padding: 0;
+  margin-bottom: 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #ff9d57;
+}
+.qb-section--lazy .qb-section__sub {
+  color: #888;
+  font-weight: normal;
+  text-transform: none;
+  letter-spacing: 0;
+  margin-left: 8px;
+}
+.qb-section--lazy .qb-section__hint {
+  font-size: 11px;
+  color: #999;
+  margin: 0 0 8px 0;
+  line-height: 1.4;
+}
+.qb-section--lazy .qb-section__hint code {
+  background: rgba(255,255,255,0.06);
+  padding: 0 4px;
+  border-radius: 2px;
+  font-size: 10px;
+  color: #f6c64a;
+}
+.qb-lazy-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  font-size: 11px;
+  flex-wrap: wrap;
+}
+.qb-lazy-row:last-child { border-bottom: none; }
+.qb-lazy-row--hydration .qb-lazy-row__icon { color: #66c8ff; }
+.qb-lazy-row__icon { font-size: 13px; min-width: 16px; }
+.qb-lazy-row__entity { color: #ff9d57; font-weight: 500; min-width: 180px; }
+.qb-lazy-row--hydration .qb-lazy-row__entity { color: #66c8ff; }
+.qb-lazy-row__count { color: #888; font-variant-numeric: tabular-nums; min-width: 28px; }
+.qb-lazy-row__time { color: #f6c64a; font-variant-numeric: tabular-nums; min-width: 56px; }
+.qb-lazy-row__chain {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 360px;
+  font-family: monospace;
+  font-size: 11px;
+  flex-wrap: wrap;
+}
+.qb-lazy-row__getter { color: #ff9d57; }
+.qb-lazy-row__caller { color: #ccc; }
+.qb-lazy-row__caller strong { color: #66c8ff; font-weight: 500; }
+.qb-lazy-row__arrow { color: #555; font-family: monospace; }
+.qb-lazy-row__loc {
+  color: #6da0ff;
+  cursor: pointer;
+  font-family: monospace;
+  font-size: 10px;
+  border-bottom: 1px dotted rgba(109, 160, 255, 0.4);
+}
+.qb-lazy-row__loc:hover { color: #5cd97a; border-color: #5cd97a; }
+.qb-lazy-row__sql { flex: 0 1 100%; color: #888; font-family: monospace; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 24px; opacity: 0.7; }
+.qb-lazy-row__jump { color: #6da0ff; cursor: pointer; margin-left: auto; font-family: monospace; }
+.qb-lazy-kind {
+  font-size: 10px;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 10px 0 4px;
+  padding-top: 6px;
+  border-top: 1px dashed rgba(255,255,255,0.06);
+}
+.qb-lazy-kind:first-of-type { border-top: none; margin-top: 4px; padding-top: 0; }
+
+/* Flash highlight — added to the target row by jumpToQuery(), removed after
+ * 1.8s. Three keyframes so the eye actually catches the row even on fast
+ * scrolling: hard ring → soft glow → fade. */
+@keyframes qb-flash-ring {
+  0%   { box-shadow: inset 0 0 0 3px #f6c64a, 0 0 18px rgba(246, 198, 74, 0.6); background: rgba(246, 198, 74, 0.18); }
+  20%  { box-shadow: inset 0 0 0 2px #f6c64a, 0 0 12px rgba(246, 198, 74, 0.5); background: rgba(246, 198, 74, 0.12); }
+  100% { box-shadow: inset 0 0 0 0px #f6c64a, 0 0 0 rgba(246, 198, 74, 0);   background: rgba(246, 198, 74, 0); }
+}
+.qb-flash {
+  animation: qb-flash-ring 1.6s ease-out;
+  border-radius: 4px;
+  scroll-margin-top: 80px; /* keep clear of the toolbar when scrolled into view */
+}
 
 .qb-section { margin-bottom: 18px; }
 .qb-section__header {

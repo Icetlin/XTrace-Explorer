@@ -547,6 +547,17 @@ class TraceParser
                 continue;
             }
 
+            // Pull the time + memory columns too. The regex layout is:
+            //   <spaces><time> <memory>   -> <sig>  <file:line>
+            // (CallLine captures `<spaces><time>` and `->...`; CallLineTimeMem
+            //  captures time + memory as separate groups.)
+            $lineTime = 0.0;
+            $lineMem  = 0;
+            if (preg_match(TraceRegex::CallLineTimeMem->value, $line, $tm)) {
+                $lineTime = isset($tm[1]) ? (float) $tm[1] : 0.0;
+                $lineMem  = isset($tm[2]) ? (int) $tm[2] : 0;
+            }
+
             // Depth = the spaces between the memory field and "->" (xdebug's
             // fixed-column indent). The LEADING whitespace before the time
             // number is constant padding, not the depth.
@@ -573,7 +584,7 @@ class TraceParser
                 unset($depthStack[$d]);
             }
             // Push the new frame.
-            $depthStack[$depth] = [$sig, $file, $lineNo, $isApp];
+            $depthStack[$depth] = [$sig, $file, $lineNo, $isApp, $lineMem];
             $maxDepth = $depth;
 
             // executeQuery = the actual DB query. Find the nearest App\ caller
@@ -587,10 +598,17 @@ class TraceParser
                 for ($d = $depth - 1; $d >= 0; $d--) {
                     if (isset($depthStack[$d]) && $depthStack[$d][3]) {
                         $caller = [
-                            'sig'     => $depthStack[$d][0],
-                            'file'    => $depthStack[$d][1],
-                            'line_no' => $depthStack[$d][2],
-                            'depth'   => $d,
+                            'sig'         => $depthStack[$d][0],
+                            'file'        => $depthStack[$d][1],
+                            'line_no'     => $depthStack[$d][2],
+                            'depth'       => $d,
+                            // Memory at the moment the App\ caller's `->` was
+                            // entered. The actual delta (KB) is the difference
+                            // between this value and the lineMem at the matching
+                            // `)` return — we surface the start here so the
+                            // frontend can compute it cheaply and render the
+                            // caller's own allocation alongside its duration.
+                            'mem_start'  => $depthStack[$d][4] ?? null,
                         ];
                         break;
                     }
@@ -650,6 +668,13 @@ class TraceParser
                     'toc'         => $tocLabel,
                     'caller'      => $caller,
                     'chain'       => $chain,
+                    // PHP heap usage in bytes at the exact moment xdebug
+                    // logged `->executeQuery(...)`. A spike between this row
+                    // and the next query's `mem_at_query` is the memory the
+                    // hydration + result-set mapping ate for that fetch —
+                    // useful for spotting "SELECT * from a 200k-row table"
+                    // candidates that don't show up in `duration_ms` alone.
+                    'mem_at_query' => $lineMem,
                 ];
             }
         }
