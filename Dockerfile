@@ -29,7 +29,8 @@ RUN cd /frontend && npm ci && npm run build -- --outDir /app/public/app --emptyO
 
 RUN composer dump-autoload --optimize \
     && mkdir -p var/traces var/log var/cache \
-    && chmod -R 777 var \
+    && chown -R www-data:www-data var \
+    && chmod 755 var \
     && addgroup -g 984 docker-host 2>/dev/null || true \
     && adduser www-data docker-host 2>/dev/null || true
 
