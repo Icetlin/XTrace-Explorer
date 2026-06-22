@@ -176,7 +176,13 @@
                   :title="lazyOpen ? 'Click to collapse' : 'Click to expand'">
             <span class="qb-section__chev">{{ lazyOpen ? '▾' : '▸' }}</span>
             🐢 Doctrine lazy loads
-            <span class="qb-section__sub">{{ qb.analysis.lazy.total }} query · {{ qb.analysis.lazy.total_ms.toFixed(0) }}ms wasted</span>
+            <span class="qb-section__sub">
+              {{ qb.analysis.lazy.total }} query ·
+              <strong class="qb-section__sub-strong" :title="`Folding the listed relations into their parent QueryBuilders would remove this many ms from the request. Already includes the SQL execution time; round-trip + ORM hydration overhead would push the real win higher.`">
+                {{ formatSavings(qb.analysis.lazy.total_ms) }}
+              </strong>
+              can be saved
+            </span>
           </header>
           <div v-if="lazyOpen" class="qb-section__body">
             <p class="qb-section__hint">
@@ -215,14 +221,68 @@
               </div>
               <code class="qb-lazy-row__sql" :title="r.sample_sql">{{ truncate(r.sample_sql, 80) }}</code>
               <a class="qb-lazy-row__jump" @click.prevent="jumpToQuery(r.sample_n)">→ #{{ r.sample_n }}</a>
-              <!-- Suggested fix snippet — see suggestFix() for confidence
-                   levels (high for getter-triggered, low for hydration). -->
+              <!-- For getter rows the fix goes in the QueryBuilder that
+                   ORIGINALLY LOADED the entity — not where the getter
+                   fired. The backend analyser (traceLazyLoadSource)
+                   returns that origin as fix.file / fix.line, which we
+                   store in fixSnippets under the same table key.
+                   For hydration rows the origin IS parent_method, so
+                   the same component reads from r.* with no trace
+                   round-trip needed. -->
+              <div v-if="r.kind === 'getter' ? fixSnippets.get(r.table)?.file : r.parent_method" class="qb-lazy-fix-target">
+                <span class="qb-lazy-fix-target__label">Add to</span>
+                <!-- Hydration: we know the Repository method name
+                     (parent_method from the profiler), so we can offer
+                     both a tree-jump button AND an IDE path link.
+                     Getter: we only know file:line from the trace, no
+                     method name — fall back to the IDE link only. -->
+                <template v-if="r.kind === 'hydration'">
+                  <button
+                    class="qb-lazy-fix-target__call"
+                    :title="`Jump to ${shortMethodCall(r.parent_method)} in the call tree`"
+                    @click="jumpToCall(r.parent_method)"
+                  >{{ shortMethodCall(r.parent_method) }}</button>
+                  <a
+                    v-if="r.parent_file"
+                    class="qb-lazy-row__loc qb-lazy-fix-target__loc"
+                    @click.prevent="copySrcPath(r.parent_file, r.parent_line)"
+                    :title="`Click to copy src/...:${r.parent_line} for your IDE`">
+                    {{ shortPath(r.parent_file) }}:{{ r.parent_line }}
+                    <span v-if="lastCopied.has(r.parent_file + ':' + r.parent_line)" class="qb-lazy-row__copied">✓</span>
+                  </a>
+                  <span class="qb-lazy-fix-target__arrow">↗</span>
+                </template>
+                <template v-else>
+                  <a
+                    v-if="fixSnippets.get(r.table)?.file"
+                    class="qb-lazy-row__loc qb-lazy-fix-target__loc qb-lazy-fix-target__loc--primary"
+                    @click.prevent="copySrcPath(fixSnippets.get(r.table).file, fixSnippets.get(r.table).line)"
+                    :title="`Click to copy src/...:${fixSnippets.get(r.table).line} for your IDE — this is the QueryBuilder that loaded the entity; add the leftJoin here.`">
+                    {{ shortPath(fixSnippets.get(r.table).file) }}:{{ fixSnippets.get(r.table).line }}
+                    <span v-if="lastCopied.has(fixSnippets.get(r.table).file + ':' + fixSnippets.get(r.table).line)" class="qb-lazy-row__copied">✓</span>
+                  </a>
+                </template>
+              </div>
               <pre class="qb-lazy-fix">{{ fixSnippets.get(r.table)?.text || '…' }}<span
                 v-if="fixSnippets.get(r.table)?.confidence"
                 class="qb-lazy-fix__conf"
                 :class="'qb-lazy-fix__conf--' + fixSnippets.get(r.table).confidence"
                 :title="fixSnippets.get(r.table).reason || ''"
               >{{ fixSnippets.get(r.table).confidence }}</span></pre>
+              <!-- "?" toggles the inline explanation popover for this
+                   row. One popover at a time (openHelpTable); the
+                   explanation text is the same comment we used to
+                   inline 8 times — now it shows only when asked. -->
+              <button
+                v-if="fixSnippets.get(r.table)?.explanation"
+                class="qb-lazy-fix__help"
+                :class="{ 'qb-lazy-fix__help--on': openHelpTable === r.table }"
+                :title="openHelpTable === r.table ? 'Hide explanation' : 'Why addSelect + leftJoin?'"
+                @click="toggleHelp(r.table)"
+              >?</button>
+              <div v-if="openHelpTable === r.table && fixSnippets.get(r.table)?.explanation" class="qb-lazy-fix__why">
+                <pre>{{ fixSnippets.get(r.table).explanation }}</pre>
+              </div>
               <button
                 class="qb-btn qb-btn--copy-fix"
                 :title="lastCopied.has('fix:' + r.table) ? 'Copied to clipboard' : 'Copy the suggested fix to clipboard'"
@@ -257,15 +317,45 @@
               </div>
               <code class="qb-lazy-row__sql" :title="r.sample_sql">{{ truncate(r.sample_sql, 80) }}</code>
               <a class="qb-lazy-row__jump" @click.prevent="jumpToQuery(r.sample_n)">→ #{{ r.sample_n }}</a>
-              <!-- Same suggested fix as above — for hydration the snippet
-                   uses a `<relationName>` placeholder the user must fill in
-                   with the actual entity property name. -->
+              <!-- "Add to:" header — same pattern as getter rows. For
+                   hydration, parent_method IS the Repository method
+                   whose QueryBuilder needs the leftJoin, so this link
+                   is the most actionable part of the whole row. -->
+              <div v-if="r.parent_method" class="qb-lazy-fix-target">
+                <span class="qb-lazy-fix-target__label">Add to</span>
+                <button
+                  class="qb-lazy-fix-target__call"
+                  :title="`Jump to ${shortMethodCall(r.parent_method)} in the call tree`"
+                  @click="jumpToCall(r.parent_method)"
+                >{{ shortMethodCall(r.parent_method) }}</button>
+                <a
+                  v-if="r.parent_file"
+                  class="qb-lazy-row__loc qb-lazy-fix-target__loc"
+                  @click.prevent="copySrcPath(r.parent_file, r.parent_line)"
+                  :title="`Click to copy src/...:${r.parent_line} for your IDE`">
+                  {{ shortPath(r.parent_file) }}:{{ r.parent_line }}
+                  <span v-if="lastCopied.has(r.parent_file + ':' + r.parent_line)" class="qb-lazy-row__copied">✓</span>
+                </a>
+                <span class="qb-lazy-fix-target__arrow">↗</span>
+              </div>
               <pre class="qb-lazy-fix">{{ fixSnippets.get(r.table)?.text || '…' }}<span
                 v-if="fixSnippets.get(r.table)?.confidence"
                 class="qb-lazy-fix__conf"
                 :class="'qb-lazy-fix__conf--' + fixSnippets.get(r.table).confidence"
                 :title="fixSnippets.get(r.table).reason || ''"
               >{{ fixSnippets.get(r.table).confidence }}</span></pre>
+              <!-- Same help-button as getter rows — keeps the UI
+                   consistent across both kinds. -->
+              <button
+                v-if="fixSnippets.get(r.table)?.explanation"
+                class="qb-lazy-fix__help"
+                :class="{ 'qb-lazy-fix__help--on': openHelpTable === r.table }"
+                :title="openHelpTable === r.table ? 'Hide explanation' : 'Why addSelect + leftJoin?'"
+                @click="toggleHelp(r.table)"
+              >?</button>
+              <div v-if="openHelpTable === r.table && fixSnippets.get(r.table)?.explanation" class="qb-lazy-fix__why">
+                <pre>{{ fixSnippets.get(r.table).explanation }}</pre>
+              </div>
               <button
                 class="qb-btn qb-btn--copy-fix"
                 :title="lastCopied.has('fix:' + r.table) ? 'Copied to clipboard' : 'Copy the suggested fix to clipboard'"
@@ -569,6 +659,21 @@ function formatBytes(b) {
   if (b < 1024 * 1024 * 1024) return (b / 1024 / 1024).toFixed(1) + ' MB'
   return (b / 1024 / 1024 / 1024).toFixed(2) + ' GB'
 }
+/**
+ * Format a ms-savings figure for the "lazy loads" header.
+ *
+ * Switches unit at 1000ms because "1424ms can be saved" reads as
+ * "millisecond-scale win" while "1.4s can be saved" reads as
+ * "perceptible win". One decimal below 10s, integer above. Sub-100ms
+ * values stay in ms so we don't lose precision on small fixes.
+ */
+function formatSavings(ms) {
+  if (ms == null) return '–'
+  if (ms < 100) return Math.round(ms) + 'ms'
+  if (ms < 1000) return Math.round(ms) + 'ms'
+  if (ms < 10_000) return (ms / 1000).toFixed(2).replace(/\.?0+$/, '') + 's'
+  return Math.round(ms / 1000) + 's'
+}
 function jumpToQuery(n) {
   // Switch to grouped view (the tree view doesn't render per-query rows
   // at the top level), then scroll the target query into view AND flash
@@ -586,6 +691,48 @@ function jumpToQuery(n) {
     el.classList.add('qb-flash')
     setTimeout(() => el.classList.remove('qb-flash'), 1800)
   }, 80)
+}
+
+/**
+ * Jump from a lazy-fix snippet to the matching tree node. Mirrors
+ * jumpToQuery() but targets method nodes (Class->method) instead of
+ * SQL rows. The lazy-loads block passes parent_method / trigger_caller
+ * — both formatted as "Class->method()" with parens — which we strip
+ * to match the data-call attribute on each tree row.
+ *
+ * Used from the "↗ jump in tree" link in each fix snippet header, so
+ * the user goes from "I need to add a leftJoin here" to "this is the
+ * QueryBuilder method" in one click.
+ */
+function jumpToCall(call) {
+  if (!call) return
+  // Normalise: backend gives "Class->method()", tree node has "Class->method"
+  const key = call.replace(/\(\)\s*$/, '').trim()
+  qb.setViewMode('tree')
+  setTimeout(() => {
+    const el = document.querySelector(`[data-call="${CSS.escape(key)}"]`)
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el.classList.remove('qb-flash')
+    void el.offsetWidth
+    el.classList.add('qb-flash')
+    setTimeout(() => el.classList.remove('qb-flash'), 1800)
+  }, 80)
+}
+
+/**
+ * Reduce "App\Repository\User\UserDomainRepository->findForUserData()"
+ * to a short "UserDomainRepository->findForUserData()" for the fix-row
+ * header. The full FQCN is already shown via the file path link, so
+ * showing just the short form on the "Add to:" line keeps that line
+ * from wrapping on long class names.
+ */
+function shortMethodCall(call) {
+  if (!call) return ''
+  return call
+    .replace(/\(\)\s*$/, '')
+    .replace(/^.*\\/, '')
+    .replace(/.*->/, '')
 }
 async function copySrcPath(file, line) {
   // Strip everything before /src/ — that's the editor-relative path
@@ -630,10 +777,18 @@ async function loadFixSnippets() {
   // Fire all requests in parallel; resolve into the map as they arrive.
   await Promise.all(lazy.map(async (r) => {
     const fix = await suggestFix(r)
-    // Preserve order — append saving line at the end.
-    const text = (fix.snippet || '') + '\n' + fix.saving
+    // Keep the explanation OUT of the snippet text — it's the same
+    // ~600-char comment for every row in the block (8 lazy rows here
+    // = ~5000 chars of duplicated text). The snippet block is just the
+    // paste-ready code + saving line. The explanation lives on a `?`
+    // icon next to the snippet that opens it on hover/click.
+    const parts = []
+    if (fix.snippet) parts.push(fix.snippet)
+    if (fix.saving)  parts.push(fix.saving)
+    const text = parts.join('\n')
     fixSnippets.value.set(r.table, {
       text,
+      explanation: fix.explanation || '',
       confidence: fix.confidence || 'low',
       reason: fix.reason,
       file: fix.file,
@@ -644,6 +799,15 @@ async function loadFixSnippets() {
   fixSnippets.value = new Map(fixSnippets.value)
 }
 watch(() => qb.analysis?.lazy, loadFixSnippets, { immediate: false })
+
+// Which row's "?" help icon is currently expanded. null = none open.
+// Clicking the icon toggles it; clicking outside (or pressing Esc)
+// closes it. We track by table name rather than a Set because at most
+// one panel is open at a time (opening one auto-closes others).
+const openHelpTable = ref(null)
+function toggleHelp(table) {
+  openHelpTable.value = openHelpTable.value === table ? null : table
+}
 
 /**
  * Cache for lazy-fix snippets — avoids re-hitting the backend for every
@@ -671,6 +835,17 @@ async function suggestFix(r) {
     kind: r.kind,
     table: r.table,
     parent_class: parentClass,
+  }
+  // For hydration-triggered rows the parent_method is the Repository
+  // method that built the QueryBuilder — passing it to the backend
+  // lets the analyser parse the file and discover the REAL alias
+  // (e.g. `user` instead of our guessed `u`).
+  if (r.kind === 'hydration' && r.parent_method) {
+    const methodName = (r.parent_method.split('->').pop() || '').replace(/[()]/g, '')
+    if (methodName && r.parent_file) {
+      body.repo_method = methodName
+      body.repo_file = r.parent_file
+    }
   }
   if (r.kind === 'getter') body.trigger_getter = getter
 
@@ -763,8 +938,12 @@ async function doManualLink() {
 
 function onKey(e) {
   if (e.key === 'Escape') {
-    if (qb.settingsOpen) qb.closeSettings()
-    else emit('close')
+    // Priority: close help popover → close settings → close page.
+    // Without this ordering, hitting Esc with the popover open would
+    // dismiss the whole page and lose the user's scroll position.
+    if (openHelpTable.value) { openHelpTable.value = null; return }
+    if (qb.settingsOpen) { qb.closeSettings(); return }
+    emit('close')
   }
 }
 
@@ -1008,6 +1187,15 @@ watch(() => qb.profilerConfig?.enabled, async (enabled) => {
   letter-spacing: 0;
   margin-left: 8px;
 }
+/* The "X.Xs can be saved" number is the call-to-action of the whole
+ * block — gold accent + cursor:help so it pops without competing with
+ * the per-row fix snippets below. */
+.qb-section__sub-strong {
+  color: #f6c64a;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: help;
+}
 .qb-section--lazy .qb-section__hint {
   font-size: 11px;
   color: #999;
@@ -1061,9 +1249,65 @@ watch(() => qb.profilerConfig?.enabled, async (enabled) => {
 .qb-lazy-row__loc:hover { color: #5cd97a; border-color: #5cd97a; }
 .qb-lazy-row__sql { flex: 0 1 100%; color: #888; font-family: monospace; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 24px; opacity: 0.7; }
 .qb-lazy-row__jump { color: #6da0ff; cursor: pointer; margin-left: auto; font-family: monospace; }
+
+/* "Add to:" / "Fires in:" header above each fix snippet. Tells the
+ * user WHICH method the leftJoin needs to land in (so the snippet is
+ * not just floating code). The call itself is a button — click jumps
+ * to that node in the tree view; the file:line link copies the IDE-
+ * openable path. Visual hierarchy: monospace call (primary action),
+ * dimmer path link, ↗ icon to hint that the button navigates. */
+.qb-lazy-fix-target {
+  flex: 0 1 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 0 24px;
+  padding: 4px 8px;
+  background: rgba(92, 217, 122, 0.06);
+  border-left: 2px solid rgba(92, 217, 122, 0.4);
+  border-radius: 0 3px 3px 0;
+  font-size: 11px;
+}
+.qb-lazy-fix-target__label {
+  color: #888;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.qb-lazy-fix-target__call {
+  background: transparent;
+  border: 1px solid rgba(92, 217, 122, 0.3);
+  border-radius: 3px;
+  color: #5cd97a;
+  padding: 2px 8px;
+  font-family: monospace;
+  font-size: 11px;
+  cursor: pointer;
+}
+.qb-lazy-fix-target__call:hover {
+  background: rgba(92, 217, 122, 0.15);
+  border-color: #5cd97a;
+}
+.qb-lazy-fix-target__loc { font-size: 10px; }
+/* For getter rows the trace gives us only file:line, no method name,
+ * so the location link itself is the primary action — make it slightly
+ * more prominent than the file:line decoration on hydration rows. */
+.qb-lazy-fix-target__loc--primary {
+  font-size: 11px;
+  padding: 1px 6px;
+  background: rgba(92, 217, 122, 0.08);
+  border-radius: 3px;
+}
+.qb-lazy-fix-target__arrow {
+  margin-left: auto;
+  color: #5cd97a;
+  font-size: 14px;
+  line-height: 1;
+}
 .qb-lazy-row__copied { color: #5cd97a; margin-left: 4px; font-weight: bold; }
 .qb-lazy-fix {
-  flex: 0 1 100%;
+  flex: 1 1 auto;
+  min-width: 200px;
   margin: 4px 0 0 24px;
   padding: 6px 8px;
   background: rgba(0,0,0,0.35);
@@ -1077,19 +1321,78 @@ watch(() => qb.profilerConfig?.enabled, async (enabled) => {
   overflow-x: auto;
 }
 .qb-btn--copy-fix {
-  flex: 0 1 100%;
-  margin: 2px 0 0 24px;
-  align-self: flex-start;
+  flex: 0 0 auto;
+  margin: 4px 0 0 8px;
+  align-self: center;
   background: rgba(102, 200, 255, 0.12);
   color: #66c8ff;
   border: 1px solid rgba(102, 200, 255, 0.3);
-  padding: 1px 8px;
+  padding: 3px 8px;
   font-size: 10px;
   font-family: monospace;
   cursor: pointer;
   border-radius: 3px;
 }
 .qb-btn--copy-fix:hover { background: rgba(102, 200, 255, 0.22); }
+
+/* "?" toggle for the addSelect+leftJoin explanation. Sits to the right
+ * of the snippet pre block. Only one popover can be open at a time
+ * (openHelpTable state in the component), so the icon switches to
+ * bright green when its panel is showing — visual link between button
+ * and popover when scanning the page. Small on purpose: it's a
+ * secondary affordance, the snippet itself is the primary content. */
+.qb-lazy-fix__help {
+  flex: 0 0 auto;
+  margin: 0 0 0 8px;
+  align-self: center;
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.15);
+  color: #888;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  font-family: inherit;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.qb-lazy-fix__help:hover {
+  background: rgba(255,255,255,0.08);
+  border-color: #5cd97a;
+  color: #5cd97a;
+}
+.qb-lazy-fix__help--on {
+  background: rgba(92, 217, 122, 0.18);
+  border-color: #5cd97a;
+  color: #5cd97a;
+}
+/* The popover itself — sits below the "?" button, full-row width.
+ * Same dark code-style background as the snippet pre block, but with
+ * green tint so the user knows "this is the explanation you asked
+ * for" rather than another snippet. */
+.qb-lazy-fix__why {
+  flex: 0 1 100%;
+  margin: 4px 0 0 24px;
+  padding: 0;
+}
+.qb-lazy-fix__why pre {
+  margin: 0;
+  padding: 8px 10px;
+  background: rgba(92, 217, 122, 0.05);
+  border-left: 2px solid rgba(92, 217, 122, 0.5);
+  border-radius: 0 3px 3px 0;
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.5;
+  color: #c5e8c5;
+  white-space: pre-wrap;
+  word-break: normal;
+  overflow-x: auto;
+}
 .qb-lazy-fix__conf {
   display: inline-block;
   margin-left: 8px;
