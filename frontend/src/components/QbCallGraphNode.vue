@@ -72,6 +72,15 @@
             <span v-if="q.lazy" class="qcgn__q-lazy"
                   title="Doctrine lazy-load — this query is not in your source. Add the relation to the parent QueryBuilder's leftJoin() to fold it into the explicit query.">🐢 lazy</span>
             <code class="qcgn__q-sql">{{ truncate(q.sql, 200) }}</code>
+            <!-- Copy button — same as QbQueryRow: copies the parameter-
+                 substituted, formatted SQL so it can be pasted straight
+                 into psql/mysql. Hidden by default, shown on hover. -->
+            <button
+              v-if="q.sql"
+              class="qcgn__q-copy"
+              :title="copyState === q.n ? 'Copied!' : 'Copy runnable SQL to clipboard'"
+              @click.stop="copySql(q)"
+            >{{ copyState === q.n ? '✓' : '⧉' }}</button>
             <span class="qcgn__q-chev">{{ selectedN === q.n ? '▾' : '▸' }}</span>
           </div>
           <!-- Expanded: show params + (optionally) a button to highlight this query elsewhere -->
@@ -103,6 +112,29 @@ const props = defineProps({
 const qb = useQbStore()
 const open = ref(props.depth < 1)   // root auto-expanded, rest collapsed
 const selectedN = ref(null)
+const copyState = ref(null)   // query n that just got copied, or null
+async function copySql(q) {
+  // Always copy the runnable SQL (with values substituted) — the
+  // formatted version is multi-line and paste-friendly into psql/Adminer.
+  const sql = formattedSql(q.n)
+  if (!sql) return
+  try {
+    await navigator.clipboard.writeText(sql)
+    copyState.value = q.n
+    setTimeout(() => { if (copyState.value === q.n) copyState.value = null }, 1500)
+  } catch (e) {
+    const ta = document.createElement('textarea')
+    ta.value = sql
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    try { document.execCommand('copy') } catch (_) {}
+    document.body.removeChild(ta)
+    copyState.value = q.n
+    setTimeout(() => { if (copyState.value === q.n) copyState.value = null }, 1500)
+  }
+}
 
 const node = computed(() => props.nodes.get(props.nodeKey))
 
@@ -165,8 +197,13 @@ function queryByN(n) {
 function formattedSql(n) {
   const q = queryByN(n)
   if (!q) return ''
-  if (q.sql_runnable) return formatSql(q.sql_runnable, [])
-  return formatSql(q.sql ?? '', q.params || [])
+  // cleanAliases strips Doctrine's `_N` suffixes from column aliases.
+  // groupByAlias breaks the SELECT into one block per table — visually
+  // obvious which column belongs to which entity without re-reading the
+  // FROM clause.
+  const opts = { cleanAliases: true, groupByAlias: true }
+  if (q.sql_runnable) return formatSql(q.sql_runnable, [], opts)
+  return formatSql(q.sql ?? '', q.params || [], opts)
 }
 
 function short(cls) {
@@ -311,6 +348,20 @@ function highlightSql(sql) {
   letter-spacing: 0.02em;
   cursor: help;
 }
+.qcgn__q-copy {
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 3px;
+  color: #888;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 4px;
+  line-height: 1.4;
+  font-family: monospace;
+  margin-left: 4px;
+  flex-shrink: 0;
+}
+.qcgn__q-copy:hover { color: #5cd97a; border-color: #5cd97a; }
 
 /* Flash highlight when jumpToQuery() scrolls to this row. Re-using the same
  * keyframes as QbPage.vue so the visual feedback is identical across views. */

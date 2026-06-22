@@ -161,8 +161,15 @@ const hasParams = computed(() => Object.keys(normalizedParams.value).length > 0)
 // view wasn't captured (older snapshots, capture errors).
 const formattedSql = computed(() => {
   const runnable = props.query.sql_runnable
-  if (runnable) return formatSql(runnable, [])  // already substituted
-  return formatSql(props.query.sql ?? '', props.query.params || [])
+  // cleanAliases strips Doctrine's `_N` suffixes from column aliases —
+  // they're an ORM-hydration artifact, not part of the developer-written
+  // SQL, and they make 4KB SELECT lists unreadable.
+  // groupByAlias breaks the SELECT into one block per table (u0_, u1_,
+  // w2_) with a `-- table_name (alias)` header — visually obvious which
+  // column belongs to which entity without re-reading the FROM clause.
+  const opts = { cleanAliases: true, groupByAlias: true }
+  if (runnable) return formatSql(runnable, [], opts)
+  return formatSql(props.query.sql ?? '', props.query.params || [], opts)
 })
 function truncate(s, n) {
   if (!s) return ''
