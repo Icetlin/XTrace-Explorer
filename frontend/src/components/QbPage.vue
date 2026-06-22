@@ -169,14 +169,19 @@
 
         <!-- ── Lazy-load breakdown — tells you which relations are N+1'd by Doctrine ── -->
         <section v-if="qb.mode === 'profiler' && qb.analysis?.lazy?.by_relation?.length"
-                 class="qb-section qb-section--lazy">
-          <header class="qb-section__header">
+                 class="qb-section qb-section--lazy"
+                 :class="{ 'qb-section--collapsed': !lazyOpen }">
+          <header class="qb-section__header qb-section__header--clickable"
+                  @click="lazyOpen = !lazyOpen"
+                  :title="lazyOpen ? 'Click to collapse' : 'Click to expand'">
+            <span class="qb-section__chev">{{ lazyOpen ? '▾' : '▸' }}</span>
             🐢 Doctrine lazy loads
             <span class="qb-section__sub">{{ qb.analysis.lazy.total }} query · {{ qb.analysis.lazy.total_ms.toFixed(0) }}ms wasted</span>
           </header>
-          <p class="qb-section__hint">
-            These queries are <strong>not</strong> written in your source. Two flavours:
-            <strong>getter-triggered</strong> fires when user code touches a relation after the original query returned
+          <div v-if="lazyOpen" class="qb-section__body">
+            <p class="qb-section__hint">
+              These queries are <strong>not</strong> written in your source. Two flavours:
+              <strong>getter-triggered</strong> fires when user code touches a relation after the original query returned
             (the cheapest fix — pass the relation to the QueryBuilder);
             <strong>hydration-triggered</strong> fires when Doctrine's row hydrator needs the relation while assembling
             the original result (same fix — the relation was just dropped from <code>leftJoin()</code>).
@@ -239,6 +244,7 @@
               <a class="qb-lazy-row__jump" @click.prevent="jumpToQuery(r.sample_n)">→ #{{ r.sample_n }}</a>
             </div>
           </template>
+          </div>
         </section>
 
         <!-- ── Trace-mode summary (memory + totals from xdebug trace) ── -->
@@ -402,6 +408,10 @@ usePerfTrack('QbPage', { category: 'render' })
 
 const manualLinkOpen = ref(false)
 const manualToken = ref('')
+// Lazy-load section is collapsed by default — it has 8+ rows of long SQL and
+// would push the rest of the page (tree view, N+1 list) below the fold.
+// User clicks the header to expand when they actually want the breakdown.
+const lazyOpen = ref(false)
 
 const sourceQueries = computed(() => {
   if (qb.mode === 'profiler') return qb.queries
@@ -787,6 +797,25 @@ watch(() => qb.profilerConfig?.enabled, async (enabled) => {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: #ff9d57;
+}
+.qb-section__header--clickable {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.qb-section__header--clickable:hover { color: #ffb380; }
+.qb-section__chev {
+  display: inline-block;
+  width: 12px;
+  color: #888;
+  font-size: 10px;
+  text-align: center;
+}
+/* Collapsed = no body padding/margin, header is the whole section. */
+.qb-section--collapsed {
+  padding: 10px 12px;
 }
 .qb-section--lazy .qb-section__sub {
   color: #888;

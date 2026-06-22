@@ -37,6 +37,19 @@ class ProfilerQuery
     #[ORM\Column(type: 'text')]
     private string $sql;
 
+    /**
+     * Symfony's pre-rendered "View runnable query" view — the SQL with
+     * bound parameter values substituted in place of `?`. Null when the
+     * panel didn't include the runnable view (e.g. capture error, or
+     * an older Symfony version that doesn't render it).
+     *
+     * The frontend prefers this over `sql` for display: reformatting
+     * it gives a runnable paste-able query without needing the
+     * parameters list.
+     */
+    #[ORM\Column(type: 'text', nullable: true)]
+    private ?string $sqlRunnable = null;
+
     /** Raw time string, e.g. "1.2 ms", "345 micros" */
     #[ORM\Column(length: 32)]
     private string $time;
@@ -75,6 +88,8 @@ class ProfilerQuery
     public function setN(int $v): static { $this->n = $v; return $this; }
     public function getSql(): string { return $this->sql; }
     public function setSql(string $v): static { $this->sql = $v; return $this; }
+    public function getSqlRunnable(): ?string { return $this->sqlRunnable; }
+    public function setSqlRunnable(?string $v): static { $this->sqlRunnable = $v; return $this; }
     public function getTime(): string { return $this->time; }
     public function setTime(string $v): static { $this->time = $v; return $this; }
     public function getTimeMs(): float { return $this->timeMs; }

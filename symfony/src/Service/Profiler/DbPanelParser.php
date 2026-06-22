@@ -111,6 +111,7 @@ final class DbPanelParser
                 'n'         => $n,
                 'id'        => $tr->attr('id') ?? ('queryNo-c0-' . $n),
                 'sql'       => $sql,
+                'sql_runnable' => self::extractRunnableSql($tr),
                 'time'      => $timeText,
                 'time_ms'   => self::parseTimeMs($timeText),
                 'params'    => $params,
@@ -349,5 +350,39 @@ final class DbPanelParser
             'µs', 'us' => $v / 1000.0,
             default => $v,
         };
+    }
+
+    /**
+     * Extract the "runnable" SQL view from a query row — Symfony's profiler
+     * renders BOTH the formatted SQL (with `?` placeholders) and the runnable
+     * SQL (values substituted, single-line) inside `.sql-runnable` toggleable
+     * blocks. The runnable one is the LAST `<pre>` in the runnable region
+     * and is what users see when they click "View runnable query".
+     *
+     * The previous parser tried to extract `?`-substituted values from a
+     * `Parameters : [...]` div — but Symfony 7 doesn't render that anymore,
+     * so all `params_json` ended up empty. By reusing Symfony's own
+     * pre-rendered runnable view we get the substituted SQL for free and
+     * don't have to guess parameter types/quotes.
+     *
+     * Returns null when the runnable block isn't found (e.g. the panel
+     * showed an error) — callers fall back to the formatted `?` SQL.
+     */
+    public static function extractRunnableSql(Crawler $tr): ?string
+    {
+        $pres = $tr->filter('.sql-runnable pre');
+        $count = $pres->count();
+        if ($count === 0) {
+            // Symfony <7 fallback: same idea but without the .sql-runnable
+            // wrapper class — last <pre> in the row is the runnable one.
+            $pres = $tr->filter('pre');
+            $count = $pres->count();
+            if ($count < 2) return null;
+        }
+        // The runnable view is the LAST <pre> — earlier ones are the
+        // "formatted" view, the query body, or other toggleable blocks.
+        $last = $pres->eq($count - 1);
+        $text = trim($last->text('', true));
+        return $text !== '' ? $text : null;
     }
 }

@@ -372,6 +372,9 @@ class ProfilerController extends AbstractController
             return [
                 'n' => $q->getN(),
                 'sql' => $q->getSql(),
+                // Symfony's pre-rendered runnable view (values substituted).
+                // Frontend re-formats this for display — no param parsing needed.
+                'sql_runnable' => $q->getSqlRunnable(),
                 'time' => $q->getTime(),
                 'time_ms' => $q->getTimeMs(),
                 'params' => $q->getParamsJson() !== null ? json_decode($q->getParamsJson(), true) : null,
@@ -598,6 +601,11 @@ class ProfilerController extends AbstractController
             $entity = new ProfilerQuery();
             $entity->setN((int) ($q['n'] ?? 0))
                    ->setSql((string) ($q['sql'] ?? ''))
+                   // Symfony's pre-rendered runnable SQL (with values
+                   // substituted, single-line). When present, the frontend
+                   // re-formats it for display — the parameter extraction
+                   // step is skipped because the values are already inline.
+                   ->setSqlRunnable($q['sql_runnable'] ?? null)
                    ->setTime((string) ($q['time'] ?? ''))
                    ->setTimeMs((float) ($q['time_ms'] ?? 0.0))
                    ->setParamsJson(isset($q['params']) ? json_encode($q['params'], JSON_UNESCAPED_UNICODE) : null)

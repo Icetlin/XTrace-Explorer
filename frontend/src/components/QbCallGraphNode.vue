@@ -76,7 +76,7 @@
           </div>
           <!-- Expanded: show params + (optionally) a button to highlight this query elsewhere -->
           <div v-if="selectedN === q.n" class="qcgn__q-body">
-            <pre v-if="q.sql" class="qcgn__q-sql-full"><code v-html="highlightSql(q.sql)" /></pre>
+            <pre v-if="q.sql" class="qcgn__q-sql-full"><code v-html="highlightSql(formattedSql(q.n))" /></pre>
             <div v-if="queryByN(q.n)?.params && Object.keys(queryByN(q.n).params).length" class="qcgn__q-params">
               <span v-for="(v, k) in queryByN(q.n).params" :key="k" class="qcgn__q-param">
                 <code>{{ k }}</code> = <code>{{ v }}</code>
@@ -92,6 +92,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useQbStore } from '../stores/qb'
+import { formatSql } from '../lib/sqlFormat'
 
 const props = defineProps({
   nodeKey: { type: String, required: true },
@@ -157,6 +158,15 @@ const sortedQueries = computed(() => {
 
 function queryByN(n) {
   return qb.queries.find(q => q.n === n)
+}
+// Pretty-printed SQL for the expanded body — Symfony-style "runnable query"
+// (keywords on their own line, values already substituted). Prefer the
+// runnable view when present; fall back to formatting raw SQL + params.
+function formattedSql(n) {
+  const q = queryByN(n)
+  if (!q) return ''
+  if (q.sql_runnable) return formatSql(q.sql_runnable, [])
+  return formatSql(q.sql ?? '', q.params || [])
 }
 
 function short(cls) {
@@ -318,13 +328,16 @@ function highlightSql(sql) {
 .qcgn__q-body { padding: 4px 4px 6px 36px; }
 .qcgn__q-sql-full {
   margin: 4px 0;
-  padding: 6px;
+  padding: 8px 10px;
   background: rgba(0,0,0,0.3);
   border-radius: 3px;
   font-size: 10px;
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+  line-height: 1.55;
   overflow-x: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
+  white-space: pre;
+  word-break: normal;
+  color: #ccc;
 }
 .qcgn__q-sql-full :deep(.qcgn__kw) { color: #6da0ff; font-weight: bold; }
 .qcgn__q-sql-full :deep(.qcgn__str) { color: #f6c64a; }

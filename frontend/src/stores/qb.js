@@ -307,6 +307,7 @@ function buildCallGraph(queries) {
     leaf.queries.push({
       n: q.n,
       sql: q.sql,
+      sql_runnable: q.sql_runnable,
       time_ms: q.time_ms ?? 0,
       time: q.time ?? '',
       // Doctrine lazy-load flag — propagated from the backend so the tree

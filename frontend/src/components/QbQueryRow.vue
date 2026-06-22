@@ -33,7 +33,7 @@
           {{ copied ? '✓' : '⧉' }}
         </button>
       </div>
-      <pre class="qbr__sql-full"><code v-html="highlightSql(query.sql)" /></pre>
+      <pre class="qbr__sql-full"><code v-html="highlightSql(formattedSql)" /></pre>
 
       <div v-if="hasParams" class="qbr__section">
         <span class="qbr__label">params</span>
@@ -108,6 +108,7 @@
 
 <script setup>
 import { ref, computed } from 'vue'
+import { formatSql } from '../lib/sqlFormat'
 
 const props = defineProps({
   query: { type: Object, required: true },
@@ -115,7 +116,10 @@ const props = defineProps({
 const open = ref(false)
 const copied = ref(false)
 async function copySql() {
-  const sql = (props.query?.sql ?? '').toString()
+  // Copy the parameter-substituted version — it's directly pasteable into
+  // psql/mysql/Adminer and runs as-is. Copying the raw SQL with `?` is
+  // useless outside Doctrine.
+  const sql = formattedSql.value
   if (!sql) return
   try {
     await navigator.clipboard.writeText(sql)
@@ -150,6 +154,16 @@ const normalizedParams = computed(() => {
 })
 const hasParams = computed(() => Object.keys(normalizedParams.value).length > 0)
 
+// Pretty-printed, parameter-substituted SQL — this is what we render in the
+// expanded body. Prefer Symfony's pre-rendered "runnable" view (which has
+// bound values already inline, no guessing parameter types/quotes); fall
+// back to formatting our raw SQL + the params array when the runnable
+// view wasn't captured (older snapshots, capture errors).
+const formattedSql = computed(() => {
+  const runnable = props.query.sql_runnable
+  if (runnable) return formatSql(runnable, [])  // already substituted
+  return formatSql(props.query.sql ?? '', props.query.params || [])
+})
 function truncate(s, n) {
   if (!s) return ''
   return s.length > n ? s.slice(0, n) + '…' : s
@@ -249,14 +263,18 @@ function highlightSql(sql) {
 }
 .qbr__sql-full {
   margin: 0;
-  padding: 8px;
+  padding: 10px 12px;
   background: var(--bg, rgba(0,0,0,0.3));
   border-radius: 4px;
   font-size: 11px;
-  font-family: monospace;
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+  line-height: 1.55;
   overflow-x: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
+  white-space: pre;
+  /* Don't break long identifiers — better horizontal scroll than wrapping
+     inside a keyword line, which would make the query unreadable. */
+  word-break: normal;
+  color: #ccc;
 }
 .qbr__sql-full :deep(.qbr__kw) { color: #6da0ff; font-weight: bold; }
 .qbr__sql-full :deep(.qbr__str) { color: #f6c64a; }
