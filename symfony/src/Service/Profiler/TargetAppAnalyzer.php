@@ -73,7 +73,7 @@ final class TargetAppAnalyzer
 // In the PHP single-quoted string, '\\' represents one literal '\' which in regex
 // is an escaped backslash — so the regex sees '\\Table' which matches a literal
 // '\Table' in the source code. PHP-attribute namespace separators (Doctrine\Table)
-// appear as a literal backslash in the source, hence the '\\'.
+// appear as a literal backslash in the source, hence the '\\\\'.
 $re = '/(?:#\[ORM\\\\Table\(name:\s*[\'"]([^\'"]+)[\'"]\s*\)\]|@ORM\\\\Table\(name=["\']([^"\']+)["\']\))/';
             $declaredTable = null;
             if (preg_match($re, $src, $m)) {
@@ -303,5 +303,280 @@ $re = '/(?:#\[ORM\\\\Table\(name:\s*[\'"]([^\'"]+)[\'"]\s*\)\]|@ORM\\\\Table\(na
         if ($this->hostDir === null) return $abs;
         $base = rtrim($this->hostDir, '/') . '/';
         return str_starts_with($abs, $base) ? substr($abs, strlen($base)) : $abs;
+    }
+
+    /**
+     * Trace a getter-triggered lazy load back to the QueryBuilder
+     * that originally fetched the entity. Walks:
+     *   1. caller file:line → find `$entity = <expr>` in method body
+     *   2. if expr is `$this->xRepo->method()` → find xRepo's type
+     *      in the same class, parse that Repository's method
+     *   3. if $entity is a method parameter → find internal caller
+     *      that passes it, recurse
+     *
+     * Returns the alias used in the QueryBuilder + file:line of the
+     * Repository method that needs the leftJoin fix.
+     *
+     * @return array{alias: ?string, confidence: string, file: ?string, line: ?int, hint: string}|null
+     */
+    public function traceLazyLoadSource(string $callerFile, int $callerLine, string $entityVar, string $entityClassShort): ?array
+    {
+        if (!is_file($callerFile)) return null;
+        $src = (string) @file_get_contents($callerFile);
+        if ($src === '') return null;
+        $lines = explode("\n", $src);
+
+        // 1. Find enclosing method.
+        $methodStart = -1; $methodName = null; $methodDepth = 0;
+        for ($i = 0; $i < count($lines); $i++) {
+            if ($methodStart < 0) {
+                if (preg_match('/function\s+(\w+)\s*\(/', $lines[$i], $m)) {
+                    $methodStart = $i;
+                    $methodDepth = substr_count($lines[$i], '{') - substr_count($lines[$i], '}');
+                    $methodName = $m[1];
+                }
+            } else {
+                $methodDepth += substr_count($lines[$i], '{') - substr_count($lines[$i], '}');
+                if ($methodDepth <= 0) {
+                    if ($i >= $callerLine) break;
+                    $methodStart = -1; $methodName = null;
+                }
+            }
+        }
+        if ($methodStart < 0) return null;
+
+        // 2. Is $entityVar a parameter?
+        $isParameter = false;
+        if (preg_match('/function\s+\w+\s*\(([^)]*)\)/', $lines[$methodStart], $m)
+            && preg_match('/\b\$' . preg_quote($entityVar, '/') . '\b/', $m[1])) {
+            $isParameter = true;
+        }
+
+        // 3. Walk back from $callerLine for `$entityVar = <expr>`.
+        $assignmentExpr = null;
+        for ($i = $callerLine - 1; $i >= $methodStart; $i--) {
+            if (preg_match('/\$' . preg_quote($entityVar, '/') . '\s*=\s*(.+?);\s*$/', $lines[$i], $m)) {
+                $assignmentExpr = trim($m[1]);
+                break;
+            }
+        }
+
+        // 4. If assignment calls a Repository method, parse it.
+        if ($assignmentExpr !== null) {
+            $repoMatch = $this->extractRepositoryCall($assignmentExpr, $src);
+            if ($repoMatch !== null) {
+                $repoFile = $this->resolveRepoFile($repoMatch['class']);
+                if ($repoFile !== null) {
+                    $repoAnalysis = $this->parseRepositoryMethod($repoFile, $repoMatch['method']);
+                    if ($repoAnalysis['rootAlias'] !== null) {
+                        $alias = $repoAnalysis['rootAlias'];
+                        foreach ($repoAnalysis['selections'] as $selAlias => $selEntity) {
+                            if ($selEntity === $entityClassShort) {
+                                $alias = $selAlias;
+                                break;
+                            }
+                        }
+                        return [
+                            'alias' => $alias,
+                            'confidence' => 'high',
+                            'file' => $this->relPath($repoFile),
+                            'line' => $repoMatch['methodLine'],
+                            'hint' => "Traced: \${$entityVar} comes from {$repoMatch['class']}::{$repoMatch['method']}()",
+                        ];
+                    }
+                }
+            }
+        }
+
+        // 5. If $entityVar is a parameter, recurse into internal caller.
+        if ($isParameter) {
+            $callerInfo = $this->findInternalCallerOf($src, $methodName, $entityVar);
+            if ($callerInfo !== null) {
+                return $this->traceLazyLoadSource(
+                    $callerFile,
+                    $callerInfo['line'],
+                    $callerInfo['var'],
+                    $entityClassShort,
+                );
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Parse `$this->xRepo->find($id)` → ['class' => FQCN, 'method', 'methodLine'].
+     */
+    private function extractRepositoryCall(string $expr, string $src): ?array
+    {
+        if (!preg_match('/\$this->(\w+)(?:\s*->\s*(\w+)\s*\([^)]*\))?/', $expr, $m)) return null;
+        $propName = $m[1];
+        $methodName = $m[2] ?? 'find';
+        $lines = explode("\n", $src);
+        $propType = null;
+        for ($i = 0; $i < count($lines); $i++) {
+            // Modern typed property: `private SomeRepo $x;`
+            if (preg_match('/\$\w*\s*' . preg_quote($propName, '/') . '\s*(?:=[^;]*)?;[^;]*\\\\([A-Za-z0-9_]+)/', $lines[$i], $pm)) {
+                $propType = $pm[1];
+                break;
+            }
+            // `@var SomeRepo $x` annotation on the line above.
+            if (preg_match('/@var\s+([A-Za-z0-9_\\\\]+)/', $lines[$i], $vm)) {
+                $fqn = str_replace('\\\\', '\\', $vm[1]);
+                $propType = substr($fqn, strrpos($fqn, '\\') !== false ? strrpos($fqn, '\\') + 1 : 0);
+            }
+        }
+        if ($propType === null) return null;
+        $repoFile = $this->resolveRepoFile($propType);
+        if ($repoFile === null) return null;
+        $repoSrc = (string) @file_get_contents($repoFile);
+        $repoLines = explode("\n", $repoSrc);
+        $methodLine = 0;
+        for ($i = 0; $i < count($repoLines); $i++) {
+            if (preg_match('/function\s+' . preg_quote($methodName, '/') . '\s*\(/', $repoLines[$i])) {
+                $methodLine = $i + 1;
+                break;
+            }
+        }
+        return ['class' => $propType, 'method' => $methodName, 'methodLine' => $methodLine];
+    }
+
+    /**
+     * Find an internal caller of $methodName that passes $paramVar.
+     * Returns ['line' => N, 'var' => 'x'] where 'x' is the variable
+     * passed as the parameter (to recurse into the caller).
+     */
+    private function findInternalCallerOf(string $src, string $methodName, string $paramVar): ?array
+    {
+        $position = $this->findParamPosition($src, $methodName, $paramVar);
+        if ($position === null) return null;
+        $methodNameRe = preg_quote($methodName, '/');
+        // [^)]* matches everything up to the FIRST closing paren.
+        // For typical single-line calls this captures just the args.
+        // Multi-line call sites are uncommon but we'd handle them with
+        // a paren-balancing pass — skipping for now since this is a
+        // best-effort heuristic, not a parser.
+        if (!preg_match_all('/\$this->' . $methodNameRe . '\s*\(([^)]*)\)/', $src, $matches, PREG_OFFSET_CAPTURE)) {
+            return null;
+        }
+        foreach ($matches[0] as $i => $hit) {
+            $argsText = $matches[1][$i][0];
+            $args = array_map('trim', explode(',', $argsText));
+            if (isset($args[$position]) && preg_match('/\$(\w+)/', $args[$position], $vm)) {
+                $lineNum = substr_count(substr($src, 0, $hit[1]), "\n") + 1;
+                return ['line' => $lineNum, 'var' => $vm[1]];
+            }
+        }
+        return null;
+    }
+
+    private function findParamPosition(string $src, string $methodName, string $paramVar): ?int
+    {
+        // /s flag is needed for multi-line method signatures
+        // (e.g. when the parameter list spans multiple lines).
+        if (preg_match('/function\s+' . preg_quote($methodName, '/') . '\s*\(([^)]*)\)/s', $src, $m)) {
+            $params = array_map('trim', explode(',', $m[1]));
+            foreach ($params as $idx => $p) {
+                if (preg_match('/\b\$' . preg_quote($paramVar, '/') . '\b/', $p)) {
+                    return $idx;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Resolve a Repository class FQCN to its absolute file path.
+     */
+    private function resolveRepoFile(string $fqcn): ?string
+    {
+        if ($this->hostDir === null) return null;
+        $rel = str_replace('\\', '/', $fqcn) . '.php';
+        $candidates = [
+            rtrim($this->hostDir, '/') . '/src/' . $rel,
+            rtrim($this->hostDir, '/') . '/' . $rel,
+        ];
+        foreach ($candidates as $c) {
+            if (is_file($c)) return $c;
+        }
+        return null;
+    }
+
+    /**
+     * Parse a Repository method's QueryBuilder chain to discover the
+     * actual aliases used. This is the only way to give a 100% accurate
+     * snippet for hydration-triggered lazy loads — the alias isn't
+     * derivable from the entity class name (Doctrine auto-derives it
+     * from whatever is passed to `select('xxx')`).
+     *
+     * Walks the method line-by-line tracking parens/braces to find
+     * the chain start (`createQueryBuilder(`) and the chain end (the
+     * matching `}` at the top scope of the method).
+     *
+     * Returns:
+     *   - rootAlias:  the alias passed to createQueryBuilder('X')
+     *   - selections: [alias => entityShortName] — for each `select('Y', ...)`
+     *                arg, the entity short name it resolves to
+     *   - leftJoins:  [alias => relationPath] — for chained joins
+     *
+     * @return array{rootAlias: ?string, selections: array<string,string>, leftJoins: array<string,string>}
+     */
+    public function parseRepositoryMethod(string $file, string $methodName): array
+    {
+        $result = ['rootAlias' => null, 'selections' => [], 'leftJoins' => []];
+        if (!is_file($file)) return $result;
+        $src = (string) @file_get_contents($file);
+        if ($src === '') return $result;
+        $lines = explode("\n", $src);
+
+        $methodStart = -1;
+        $methodDepth = 0;
+        for ($i = 0; $i < count($lines); $i++) {
+            $line = $lines[$i];
+            if ($methodStart < 0) {
+                if (preg_match('/function\s+' . preg_quote($methodName, '/') . '\s*\(/', $line)) {
+                    $methodStart = $i;
+                    $methodDepth = substr_count($line, '{') - substr_count($line, '}');
+                    continue;
+                }
+            } else {
+                $methodDepth += substr_count($line, '{') - substr_count($line, '}');
+                if ($methodDepth <= 0) break;
+                if (preg_match('/createQueryBuilder\s*\(\s*[\'"]([A-Za-z0-9_]+)[\'"]/', $line, $m)) {
+                    $result['rootAlias'] = $m[1];
+                }
+                if (preg_match('/->select\s*\(([^)]+)\)/', $line, $m)) {
+                    preg_match_all('/[\'"]([A-Za-z0-9_]+)[\'"]/', $m[1], $am);
+                    foreach (array_unique($am[1] ?? []) as $alias) {
+                        if (!array_key_exists($alias, $result['selections'])) {
+                            $result['selections'][$alias] = '';
+                        }
+                    }
+                }
+                if (preg_match('/->leftJoin\s*\(\s*[\'"]([^\'"]+)[\'"]\s*,\s*[\'"]([A-Za-z0-9_]+)[\'"]/', $line, $m)) {
+                    $result['leftJoins'][$m[2]] = $m[1];
+                }
+            }
+        }
+
+        // Resolve each selected alias to an entity class. Heuristic:
+        //   - 'ud' (createQueryBuilder arg) → from the file's class
+        //   - 'user', 'ownLabel' (auto-derived) → from the nearest
+        //     leftJoin chain (e.g. leftJoin('ud.user', 'user') ⇒ user is User)
+        foreach ($result['leftJoins'] as $alias => $path) {
+            $parts = explode('.', $path);
+            if (count($parts) >= 2) {
+                $entityGuess = ucfirst($parts[count($parts) - 1]);
+                if (array_key_exists($alias, $result['selections'])) {
+                    if ($result['selections'][$alias] === '') {
+                        $result['selections'][$alias] = $entityGuess;
+                    }
+                }
+            }
+        }
+        // Root alias → from the file's class declaration.
+        if ($result['rootAlias'] !== null && empty($result['selections'][$result['rootAlias']])) {
+            $result['selections'][$result['rootAlias']] = $this->extractClassName($src) ?? '';
+        }
+        return $result;
     }
 }

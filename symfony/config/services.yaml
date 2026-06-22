@@ -49,6 +49,12 @@ services:
             $tracesDir: '%traces_dir%'
             $tracesSourceDir: '%traces_source_dir%'
 
+    App\Controller\ProfilerController:
+        arguments:
+            # Container path — compose mounts SOURCE_HOST_DIR → SOURCE_CONTAINER_DIR,
+            # so the host source tree is visible inside this PHP container.
+            $targetAppHostDir: '%env(default::SOURCE_CONTAINER_DIR)%'
+
     # ── Profiler+ : all config comes from env vars (PROFILER_*) ──
     # ProfilerConfig is read once from env when the container compiles and
     # reused for the lifetime of the worker. The UI is read-only — to change

@@ -31,6 +31,10 @@ class ProfilerController extends AbstractController
         private readonly ProfilerConfig $config,
         private readonly ProfilerClient $client,
         private readonly AppSettings $settings,
+        /** Host path to the target app's source tree — used to resolve
+         *  repo_file paths from lazy-fix snippets back to absolute
+         *  filesystem locations the analyser can read. */
+        private readonly ?string $targetAppHostDir = null,
     ) {}
 
     /**
@@ -448,11 +452,21 @@ class ProfilerController extends AbstractController
     public function lazyFix(Request $request, \App\Service\Profiler\TargetAppAnalyzer $analyzer): JsonResponse
     {
         $body = json_decode($request->getContent(), true) ?: [];
+        error_log('[lazy-fix] raw body=' . $request->getContent());
+        error_log('[lazy-fix] parsed=' . var_export($body, true));
         $kind = (string) ($body['kind'] ?? '');
         $table = (string) ($body['table'] ?? '');
         $parentShort = (string) ($body['parent_class'] ?? '');
-        if ($kind === '' || $table === '') {
-            return $this->json(['ok' => false, 'error' => 'kind and table required'], 400);
+        if ($kind === '') {
+            return $this->json([
+                'ok' => false,
+                'error' => 'kind required',
+                'debug_body' => $body,
+                'debug_kind_var' => $kind,
+            ], 400);
+        }
+        if ($table === '' && $kind !== 'getter') {
+            return $this->json(['ok' => false, 'error' => 'table required for kind=hydration'], 400);
         }
 
         if ($kind === 'hydration' && $parentShort !== '') {
@@ -466,53 +480,204 @@ class ProfilerController extends AbstractController
                     'hint' => $entity ? "entity mapped to `$table` is `{$entity['short']}`" : null,
                 ]);
             }
-            // Annotate each candidate with a snippet referencing the
-            // alias for $parentShort (best-effort guess).
-            $parentAlias = $this->aliasGuess($parentShort);
-            foreach ($candidates as &$c) {
-                $c['alias'] = $parentAlias;
-                $c['snippet'] = sprintf(
-                    "->addSelect('%s.%s')\n->leftJoin('%s.%s', '%s')",
-                    $parentAlias, $c['property'],
-                    $parentAlias, $c['property'],
-                    $this->aliasGuess($c['property']),
-                );
-                $c['file'] = $c['file'] ?? $this->shortToEntityRelPath($c['owningClassFqcn']);
-            }
-            unset($c);
             // Prefer candidates on the parentShort class itself; if
             // none, fall back to first (most likely the inverse side
             // reachable through a joined entity).
             $onParent = array_values(array_filter($candidates, fn($c) => $c['owningClass'] === $parentShort));
             $best = $onParent[0] ?? $candidates[0];
+
+            // Try to discover the real alias used in the parent's
+            // QueryBuilder by parsing the Repository file (passed via
+            // `repo_file` + `repo_method`). This turns a 50%-accurate
+            // alias guess into a 100%-accurate read from the source.
+            $alias = $this->aliasGuess($parentShort);
+            $aliasSource = 'guessed from class name (no repo_file provided)';
+            $parentAlias = null;
+            $parentMethod = trim((string) ($body['repo_method'] ?? ''));
+            $repoFile = trim((string) ($body['repo_file'] ?? ''));
+            error_log('[lazy-fix] body keys: ' . implode(',', array_keys($body)) . ' parentMethod=' . $parentMethod . ' repoFile=' . $repoFile);
+            if ($repoFile !== '' && $parentMethod !== '') {
+                // Repo files may live under src/Repository/<...>/<Name>.php.
+                // Resolve relative path through analyzer's host dir.
+                $absRepo = $repoFile;
+                if (!str_starts_with($absRepo, '/') && $this->targetAppHostDir !== null) {
+                    $absRepo = rtrim($this->targetAppHostDir, '/') . '/' . ltrim($repoFile, '/');
+                }
+                $repoAnalysis = $analyzer->parseRepositoryMethod($absRepo, $parentMethod);
+                if ($repoAnalysis['rootAlias'] !== null) {
+                    // Walk leftJoins to find the alias for $best['owningClass'].
+                    // If best.owningClass matches a selected alias's
+                    // resolved entity, use that alias.
+                    foreach ($repoAnalysis['selections'] as $selAlias => $selEntity) {
+                        if ($selEntity === $best['owningClass']) {
+                            $parentAlias = $selAlias;
+                            $alias = $selAlias;
+                            $aliasSource = "parsed from $parentMethod (selections)";
+                            break;
+                        }
+                    }
+                }
+                if ($parentAlias === null && $repoAnalysis['rootAlias'] !== null) {
+                    // Fallback: use the root alias if the relation
+                    // is on the root entity (e.g. ud.relation).
+                    $alias = $repoAnalysis['rootAlias'];
+                    $aliasSource = "parsed from $parentMethod (rootAlias)";
+                }
+            }
+
+            // After parsing: prefer candidates whose owningClass is
+            // among the QueryBuilder's select() chain — those are
+            // reachable without additional joins. This often changes
+            // the recommended property (e.g. 'User.affiliateWithdrawalSettings'
+            // instead of the inverse side 'TransferWiseRecipient.affiliateWithdrawalSettings').
+            if (isset($repoAnalysis)) {
+                $reachable = array_values(array_filter(
+                    $candidates,
+                    fn($c) => in_array($c['owningClass'], $repoAnalysis['selections'], true)
+                ));
+                if ($reachable !== [] && ($parentAlias !== null || $best['owningClass'] !== $parentShort)) {
+                    $best = $reachable[0];
+                    if ($parentAlias === null) {
+                        // Re-derive alias from the reachable class
+                        foreach ($repoAnalysis['selections'] as $selAlias => $selEntity) {
+                            if ($selEntity === $best['owningClass']) {
+                                $alias = $selAlias;
+                                $aliasSource = "parsed from $parentMethod — preferred reachable via $selAlias ({$best['owningClass']})";
+                                break;
+                            }
+                        }
+                    } else {
+                        $aliasSource .= " — preferred reachable via " . $best['owningClass'];
+                    }
+                }
+            }
+
+            $best['alias'] = $alias;
+            $best['snippet'] = sprintf(
+                "->addSelect('%s.%s')\n->leftJoin('%s.%s', '%s')",
+                $alias, $best['property'],
+                $alias, $best['property'],
+                $this->aliasGuess($best['property']),
+            );
+            $best['file'] = $best['file'] ?? $this->shortToEntityRelPath($best['owningClassFqcn']);
+            foreach ($candidates as &$c) {
+                $c['alias'] = $alias;
+                $c['snippet'] = sprintf(
+                    "->addSelect('%s.%s')\n->leftJoin('%s.%s', '%s')",
+                    $alias, $c['property'],
+                    $alias, $c['property'],
+                    $this->aliasGuess($c['property']),
+                );
+                $c['file'] = $c['file'] ?? $this->shortToEntityRelPath($c['owningClassFqcn']);
+            }
+            unset($c);
+            // Hydration-triggered explanation: Doctrine's ObjectHydrator
+            // needed the relation while assembling the original result
+            // rows. The fix has to land in the parent QueryBuilder that
+            // built the original query — adding the relation there lets
+            // Doctrine hydrate it for free instead of firing a sub-select.
+            $explanation = sprintf(
+                "// Doctrine's ObjectHydrator needed this relation while assembling\n"
+                . "// the original result rows (your QueryBuilder didn't leftJoin it).\n"
+                . "//\n"
+                . "// ->addSelect(): tells Doctrine to SELECT the joined columns.\n"
+                . "//   Without it, the JOIN only affects WHERE/ON — the hydrator still\n"
+                . "//   triggers a lazy load to fill the entity property.\n"
+                . "//\n"
+                . "// ->leftJoin() (not innerJoin): keeps rows where the relation is\n"
+                . "//   NULL. innerJoin would silently drop them, changing the result.\n"
+                . "//\n"
+                . "// Folding this relation into the parent QueryBuilder removes the\n"
+                . "// round-trip + ORM hydration overhead."
+            );
             return $this->json([
                 'ok' => true,
-                'confidence' => $onParent ? 'high' : 'medium',
+                'confidence' => $parentAlias !== null ? 'high' : 'medium',
                 'candidates' => $candidates,
                 'recommended' => $best,
                 'snippet' => $best['snippet'],
+                'explanation' => $explanation,
                 'file' => $best['file'],
                 'line' => $best['line'],
                 'property' => $best['property'],
+                'alias_source' => $aliasSource,
             ]);
         }
 
         if ($kind === 'getter') {
             $getter = (string) ($body['trigger_getter'] ?? '');
-            if ($getter === '' || !preg_match('/->(\w+)\(/', $getter, $m)) {
-                return $this->json(['ok' => false, 'error' => 'trigger_getter required for kind=getter'], 400);
+            if ($getter === '' || !preg_match('/->(\w+)$/', $getter, $m)) {
+                return $this->json([
+                    'ok' => false,
+                    'error' => 'trigger_getter required for kind=getter',
+                    'debug_getter' => $getter,
+                    'debug_body_keys' => array_keys($body),
+                ], 400);
             }
             $prop = $m[1];
             $prop = preg_replace('/^get/', '', $prop);
             $prop = preg_replace('/^is/', '', $prop);
             $prop = preg_replace('/^has/', '', $prop);
             $propCamel = $prop !== '' ? lcfirst($prop) : 'unknown';
+
+            // Trace back to the QueryBuilder that originally fetched
+            // the entity. Required params: caller_file, caller_line,
+            // entity_var, entity_class.
+            $callerFile = trim((string) ($body['caller_file'] ?? ''));
+            $callerLine = (int) ($body['caller_line'] ?? 0);
+            $entityVar = trim((string) ($body['entity_var'] ?? 'user'));
+            $entityClass = trim((string) ($body['entity_class'] ?? 'User'));
+
+            $trace = null;
+            if ($callerFile !== '' && $callerLine > 0) {
+                $absCaller = $callerFile;
+                if (!str_starts_with($absCaller, '/') && $this->targetAppHostDir !== null) {
+                    $absCaller = rtrim($this->targetAppHostDir, '/') . '/' . ltrim($callerFile, '/');
+                }
+                $trace = $analyzer->traceLazyLoadSource($absCaller, $callerLine, $entityVar, $entityClass);
+            }
+
+            $alias = $trace['alias'] ?? '<parentAlias>';
+            $confidence = ($trace && $trace['alias'] !== null) ? 'high' : 'medium';
+            // Getter-triggered explanation: user code accessed the
+            // property AFTER the parent query returned. Doctrine fired
+            // the lazy load at access time, not during hydration. The
+            // fix is the same — fold the relation into the parent
+            // QueryBuilder so the data comes back in the original row.
+            $explanation = sprintf(
+                "// Your code touched \$%s->%s() AFTER the parent query\n"
+                . "// returned — Doctrine fired this lazy load at access time.\n"
+                . "//\n"
+                . "// ->addSelect(): tells Doctrine to SELECT the joined columns.\n"
+                . "//   Without it, ->leftJoin() only filters; Doctrine would still\n"
+                . "//   emit a lazy load when the property is accessed.\n"
+                . "//\n"
+                . "// ->leftJoin() (not innerJoin): keeps rows where the relation is\n"
+                . "//   NULL. innerJoin would silently drop them, changing the result.\n"
+                . "//\n"
+                . "// Folding this relation into the parent QueryBuilder removes the\n"
+                . "// round-trip + ORM hydration overhead.",
+                $entityVar !== '' ? $entityVar : 'user',
+                $propCamel,
+            );
             return $this->json([
                 'ok' => true,
-                'confidence' => 'medium',
+                'confidence' => $confidence,
                 'property' => $propCamel,
-                'snippet' => "->addSelect('<parentAlias>.{$propCamel}')\n->leftJoin('<parentAlias>.{$propCamel}', '{$propCamel}')",
-                'note' => "Property name derived from getter. <parentAlias> must be the alias used in the QueryBuilder that originally built the entity (you'll need to find the call site that constructed the $user variable).",
+                'alias' => $alias,
+                'snippet' => sprintf(
+                    "->addSelect('%s.%s')\n->leftJoin('%s.%s', '%s')",
+                    $alias, $propCamel,
+                    $alias, $propCamel,
+                    $this->aliasGuess($propCamel),
+                ),
+                'explanation' => $explanation,
+                'file' => $trace['file'] ?? null,
+                'line' => $trace['line'] ?? null,
+                'hint' => $trace['hint'] ?? null,
+                'note' => $trace === null
+                    ? 'Could not trace the entity variable back to a Repository method — check the caller file manually.'
+                    : null,
             ]);
         }
 
