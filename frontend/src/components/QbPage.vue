@@ -207,13 +207,27 @@
                 <span class="qb-lazy-row__caller">{{ r.trigger_caller }}</span>
                 <a v-if="r.trigger_file"
                    class="qb-lazy-row__loc"
-                   @click.prevent="openInIde(r.trigger_file, r.trigger_line)"
-                   :title="`${r.trigger_file}:${r.trigger_line}`">
+                   @click.prevent="copySrcPath(r.trigger_file, r.trigger_line)"
+                   :title="`Click to copy src/...:${r.trigger_line} for your IDE`">
                   {{ shortPath(r.trigger_file) }}:{{ r.trigger_line }}
+                  <span v-if="lastCopied.has(r.trigger_file + ':' + r.trigger_line)" class="qb-lazy-row__copied">✓</span>
                 </a>
               </div>
               <code class="qb-lazy-row__sql" :title="r.sample_sql">{{ truncate(r.sample_sql, 80) }}</code>
               <a class="qb-lazy-row__jump" @click.prevent="jumpToQuery(r.sample_n)">→ #{{ r.sample_n }}</a>
+              <!-- Suggested fix snippet — see suggestFix() for confidence
+                   levels (high for getter-triggered, low for hydration). -->
+              <pre class="qb-lazy-fix">{{ fixSnippets.get(r.table)?.text || '…' }}<span
+                v-if="fixSnippets.get(r.table)?.confidence"
+                class="qb-lazy-fix__conf"
+                :class="'qb-lazy-fix__conf--' + fixSnippets.get(r.table).confidence"
+                :title="fixSnippets.get(r.table).reason || ''"
+              >{{ fixSnippets.get(r.table).confidence }}</span></pre>
+              <button
+                class="qb-btn qb-btn--copy-fix"
+                :title="lastCopied.has('fix:' + r.table) ? 'Copied to clipboard' : 'Copy the suggested fix to clipboard'"
+                @click="copyFix(r)"
+              >{{ lastCopied.has('fix:' + r.table) ? '✓ copied' : '⧉ Copy fix' }}</button>
             </div>
           </template>
 
@@ -235,13 +249,28 @@
                 <span class="qb-lazy-row__caller">in <strong>{{ r.parent_method }}</strong></span>
                 <a v-if="r.parent_file"
                    class="qb-lazy-row__loc"
-                   @click.prevent="openInIde(r.parent_file, r.parent_line)"
-                   :title="`${r.parent_file}:${r.parent_line}`">
+                   @click.prevent="copySrcPath(r.parent_file, r.parent_line)"
+                   :title="`Click to copy src/...:${r.parent_line} for your IDE`">
                   {{ shortPath(r.parent_file) }}:{{ r.parent_line }}
+                  <span v-if="lastCopied.has(r.parent_file + ':' + r.parent_line)" class="qb-lazy-row__copied">✓</span>
                 </a>
               </div>
               <code class="qb-lazy-row__sql" :title="r.sample_sql">{{ truncate(r.sample_sql, 80) }}</code>
               <a class="qb-lazy-row__jump" @click.prevent="jumpToQuery(r.sample_n)">→ #{{ r.sample_n }}</a>
+              <!-- Same suggested fix as above — for hydration the snippet
+                   uses a `<relationName>` placeholder the user must fill in
+                   with the actual entity property name. -->
+              <pre class="qb-lazy-fix">{{ fixSnippets.get(r.table)?.text || '…' }}<span
+                v-if="fixSnippets.get(r.table)?.confidence"
+                class="qb-lazy-fix__conf"
+                :class="'qb-lazy-fix__conf--' + fixSnippets.get(r.table).confidence"
+                :title="fixSnippets.get(r.table).reason || ''"
+              >{{ fixSnippets.get(r.table).confidence }}</span></pre>
+              <button
+                class="qb-btn qb-btn--copy-fix"
+                :title="lastCopied.has('fix:' + r.table) ? 'Copied to clipboard' : 'Copy the suggested fix to clipboard'"
+                @click="copyFix(r)"
+              >{{ lastCopied.has('fix:' + r.table) ? '✓ copied' : '⧉ Copy fix' }}</button>
             </div>
           </template>
           </div>
@@ -557,6 +586,161 @@ function jumpToQuery(n) {
     el.classList.add('qb-flash')
     setTimeout(() => el.classList.remove('qb-flash'), 1800)
   }, 80)
+}
+async function copySrcPath(file, line) {
+  // Strip everything before /src/ — that's the editor-relative path
+  // (PhpStorm / VS Code / Sublime all accept it via Ctrl+Shift+P →
+  // "Open File" → paste). Falls back to the full path if no /src/
+  // marker is found (which would happen for vendor files, but those
+  // shouldn't show up in a lazy-load snippet anyway).
+  const idx = (file ?? '').indexOf('/src/')
+  const rel = idx !== -1 ? file.substring(idx + 1) : file
+  const text = line != null ? `${rel}:${line}` : rel
+  const key = file + ':' + line
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch (e) {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    try { document.execCommand('copy') } catch (_) {}
+    document.body.removeChild(ta)
+  }
+  // Flash a ✓ next to the link for 1.5s. Use a Set so clicking different
+  // links in quick succession doesn't cancel earlier flashes.
+  lastCopied.value.add(key)
+  setTimeout(() => lastCopied.value.delete(key), 1500)
+}
+const lastCopied = ref(new Set())   // set of "file:line" keys currently flashing ✓
+
+/**
+ * Suggested-fix snippets fetched from the backend analyser (which
+ * reads the target app's entity source code). Populated async after
+ * the analysis loads. Keyed by table name (the unique entity per row).
+ *
+ * Each entry: { text: string, confidence: 'high'|'medium'|'low', reason?: string, file?: string, line?: int }
+ */
+const fixSnippets = ref(new Map())
+async function loadFixSnippets() {
+  const lazy = qb.analysis?.lazy?.by_relation || []
+  if (lazy.length === 0) return
+  // Fire all requests in parallel; resolve into the map as they arrive.
+  await Promise.all(lazy.map(async (r) => {
+    const fix = await suggestFix(r)
+    // Preserve order — append saving line at the end.
+    const text = (fix.snippet || '') + '\n' + fix.saving
+    fixSnippets.value.set(r.table, {
+      text,
+      confidence: fix.confidence || 'low',
+      reason: fix.reason,
+      file: fix.file,
+      line: fix.line,
+    })
+  }))
+  // Force reactivity (Map mutations don't trigger updates in Vue 3 sometimes)
+  fixSnippets.value = new Map(fixSnippets.value)
+}
+watch(() => qb.analysis?.lazy, loadFixSnippets, { immediate: false })
+
+/**
+ * Cache for lazy-fix snippets — avoids re-hitting the backend for every
+ * render. Keyed by `${kind}:${table}:${parentShort}:${getter}`.
+ */
+const fixCache = new Map()
+
+/**
+ * Build a suggested fix snippet by asking the backend analyser
+ * (which reads the target app's entity source code to extract real
+ * property names, file:line, join columns). When the backend is
+ * reachable and has data, returns a precise snippet; when the target
+ * app's source isn't available (no SOURCE_CONTAINER_DIR), the
+ * backend returns a `confidence: 'low'` hint and we render that.
+ */
+async function suggestFix(r) {
+  const estMs = Math.round(r.total_ms ?? 0)
+  const saving = `// → saves ~${estMs}ms per request (${r.count}×${estMs}ms)`
+  const parentClass = (r.parent_method || '').split('->')[0].split('\\').pop() || 'Entity'
+  const getter = r.trigger_getter || ''
+  const cacheKey = `${r.kind}:${r.table}:${parentClass}:${getter}`
+  if (fixCache.has(cacheKey)) return { ...fixCache.get(cacheKey), saving }
+
+  let body = {
+    kind: r.kind,
+    table: r.table,
+    parent_class: parentClass,
+  }
+  if (r.kind === 'getter') body.trigger_getter = getter
+
+  let res = null
+  try {
+    const r2 = await fetch('/api/profiler/lazy-fix', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (r2.ok) res = await r2.json()
+  } catch (e) { /* network blip — fall through to placeholder */ }
+
+  // Fallback: pure JS parsing if backend unreachable.
+  if (!res) res = localSuggestFix(r, parentClass)
+
+  fixCache.set(cacheKey, res)
+  return { ...res, saving }
+}
+
+/**
+ * Pure-JS fallback when the backend analyser is not reachable
+ * (e.g. SOURCE_CONTAINER_DIR not set). Renders the same hand-wavy
+ * snippet the old version produced, so the UI never breaks.
+ */
+function localSuggestFix(r, parentClass) {
+  const estMs = Math.round(r.total_ms ?? 0)
+  const saving = `// → saves ~${estMs}ms per request (${r.count}×${estMs}ms)`
+  if (r.kind === 'getter' && r.trigger_getter) {
+    const m = r.trigger_getter.match(/->(\w+)\(/)
+    let prop = m ? m[1] : 'Xxx'
+    prop = prop.replace(/^get/, '').replace(/^is/, '').replace(/^has/, '')
+    const propCamel = prop.charAt(0).toLowerCase() + prop.slice(1)
+    return {
+      confidence: 'low',
+      reason: 'backend analyser not available — using fallback',
+      snippet: `->addSelect('<parentAlias>.${propCamel}')\n->leftJoin('<parentAlias>.${propCamel}', '${propCamel}')`,
+    }
+  }
+  return {
+    confidence: 'low',
+    reason: 'backend analyser not available',
+    snippet: `->addSelect('${parentClass.charAt(0).toLowerCase()}.<relationName>')\n->leftJoin('${parentClass.charAt(0).toLowerCase()}.<relationName>', 'r')`,
+  }
+}
+async function copyFix(r) {
+  // Prefer the already-resolved snippet from fixSnippets (includes saving
+  // line). Fall back to the live suggestFix() result if the row hasn't
+  // been resolved yet.
+  let text = fixSnippets.value.get(r.table)?.text
+  if (!text) {
+    const fix = await suggestFix(r)
+    text = (fix.snippet || '') + '\n' + fix.saving
+  }
+  if (!text) return
+  const key = 'fix:' + r.table
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch (e) {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    try { document.execCommand('copy') } catch (_) {}
+    document.body.removeChild(ta)
+  }
+  lastCopied.value.add(key)
+  setTimeout(() => lastCopied.value.delete(key), 1500)
 }
 function openInIde(path, line) {
   if (!path) return
@@ -877,6 +1061,50 @@ watch(() => qb.profilerConfig?.enabled, async (enabled) => {
 .qb-lazy-row__loc:hover { color: #5cd97a; border-color: #5cd97a; }
 .qb-lazy-row__sql { flex: 0 1 100%; color: #888; font-family: monospace; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 24px; opacity: 0.7; }
 .qb-lazy-row__jump { color: #6da0ff; cursor: pointer; margin-left: auto; font-family: monospace; }
+.qb-lazy-row__copied { color: #5cd97a; margin-left: 4px; font-weight: bold; }
+.qb-lazy-fix {
+  flex: 0 1 100%;
+  margin: 4px 0 0 24px;
+  padding: 6px 8px;
+  background: rgba(0,0,0,0.35);
+  border-left: 2px solid #66c8ff;
+  border-radius: 0 3px 3px 0;
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.5;
+  color: #c0d8e8;
+  white-space: pre;
+  overflow-x: auto;
+}
+.qb-btn--copy-fix {
+  flex: 0 1 100%;
+  margin: 2px 0 0 24px;
+  align-self: flex-start;
+  background: rgba(102, 200, 255, 0.12);
+  color: #66c8ff;
+  border: 1px solid rgba(102, 200, 255, 0.3);
+  padding: 1px 8px;
+  font-size: 10px;
+  font-family: monospace;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.qb-btn--copy-fix:hover { background: rgba(102, 200, 255, 0.22); }
+.qb-lazy-fix__conf {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: bold;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: help;
+  vertical-align: middle;
+}
+.qb-lazy-fix__conf--high { background: rgba(92, 217, 122, 0.18); color: #5cd97a; border: 1px solid rgba(92, 217, 122, 0.3); }
+.qb-lazy-fix__conf--medium { background: rgba(246, 198, 74, 0.18); color: #f6c64a; border: 1px solid rgba(246, 198, 74, 0.3); }
+.qb-lazy-fix__conf--low { background: rgba(255, 138, 50, 0.18); color: #ff8a37; border: 1px solid rgba(255, 138, 50, 0.3); }
 .qb-lazy-kind {
   font-size: 10px;
   color: #888;

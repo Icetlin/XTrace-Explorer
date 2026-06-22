@@ -74,3 +74,12 @@ services:
             $http: '@App\Service\Profiler\ProfilerHttpClient'
             $parser: '@App\Service\Profiler\DbPanelParser'
             $analyzer: '@App\Service\Profiler\DbAnalyzer'
+
+    App\Service\Profiler\TargetAppAnalyzer:
+        arguments:
+            # Container path — the compose volume maps SOURCE_HOST_DIR
+            # to SOURCE_CONTAINER_DIR so the host source tree is visible
+            # here. We use the container path because the analyser runs
+            # inside PHP-FPM and the host filesystem isn't mounted.
+            $hostDir: '%env(default::SOURCE_CONTAINER_DIR)%'
+        public: true   # for ad-hoc debugging via php -r; safe since it has no side effects

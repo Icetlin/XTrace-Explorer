@@ -429,6 +429,124 @@ class ProfilerController extends AbstractController
         ]);
     }
 
+    /**
+     * Build a precise leftJoin snippet for a lazy-load row by analysing
+     * the target app's entity source code.
+     *
+     * Body: `{ "kind": "hydration"|"getter", "table": "...",
+     *          "parent_class": "UserDomain",   // for hydration: short class name
+     *          "fk_column": "affiliate_user_id",  // for hydration (optional)
+     *          "trigger_getter": "App\\Entity\\User\\User->getAffiliateAccount"  // for getter
+     *        }`
+     *
+     * Returns the real property name + line in the entity file +
+     * joinColumn + the snippet to paste. If the analyser can't resolve
+     * the relation, returns a `confidence: 'low'` payload with the best
+     * hint we can give (the user can grep manually).
+     */
+    #[Route('/lazy-fix', methods: ['POST'])]
+    public function lazyFix(Request $request, \App\Service\Profiler\TargetAppAnalyzer $analyzer): JsonResponse
+    {
+        $body = json_decode($request->getContent(), true) ?: [];
+        $kind = (string) ($body['kind'] ?? '');
+        $table = (string) ($body['table'] ?? '');
+        $parentShort = (string) ($body['parent_class'] ?? '');
+        if ($kind === '' || $table === '') {
+            return $this->json(['ok' => false, 'error' => 'kind and table required'], 400);
+        }
+
+        if ($kind === 'hydration' && $parentShort !== '') {
+            $candidates = $analyzer->findRelationPropertiesForTable($table);
+            if ($candidates === []) {
+                $entity = $analyzer->findEntityForTable($table);
+                return $this->json([
+                    'ok' => true,
+                    'confidence' => 'low',
+                    'reason' => "no relation property on $parentShort maps to table `$table`",
+                    'hint' => $entity ? "entity mapped to `$table` is `{$entity['short']}`" : null,
+                ]);
+            }
+            // Annotate each candidate with a snippet referencing the
+            // alias for $parentShort (best-effort guess).
+            $parentAlias = $this->aliasGuess($parentShort);
+            foreach ($candidates as &$c) {
+                $c['alias'] = $parentAlias;
+                $c['snippet'] = sprintf(
+                    "->addSelect('%s.%s')\n->leftJoin('%s.%s', '%s')",
+                    $parentAlias, $c['property'],
+                    $parentAlias, $c['property'],
+                    $this->aliasGuess($c['property']),
+                );
+                $c['file'] = $c['file'] ?? $this->shortToEntityRelPath($c['owningClassFqcn']);
+            }
+            unset($c);
+            // Prefer candidates on the parentShort class itself; if
+            // none, fall back to first (most likely the inverse side
+            // reachable through a joined entity).
+            $onParent = array_values(array_filter($candidates, fn($c) => $c['owningClass'] === $parentShort));
+            $best = $onParent[0] ?? $candidates[0];
+            return $this->json([
+                'ok' => true,
+                'confidence' => $onParent ? 'high' : 'medium',
+                'candidates' => $candidates,
+                'recommended' => $best,
+                'snippet' => $best['snippet'],
+                'file' => $best['file'],
+                'line' => $best['line'],
+                'property' => $best['property'],
+            ]);
+        }
+
+        if ($kind === 'getter') {
+            $getter = (string) ($body['trigger_getter'] ?? '');
+            if ($getter === '' || !preg_match('/->(\w+)\(/', $getter, $m)) {
+                return $this->json(['ok' => false, 'error' => 'trigger_getter required for kind=getter'], 400);
+            }
+            $prop = $m[1];
+            $prop = preg_replace('/^get/', '', $prop);
+            $prop = preg_replace('/^is/', '', $prop);
+            $prop = preg_replace('/^has/', '', $prop);
+            $propCamel = $prop !== '' ? lcfirst($prop) : 'unknown';
+            return $this->json([
+                'ok' => true,
+                'confidence' => 'medium',
+                'property' => $propCamel,
+                'snippet' => "->addSelect('<parentAlias>.{$propCamel}')\n->leftJoin('<parentAlias>.{$propCamel}', '{$propCamel}')",
+                'note' => "Property name derived from getter. <parentAlias> must be the alias used in the QueryBuilder that originally built the entity (you'll need to find the call site that constructed the $user variable).",
+            ]);
+        }
+
+        return $this->json(['ok' => false, 'error' => 'unsupported kind'], 400);
+    }
+
+    /**
+     * Convert "App\\Entity\\User\\UserDomain" to "src/Entity/User/UserDomain.php"
+     * (relative to host path). Returns the original string if it doesn't
+     * look like an FQCN.
+     */
+    private function shortToEntityRelPath(string $fqcn): string
+    {
+        $p = str_replace('\\', '/', $fqcn);
+        if (str_starts_with($p, 'App/Entity/')) {
+            return preg_replace('#^App/Entity/#', 'src/Entity/', $p) . '.php';
+        }
+        return $fqcn;
+    }
+
+    /**
+     * Heuristic: alias of a class/relation in a QueryBuilder is usually
+     * the lowercase first letter of the class name (User→u, Order→o).
+     * This is what Doctrine internally uses when the user omits
+     * `createQueryBuilder('u')`. Best-effort only — the user has to
+     * verify the alias matches their QueryBuilder.
+     */
+    private function aliasGuess(string $name): string
+    {
+        $name = ltrim($name, '\\');
+        $short = $name !== '' ? substr($name, strrpos($name, '\\') !== false ? strrpos($name, '\\') + 1 : 0) : 'r';
+        return $short !== '' ? strtolower($short[0]) : 'r';
+    }
+
     // ─── helpers ─────────────────────────────────────────────────────────
 
     private function loadTraceOr404(int $fileId): TraceFile|JsonResponse
