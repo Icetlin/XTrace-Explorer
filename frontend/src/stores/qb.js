@@ -33,6 +33,27 @@ export const useQbStore = defineStore('qb', () => {
   const filter = ref('')
   const groupDupes = ref(true)
 
+  // ── Tree expand/collapse-all signals ──
+  // Two pieces of state:
+  //   - `callGraphAllOpen` is the *intended* mode after the last button
+  //     click. New nodes read it during setup to decide whether to start
+  //     open or closed — that's how the cascade reaches grand-children
+  //     that aren't mounted yet when the button is clicked.
+  //   - `callGraphToggleTrigger` is a monotonic counter that just exists
+  //     so watchers fire on every click. Without it, a second click on
+  //     the same button (which doesn't change `callGraphAllOpen`) would
+  //     silently no-op the watcher.
+  const callGraphAllOpen = ref(false)
+  const callGraphToggleTrigger = ref(0)
+  function expandAllCallGraph() {
+    callGraphAllOpen.value = true
+    callGraphToggleTrigger.value++
+  }
+  function collapseAllCallGraph() {
+    callGraphAllOpen.value = false
+    callGraphToggleTrigger.value++
+  }
+
   const mode = computed(() => {
     if (loading.value) return 'loading'
     if (error.value) return 'error'
@@ -237,6 +258,7 @@ export const useQbStore = defineStore('qb', () => {
     // state
     snapshot, analysis, queries, profilerConfig, settingsOpen, loading, error,
     viewMode, filter, groupDupes,
+    callGraphAllOpen, callGraphToggleTrigger,
     // computed
     mode, totalQueries, totalMs, callGraph,
     // trace fallback
@@ -246,6 +268,7 @@ export const useQbStore = defineStore('qb', () => {
     findAuto, linkManual, unlink, refresh,
     openSettings, closeSettings,
     setViewMode,
+    expandAllCallGraph, collapseAllCallGraph,
   }
 })
 

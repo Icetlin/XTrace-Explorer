@@ -1,6 +1,11 @@
 <template>
   <div class="qcgn" :class="{ 'qcgn--open': open }">
-    <div class="qcgn__row" @click="open = !open">
+    <!-- data-call: stable identifier (Class->method) so the lazy-fix
+         rows can scroll-and-flash a specific node when the user clicks
+         "jump in tree" on a fix snippet. Without this, the only way to
+         navigate from the lazy-loads block to the matching tree node is
+         visual scanning, which breaks down past a few screens. -->
+    <div class="qcgn__row" :data-call="node.call" @click="open = !open">
       <span class="qcgn__chev">{{ open ? '▾' : '▸' }}</span>
       <span class="qcgn__icon">
         {{ node.queries.length > 0 ? '🍃' : (hasChildren ? '🌳' : '○') }}
@@ -61,7 +66,7 @@
           class="qcgn__q"
           :class="{ 'qcgn__q--n1': isN1, 'qcgn__q--lazy': q.lazy }"
           :data-query-n="q.n"
-          @click="selectedN = (selectedN === q.n ? null : q.n)"
+          @click="toggleQuery(q.n)"
         >
           <div class="qcgn__q-head">
             <span class="qcgn__q-n">#{{ q.n }}</span>
@@ -81,10 +86,13 @@
               :title="copyState === q.n ? 'Copied!' : 'Copy runnable SQL to clipboard'"
               @click.stop="copySql(q)"
             >{{ copyState === q.n ? '✓' : '⧉' }}</button>
-            <span class="qcgn__q-chev">{{ selectedN === q.n ? '▾' : '▸' }}</span>
+            <span class="qcgn__q-chev">{{ isQueryOpen(q.n) ? '▾' : '▸' }}</span>
           </div>
-          <!-- Expanded: show params + (optionally) a button to highlight this query elsewhere -->
-          <div v-if="selectedN === q.n" class="qcgn__q-body">
+          <!-- Expanded: show params + (optionally) a button to highlight this query elsewhere.
+               When "expand all" is active in the toolbar, every query body on this node is
+               shown — same chevron, same body. The flag (selectedAllActive) is the gate;
+               without it, click-to-toggle still works. -->
+          <div v-if="isQueryOpen(q.n)" class="qcgn__q-body">
             <pre v-if="q.sql" class="qcgn__q-sql-full"><code v-html="highlightSql(formattedSql(q.n))" /></pre>
             <div v-if="queryByN(q.n)?.params && Object.keys(queryByN(q.n).params).length" class="qcgn__q-params">
               <span v-for="(v, k) in queryByN(q.n).params" :key="k" class="qcgn__q-param">
@@ -99,7 +107,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useQbStore } from '../stores/qb'
 import { formatSql } from '../lib/sqlFormat'
 
@@ -110,9 +118,54 @@ const props = defineProps({
 })
 
 const qb = useQbStore()
-const open = ref(props.depth < 1)   // root auto-expanded, rest collapsed
+// Root auto-expanded, rest collapsed — UNLESS the user previously clicked
+// "expand all". Reading the flag here is critical for the cascade: when a
+// parent opens, freshly-mounted children must also open immediately,
+// otherwise the click only affects the first level. Watchers alone don't
+// suffice — a watcher only fires on already-mounted instances, so the
+// grand-children created by an "expand all" would stay closed.
+// The flag tracks the user's *intent* (last button click wins). The
+// trigger counter exists separately so the watcher re-fires on every
+// click, including repeats on the same button — see the store for why.
+const open = ref(props.depth < 1 || qb.callGraphAllOpen)
 const selectedN = ref(null)
+// Per-query overrides used while "expand all" is active. The toolbar
+// forces every body open, but the user can still click an individual
+// query to collapse JUST that one without losing the rest. Without
+// this, clicking a query in expand-all mode would feel like a no-op.
+const manuallyCollapsed = ref(new Set())
 const copyState = ref(null)   // query n that just got copied, or null
+
+// A query body is visible if any of:
+//   - "expand all" is on AND the user hasn't manually collapsed this row
+//   - the user clicked it (single-selection, original behaviour)
+// In "collapse all" mode neither condition is true so nothing shows.
+function isQueryOpen(n) {
+  if (manuallyCollapsed.value.has(n)) return false
+  if (qb.callGraphAllOpen) return true
+  return selectedN.value === n
+}
+function toggleQuery(n) {
+  if (qb.callGraphAllOpen) {
+    // Toolbar controls visibility — click toggles this row's override.
+    if (!manuallyCollapsed.value.delete(n)) manuallyCollapsed.value.add(n)
+  } else {
+    // Normal mode: single-selection toggle, like before this feature.
+    selectedN.value = (selectedN.value === n ? null : n)
+  }
+}
+
+// React to global "expand all" / "collapse all" buttons in the toolbar
+// above the tree. The trigger counter increments on every click so we
+// re-fire even when the user double-clicks the same button. Also reset
+// per-query overrides on every toggle — otherwise collapsing 3 queries
+// then hitting "expand all" again would leave those 3 closed (the
+// user expects "expand all" to fully expand).
+watch(() => qb.callGraphToggleTrigger, () => {
+  open.value = qb.callGraphAllOpen
+  selectedN.value = null
+  manuallyCollapsed.value = new Set()
+})
 async function copySql(q) {
   // Always copy the runnable SQL (with values substituted) — the
   // formatted version is multi-line and paste-friendly into psql/Adminer.
