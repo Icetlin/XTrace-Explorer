@@ -61,6 +61,14 @@ enum TraceRegex: string
     // Group 1 = the cookie value
     case CookieValue = '/\$value\s*=\s*\'([^\']+)\'/';
 
+    // Cookie expire timestamp inside an xdebug object dump or Cookie::create arg: $expire = 1783036800
+    // Group 1 = unix timestamp (0 means a session cookie that dies with the browser)
+    case CookieExpire = '/\$expire\s*=\s*(\d+)/';
+
+    // Cookie SameSite attribute inside an xdebug object dump or Cookie::create arg: $sameSite = 'lax'
+    // Group 1 = the samesite policy (lax|strict|none), quotes optional
+    case CookieSameSite = '/\$sameSite\s*=\s*\'?([\w-]+)\'?/';
+
     // RedirectResponse target URL from constructor arg: $url = 'https://...'
     // Group 1 = the URL
     case RedirectUrl = '/\$url\s*=\s*\'([^\']+)\'/';

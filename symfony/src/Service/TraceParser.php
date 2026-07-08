@@ -15,6 +15,17 @@ class TraceParser
         'Stopwatch', 'StopwatchEvent', 'isPropagationStopped', 'Section',
     ];
 
+    // Domain-specific "gate" annotations layered on top of the generic
+    // created→emitted cookie lifecycle: a recognised decision point that authorises
+    // a cookie. Purely additive — cookies from unknown flows simply get no gate.
+    // Extend this list to teach the timeline new flows; the generic lifecycle is
+    // untouched.
+    //   signal    — substring of the trace call line that marks the decision
+    //   appliesTo — attach the gate to a cookie whose lifecycle listeners contain this
+    private const KNOWN_GATES = [
+        ['signal' => 'RememberMeBadge->enable', 'appliesTo' => 'RememberMe'],
+    ];
+
     public function __construct(
         private readonly string $tracesDir,
         private readonly EntityManagerInterface $em,
@@ -154,6 +165,10 @@ class TraceParser
                     array_pop($appCallsStacks); // drop the closed block's app-call depth-stack
                     array_pop($appCallsPathStacks);
                     $closed = array_pop($dispatchStack);
+                    // Record the exact line where this block's scope closed (depth dropped
+                    // to/below its dispatch depth). Used by locateInToc so nested events
+                    // don't "bleed" past their real end into later sibling listeners.
+                    $closed['end_line'] = $lineNo - 1;
                     if ($closed['type'] === 'controller') {
                         // Wrap controller children in a synthetic toc entry so they don't appear
                         // as top-level events — only emit the wrapper when there are children.
@@ -409,6 +424,7 @@ class TraceParser
             array_pop($appCallsStacks);
             array_pop($appCallsPathStacks);
             $closed = array_pop($dispatchStack);
+            $closed['end_line'] = $lineNo; // block never closed before EOF — scope runs to end
             if ($closed['type'] === 'controller') {
                 if (!empty($closed['children']) || !empty($closed['app_calls'])) {
                     $wrapper = [
@@ -419,6 +435,7 @@ class TraceParser
                         'listeners' => [],
                         'children'  => $closed['children'],
                         'app_calls' => $closed['app_calls'] ?? [],
+                        'end_line'  => $closed['end_line'] ?? null,
                     ];
                     if (!empty($dispatchStack)) {
                         $dispatchStack[count($dispatchStack)-1]['children'][] = $wrapper;
@@ -453,7 +470,7 @@ class TraceParser
         $sqlOutFile = $dir . '/sql.json.tmp';
         $sqlProcess = $this->startSqlWorker($xtFilePath, $sqlOutFile, $dir . '/toc.json');
 
-        $responseInfo = $this->extractResponseInfo($xtFilePath);
+        $responseInfo = $this->extractResponseInfo($xtFilePath, $toc, $requestInfo['request_time'] ?? null, $requestInfo['cookies'] ?? []);
 
         $this->waitSqlWorker($sqlProcess, $sqlOutFile, $dir);
         file_put_contents($dir . '/meta.json', json_encode(
@@ -760,31 +777,88 @@ class TraceParser
         unset($node);
     }
 
-    private function extractResponseInfo(string $xtFilePath): array
+    /**
+     * Extracts response status, redirect location, and — the interesting part —
+     * a per-cookie causal record: where each Set-Cookie was EMITTED
+     * (ResponseHeaderBag->setCookie, almost always in kernel.response) and where
+     * the Cookie object was CREATED (Cookie::create / __construct, which for
+     * remember-me happens a whole phase earlier, inside LoginSuccessEvent on
+     * kernel.request). Mapping both line numbers back onto the TOC turns the
+     * "why did this cookie get set" question — which otherwise means eyeballing
+     * two far-apart phases — into a single line: created here → emitted there.
+     */
+    private function extractResponseInfo(string $xtFilePath, array $toc = [], ?float $requestTime = null, array $requestCookies = []): array
     {
         $info = ['status' => null, 'location' => null, 'cookies' => []];
 
-        // Scan full file line by line for setCookie calls and RedirectResponse
-        // These are real xdebug call lines, not VarDumper dumps
+        // Scan full file line by line for setCookie / Cookie::create / RedirectResponse.
+        // These are real xdebug call lines, not VarDumper dumps.
         $fh = fopen($xtFilePath, 'rb');
-        $cookiesSeen = [];
+        $emits    = []; // name => [ ['line_no','value','expire','samesite','file','file_abs'], ... ] — every Set-Cookie
+        $creates  = []; // name => [ ['line_no','file','file_abs'], ... ] — every Cookie::create/__construct
+        $gates    = []; // signal => ['line_no','file','file_abs'] — recognised gate decisions (see KNOWN_GATES)
+        $lineNo   = 0;
 
         while (($line = fgets($fh, 1048576)) !== false) {
-            // ResponseHeaderBag->setCookie($cookie = class ...Cookie { protected $name = 'sio_u'; protected $value = '...' })
+            $lineNo++;
+
+            // Emission: ResponseHeaderBag->setCookie($cookie = class ...Cookie { $name = 'sio_u'; ... })
             if (str_contains($line, '->setCookie') && str_contains($line, 'Cookie')) {
                 if (preg_match(TraceRegex::CookieName->value, $line, $m)) {
-                    $name = $m[1];
-                    if (!isset($cookiesSeen[$name])) {
-                        $cookiesSeen[$name] = true;
-                        $cookie = ['name' => $name];
-                        if (preg_match(TraceRegex::CookieValue->value, $line, $mv)) {
-                            $val = $mv[1];
-                            $cookie['value'] = strlen($val) > 40 ? substr($val, 0, 20) . '…' : $val;
-                        }
-                        $info['cookies'][] = $cookie;
+                    $fileAbs = $this->extractFile($line);
+                    $rec = [
+                        'line_no'  => $lineNo,
+                        'value'    => null,
+                        'expire'   => null,
+                        'samesite' => null,
+                        'file'     => $fileAbs ? $this->shortFile($fileAbs) : null,
+                        'file_abs' => $fileAbs,
+                    ];
+                    if (preg_match(TraceRegex::CookieValue->value, $line, $mv)) {
+                        $rec['value'] = strlen($mv[1]) > 40 ? substr($mv[1], 0, 20) . '…' : $mv[1];
                     }
+                    if (preg_match(TraceRegex::CookieExpire->value, $line, $me)) {
+                        $rec['expire'] = (int)$me[1];
+                    }
+                    if (preg_match(TraceRegex::CookieSameSite->value, $line, $ms)) {
+                        $rec['samesite'] = $ms[1];
+                    }
+                    $emits[$m[1]][] = $rec;
+                }
+            } elseif (
+                (str_contains($line, 'Cookie::create') || str_contains($line, 'Cookie->__construct'))
+                && preg_match(TraceRegex::CookieName->value, $line, $m)
+            ) {
+                // Construction site — the Cookie object is born here, possibly a phase
+                // before it is handed to ResponseHeaderBag->setCookie. Skip Symfony's
+                // own Cookie::create → `new self()` frame (file http-foundation/Cookie.php):
+                // it's the same construction seen from inside the factory, and the caller
+                // line already captured the meaningful birth site.
+                $fileAbs = $this->extractFile($line);
+                if ($fileAbs === null || !str_contains($fileAbs, '/http-foundation/Cookie.php')) {
+                    $creates[$m[1]][] = [
+                        'line_no'  => $lineNo,
+                        'file'     => $fileAbs ? $this->shortFile($fileAbs) : null,
+                        'file_abs' => $fileAbs,
+                    ];
                 }
             }
+
+            // Recognised gate decisions (see KNOWN_GATES) — additive domain annotations
+            // on top of the generic lifecycle. Each signal is captured once, at its
+            // call-site (e.g. RememberMeBadge->enable → CheckRememberMeConditionsListener,
+            // where _remember_me / always_remember_me is evaluated).
+            foreach (self::KNOWN_GATES as $g) {
+                if (!isset($gates[$g['signal']]) && str_contains($line, $g['signal'])) {
+                    $fileAbs = $this->extractFile($line);
+                    $gates[$g['signal']] = [
+                        'line_no'  => $lineNo,
+                        'file'     => $fileAbs ? $this->shortFile($fileAbs) : null,
+                        'file_abs' => $fileAbs,
+                    ];
+                }
+            }
+
             // RedirectResponse->__construct or targetUrl in object dump
             if ($info['location'] === null && str_contains($line, 'RedirectResponse')) {
                 if (preg_match(TraceRegex::RedirectUrl->value, $line, $m)) {
@@ -802,6 +876,88 @@ class TraceParser
         }
 
         fclose($fh);
+
+        // Build an ordered lifecycle per cookie: gate → created → emitted → cleared.
+        foreach (array_keys($emits + $creates) as $name) {
+            $emitList   = $emits[$name] ?? [];
+            $createList = $creates[$name] ?? [];
+
+            // Collapse repeated constructions at the same source site into one logical
+            // birth. Symfony's RememberMeListener clears then creates through the *same*
+            // createCookie() line, so a real remember-me shows two Cookie builds at
+            // AbstractRememberMeHandler.php:101 — one [created] is enough.
+            $seenCreate = [];
+            $createList = array_values(array_filter($createList, static function ($c) use (&$seenCreate) {
+                $key = $c['file_abs'] ?? $c['line_no'];
+                if (isset($seenCreate[$key])) {
+                    return false;
+                }
+                $seenCreate[$key] = true;
+                return true;
+            }));
+
+            // The final Set-Cookie is what the browser actually keeps — surface its
+            // value/lifetime/samesite as the cookie's headline state.
+            $final  = $emitList ? end($emitList) : null;
+            $cookie = ['name' => $name];
+            if ($final && $final['value'] !== null)    $cookie['value']    = $final['value'];
+            if ($final && $final['samesite'] !== null) $cookie['samesite'] = $final['samesite'];
+            $cookie['lifetime'] = $final ? $this->cookieLifetime($final['expire'], $requestTime) : null;
+
+            $createdSites = array_map(
+                fn($c) => $this->cookieSite($toc, $c['line_no'], $c['file'], $c['file_abs']),
+                $createList
+            );
+            $emitSites = array_map(function ($e) use ($toc, $requestTime) {
+                $site = $this->cookieSite($toc, $e['line_no'], $e['file'], $e['file_abs']);
+                $site['kind'] = $this->emitKind($e['value'], $e['expire'], $requestTime);
+                return $site;
+            }, $emitList);
+
+            $steps = [];
+            // Attach any recognised gate whose flow matches this cookie's lifecycle
+            // listeners (see KNOWN_GATES). Additive: cookies from unknown flows get none.
+            foreach (self::KNOWN_GATES as $g) {
+                if (!isset($gates[$g['signal']])) {
+                    continue;
+                }
+                if (!$this->anyListenerContains($createdSites, $g['appliesTo'])
+                    && !$this->anyListenerContains($emitSites, $g['appliesTo'])
+                ) {
+                    continue;
+                }
+                $gsite = $gates[$g['signal']];
+                $site  = $this->cookieSite($toc, $gsite['line_no'], $gsite['file'], $gsite['file_abs']);
+                $site['kind'] = 'gate';
+                $steps[] = $site;
+            }
+
+            // Collapse the common "created and emitted in the same listener" case into a
+            // single "set" step; keep the full flow only when they genuinely differ.
+            if (count($createdSites) === 1 && count($emitSites) === 1
+                && $emitSites[0]['kind'] === 'emitted'
+                && $this->sameTocLoc($createdSites[0], $emitSites[0])
+            ) {
+                $set = $emitSites[0];
+                $set['kind'] = 'set';
+                $steps[] = $set;
+            } else {
+                foreach ($createdSites as $cs) { $cs['kind'] = 'created'; $steps[] = $cs; }
+                foreach ($emitSites as $es)   { $steps[] = $es; }
+            }
+
+            // Order the timeline by trace line (gate < created < emitted < cleared).
+            usort($steps, fn($a, $b) => ($a['line_no'] ?? 0) <=> ($b['line_no'] ?? 0));
+
+            $cookie['steps'] = $steps;
+
+            // Generic request↔response relationship — independent of any flow, works for
+            // every cookie: was the browser already holding it, and is it being changed?
+            $finalKind = $final ? $this->emitKind($final['value'], $final['expire'], $requestTime) : null;
+            $cookie['origin'] = $this->cookieOrigin($name, $cookie['value'] ?? null, $finalKind, $requestCookies);
+
+            $info['cookies'][] = $cookie;
+        }
 
         // Fallback: grab statusCode from VarDumper dump of final Response if setStatusCode not found
         if ($info['status'] === null) {
@@ -995,6 +1151,168 @@ class TraceParser
     {
         $paren = strpos($call, '(');
         return $paren !== false ? trim(substr($call, 0, $paren)) : trim($call);
+    }
+
+    /**
+     * Resolves a cookie's TOC location (phase + listener) and attaches the source
+     * file:line captured from the trace call, so the UI can open the exact PHP
+     * site (e.g. RememberMe/ResponseListener.php:43) in the IDE.
+     */
+    private function cookieSite(array $toc, int $lineNo, ?string $file, ?string $fileAbs): array
+    {
+        $site = $this->locateInToc($toc, $lineNo) ?? ['phase' => null, 'listener' => null, 'line_no' => $lineNo];
+        $site['file']     = $file;
+        $site['file_abs'] = $fileAbs;
+        return $site;
+    }
+
+    /**
+     * Classifies a Set-Cookie call: a deletion cookie (empty value + already-past
+     * expiry, how Symfony clears a cookie) is "cleared"; anything else is a real
+     * "emitted". Lets the timeline show remember-me being *cleared* on the 2FA
+     * hop rather than mislabelling it as a normal set.
+     */
+    private function emitKind(?string $value, ?int $expire, ?float $requestTime): string
+    {
+        $empty = ($value === null || $value === '');
+        $past  = ($expire !== null && $expire > 0 && $requestTime !== null && $expire < $requestTime);
+        return ($empty && $past) ? 'cleared' : 'emitted';
+    }
+
+    private function anyListenerContains(array $sites, string $needle): bool
+    {
+        foreach ($sites as $s) {
+            if (!empty($s['listener']) && str_contains($s['listener'], $needle)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function sameTocLoc(array $a, array $b): bool
+    {
+        return ($a['phase'] ?? null) === ($b['phase'] ?? null)
+            && ($a['listener'] ?? null) === ($b['listener'] ?? null);
+    }
+
+    /**
+     * Generic request↔response relationship for a Set-Cookie, independent of any
+     * specific flow — was the browser already holding this cookie, and what is
+     * happening to it?
+     *   new     — not present in the incoming request (freshly issued)
+     *   rotated — present, but a different value goes back (refreshed/replaced)
+     *   resent  — present, same value re-sent
+     *   removed — present, and being cleared (deletion cookie)
+     *   cleared — a deletion for a cookie the browser didn't even have
+     */
+    private function cookieOrigin(string $name, ?string $respValue, ?string $finalKind, array $requestCookies): string
+    {
+        $inReq = array_key_exists($name, $requestCookies);
+        if ($finalKind === 'cleared') {
+            return $inReq ? 'removed' : 'cleared';
+        }
+        if (!$inReq) {
+            return 'new';
+        }
+        if ($respValue === null) {
+            return 'rotated';
+        }
+        $reqVal = (string) $requestCookies[$name];
+        // The response value may be truncated ("<20 chars>…") — compare by prefix in
+        // that case, exact otherwise.
+        if (str_ends_with($respValue, '…')) {
+            $same = str_starts_with($reqVal, substr($respValue, 0, -strlen('…')));
+        } else {
+            $same = ($reqVal === $respValue);
+        }
+        return $same ? 'resent' : 'rotated';
+    }
+
+    /**
+     * Maps a trace line number onto the TOC, returning the innermost event/phase
+     * and the listener whose scope contains it: ['phase' => 'kernel.response',
+     * 'listener' => 'RememberMe\\ResponseListener', 'line_no' => N].
+     *
+     * Walks siblings using the same start→next-sibling range logic as SQL toc
+     * labelling, then recurses into children so a line inside a nested event
+     * (e.g. LoginSuccessEvent dispatched during kernel.request) resolves to that
+     * inner event rather than its outer kernel phase.
+     */
+    private function locateInToc(array $toc, int $lineNo, int $parentEnd = PHP_INT_MAX): ?array
+    {
+        $count = count($toc);
+        foreach ($toc as $i => $entry) {
+            $start = $entry['line_no'] ?? 0;
+            // Prefer the exact scope end recorded at parse time; fall back to the
+            // next-sibling heuristic only for older TOCs without end_line.
+            $end = $entry['end_line'] ?? (($i + 1 < $count) ? (($toc[$i + 1]['line_no'] ?? PHP_INT_MAX) - 1) : $parentEnd);
+            if ($lineNo < $start || $lineNo > $end) {
+                continue;
+            }
+
+            $current = [
+                'phase'    => $entry['event'] ?? $entry['sig'] ?? null,
+                'listener' => null,
+                'line_no'  => $lineNo,
+            ];
+            // Pick the last listener that opened at or before the target line.
+            $bestLine = 0;
+            foreach ($entry['listeners'] ?? [] as $listener) {
+                $ll = $listener['line_no'] ?? 0;
+                if ($ll <= $lineNo && $ll >= $bestLine) {
+                    $bestLine = $ll;
+                    $current['listener'] = $this->shortListener($listener['sig'] ?? '');
+                }
+            }
+
+            // A nested event is more specific — prefer it when it also contains the line.
+            if (!empty($entry['children'])) {
+                $deeper = $this->locateInToc($entry['children'], $lineNo, $end);
+                if ($deeper !== null) {
+                    // Keep the outer listener as a fallback if the inner block has none.
+                    if ($deeper['listener'] === null && $current['listener'] !== null) {
+                        $deeper['listener'] = $current['listener'];
+                    }
+                    return $deeper;
+                }
+            }
+            return $current;
+        }
+        return null;
+    }
+
+    /**
+     * Shortens a listener signature to its last two namespace segments (dropping
+     * the method), so "Symfony\...\RememberMe\ResponseListener->onKernelResponse"
+     * reads as "RememberMe\ResponseListener" — enough to disambiguate the three
+     * different ResponseListeners without the full FQCN noise.
+     */
+    private function shortListener(string $sig): string
+    {
+        $arrow = strpos($sig, '->');
+        $class = $arrow !== false ? substr($sig, 0, $arrow) : $sig;
+        $parts = explode('\\', $class);
+        return implode('\\', array_slice($parts, max(0, count($parts) - 2)));
+    }
+
+    /**
+     * Human lifetime for a cookie from its $expire timestamp relative to the
+     * request time: 0 → "session", past → "expired", else the largest sensible
+     * unit (7d / 12h / 30m). Returns null when we can't compute it (no expire
+     * captured or no request time in the trace header).
+     */
+    private function cookieLifetime(?int $expire, ?float $requestTime): ?string
+    {
+        if ($expire === null) return null;
+        if ($expire === 0)    return 'session';
+        if ($requestTime === null) return null;
+
+        $delta = $expire - $requestTime;
+        if ($delta <= 0)      return 'expired';
+        if ($delta >= 86400)  return round($delta / 86400) . 'd';
+        if ($delta >= 3600)   return round($delta / 3600) . 'h';
+        if ($delta >= 60)     return round($delta / 60) . 'm';
+        return (int)$delta . 's';
     }
 
     private function extractRequestInfo(string $xtFilePath): array
