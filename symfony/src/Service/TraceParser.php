@@ -71,6 +71,7 @@ class TraceParser
         $appCallsPathStacks = [];
 
         $requestInfo = $this->extractRequestInfo($xtFilePath);
+        $requestInfo['body'] = $this->extractRequestBody($xtFilePath, $requestInfo['method'] ?? null, $requestInfo['cookies'] ?? []);
 
         $fh = fopen($xtFilePath, 'rb');
         $lineNo = 0;
@@ -1313,6 +1314,143 @@ class TraceParser
         if ($delta >= 3600)   return round($delta / 3600) . 'h';
         if ($delta >= 60)     return round($delta / 60) . 'm';
         return (int)$delta . 's';
+    }
+
+    /**
+     * Extracts the request payload for body-carrying methods (POST/PUT/PATCH/DELETE).
+     * The body lives in $request->request (an InputBag); we grab the first non-empty
+     * InputBag dump whose keys aren't just the request cookies (same shape). Sensitive
+     * values (password/token/secret/…) are redacted at the parser so they never reach
+     * meta.json — the raw .xt still holds them, but no derived artifact does.
+     * Returns [ ['key' => ..., 'value' => ...], ... ] or null.
+     */
+    private function extractRequestBody(string $xtFilePath, ?string $method, array $requestCookies): ?array
+    {
+        if (!in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE'], true)) {
+            return null;
+        }
+        $fh = fopen($xtFilePath, 'rb');
+        if (!$fh) {
+            return null;
+        }
+
+        $cookieKeys = array_keys($requestCookies);
+        $result = null;
+
+        while (($line = fgets($fh, 1048576)) !== false) {
+            if (!str_contains($line, 'InputBag') || !str_contains($line, '$parameters = [')) {
+                continue;
+            }
+            $arr = $this->extractInputBagArray($line);
+            if ($arr === null) {
+                continue;
+            }
+            $items = $this->parseBodyArray($arr);
+            if (!$items) {
+                continue;
+            }
+            // Skip the cookies InputBag (identical shape) — if every key is a known
+            // request cookie, this isn't the body.
+            $keys = array_map(fn($i) => $i['key'], $items);
+            if ($cookieKeys && !array_diff($keys, $cookieKeys)) {
+                continue;
+            }
+            $result = [];
+            foreach ($items as $it) {
+                $result[] = [
+                    'key'   => $it['key'],
+                    'value' => $this->isSensitiveKey($it['key']) ? '••••••' : $it['value'],
+                ];
+            }
+            break;
+        }
+
+        fclose($fh);
+        return $result;
+    }
+
+    /**
+     * Extracts the balanced "[...]" array literal following "$parameters = " on a
+     * line, skipping single-quoted strings so brackets inside values don't confuse
+     * the depth counter.
+     */
+    private function extractInputBagArray(string $line): ?string
+    {
+        $pos = strpos($line, '$parameters = [');
+        if ($pos === false) {
+            return null;
+        }
+        $start = $pos + strlen('$parameters = ');
+        $depth = 0;
+        $inStr = false;
+        $len = strlen($line);
+        for ($i = $start; $i < $len; $i++) {
+            $ch = $line[$i];
+            if ($inStr) {
+                if ($ch === '\\') { $i++; continue; }
+                if ($ch === "'") { $inStr = false; }
+                continue;
+            }
+            if ($ch === "'") { $inStr = true; continue; }
+            if ($ch === '[') { $depth++; }
+            elseif ($ch === ']') {
+                $depth--;
+                if ($depth === 0) {
+                    return substr($line, $start, $i - $start + 1);
+                }
+            }
+        }
+        return null;
+    }
+
+    private function isSensitiveKey(string $key): bool
+    {
+        return (bool) preg_match('/pass|secret|token|auth|api[_-]?key|credential/i', $key);
+    }
+
+    /**
+     * Minimal parser for an xdebug "[ 'k' => v, ... ]" array dump → [['key','value'], …].
+     * Top-level comma split (quote- and bracket-aware); values simplified via
+     * simplifyValue with surrounding quotes stripped for display.
+     */
+    private function parseBodyArray(string $arr): array
+    {
+        $inner = trim($arr);
+        if (str_starts_with($inner, '[')) $inner = substr($inner, 1);
+        if (str_ends_with($inner, ']'))   $inner = substr($inner, 0, -1);
+
+        $segments = [];
+        $depth = 0; $inStr = false; $cur = ''; $len = strlen($inner);
+        for ($i = 0; $i < $len; $i++) {
+            $ch = $inner[$i];
+            if ($inStr) {
+                $cur .= $ch;
+                if ($ch === '\\') { $i++; if ($i < $len) $cur .= $inner[$i]; continue; }
+                if ($ch === "'") $inStr = false;
+                continue;
+            }
+            if ($ch === "'") { $inStr = true; $cur .= $ch; continue; }
+            if ($ch === '[' || $ch === '{' || $ch === '(') { $depth++; $cur .= $ch; continue; }
+            if ($ch === ']' || $ch === '}' || $ch === ')') { $depth--; $cur .= $ch; continue; }
+            if ($ch === ',' && $depth === 0) { $segments[] = $cur; $cur = ''; continue; }
+            $cur .= $ch;
+        }
+        if (trim($cur) !== '') $segments[] = $cur;
+
+        $items = [];
+        foreach ($segments as $seg) {
+            $seg = trim($seg);
+            $arrow = strpos($seg, ' => ');
+            if ($arrow === false) continue;
+            $key = trim(trim(substr($seg, 0, $arrow)), "'");
+            $rawVal = trim(substr($seg, $arrow + 4));
+            $val = $this->simplifyValue($rawVal) ?? $rawVal;
+            if (strlen($val) >= 2 && $val[0] === "'" && $val[strlen($val) - 1] === "'") {
+                $val = substr($val, 1, -1);
+            }
+            $items[] = ['key' => $key, 'value' => $val];
+        }
+        return $items;
     }
 
     private function extractRequestInfo(string $xtFilePath): array

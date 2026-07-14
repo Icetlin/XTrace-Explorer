@@ -13,7 +13,12 @@
     <span v-if="req.referer" class="req-sep">·</span>
     <span v-if="req.referer" class="req-ref" :title="req.referer">↩ {{ shortReferer(req.referer) }}</span>
 
-    <!-- Cookies collapsed summary -->
+    <!-- Cookies / body collapsed summary -->
+    <template v-if="bodyEntries.length && !expanded">
+      <span class="req-sep">·</span>
+      <span class="req-cookies-label">body</span>
+      <span class="req-cookies-count">{{ bodyEntries.length }}</span>
+    </template>
     <template v-if="cookieEntries.length && !expanded">
       <span class="req-sep">·</span>
       <span class="req-cookies-label">cookies</span>
@@ -22,8 +27,17 @@
 
     <span class="bar-toggle">{{ expanded ? '▾' : '▸' }}</span>
 
-    <!-- Expanded cookies -->
+    <!-- Expanded cookies + body -->
     <div v-if="expanded" class="bar-detail">
+      <template v-if="bodyEntries.length">
+        <span class="bar-detail-section">body</span>
+        <span
+          v-for="b in bodyEntries"
+          :key="b.key"
+          class="req-body"
+          :title="`${b.key}=${b.value}`"
+        >{{ b.key }}<span class="req-body-val">={{ truncate(b.value, 40) }}</span></span>
+      </template>
       <template v-if="cookieEntries.length">
         <span class="bar-detail-section">cookies</span>
         <span
@@ -49,6 +63,9 @@ const expanded = ref(false)
 const cookieEntries = computed(() =>
   props.req?.cookies ? Object.entries(props.req.cookies) : []
 )
+
+// Request payload (POST/PUT/PATCH) — [{key, value}], password already redacted server-side.
+const bodyEntries = computed(() => props.req?.body || [])
 
 function formatTime(val) {
   if (!val) return ''
@@ -192,6 +209,16 @@ function truncate(s, n) {
   padding: 0 5px;
 }
 .req-cookie-val { color: #507868; }
+
+.req-body {
+  color: #b0a068;
+  font-size: 10px;
+  background: rgba(120, 100, 40, 0.14);
+  border: 1px solid rgba(120, 100, 40, 0.24);
+  border-radius: 3px;
+  padding: 0 5px;
+}
+.req-body-val { color: #907838; }
 
 .req-ref { color: #5878a0; font-size: 10px; }
 </style>

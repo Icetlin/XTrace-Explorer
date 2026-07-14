@@ -776,8 +776,18 @@ html, body, #app {
 }
 .app { display: flex; flex-direction: column; height: 100vh; position: relative; }
 
-/* ── Tab bar ── */
+/* ── Bottom-pinned bars ──
+   These are rendered near the top of the template (top of DOM) but visually
+   pinned to the BOTTOM of the window via `order`, since `.app` is a flex
+   column and all other in-flow children keep the default order:0.
+   The REQ/RES info bars sit just above the tab bar. */
+.req-bar,
+.res-bar {
+  order: 99;
+}
+
 .tabs-bar {
+  order: 100;
   display: flex;
   align-items: stretch;
   gap: 2px;
@@ -785,7 +795,7 @@ html, body, #app {
   background: var(--bg-bar);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
-  border-bottom: 1px solid var(--border-bar);
+  border-top: 1px solid var(--border-bar);
   flex-shrink: 0;
   min-height: 40px;
   overflow-x: auto;
